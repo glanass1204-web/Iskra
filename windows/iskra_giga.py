@@ -90,9 +90,9 @@ def generate(task, sources, base=None, timeout=900, cancel=None):
     prompt_file.write_text(prompt, encoding='utf-8')
     command = [str(binary), '-m', str(model), '-f', str(prompt_file),
                '-n', str(ANSWER_TOKENS), '-c', str(CONTEXT_TOKENS), '--temp', '0',
-               '--no-display-prompt', '-ngl', '0']
-    if binary.stem == 'llama-cli':
-        command.append('-no-cnv')
+               '--no-display-prompt', '-ngl', '0',
+               # Models with a chat template switch llama.cpp into interactive chat; one-shot answer instead.
+               '-no-cnv']
     try:
         proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
                                 text=True, encoding='utf-8', errors='replace', cwd=str(binary.parent),
