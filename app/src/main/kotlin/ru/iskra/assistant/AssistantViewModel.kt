@@ -10,6 +10,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ru.iskra.core.DeviceAction
@@ -52,7 +54,12 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
             say("Привет, ${store.value.settings.name}! Я Искра 🔥 Нажми на микрофон и скажи, чем помочь. Скажи «что ты умеешь», чтобы увидеть команды.", speak = false)
         }
         app.getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(networkCallback)
+        viewModelScope.launch {
+            store.data.map { it.settings }.distinctUntilChanged().collect { voice.configure(it) }
+        }
     }
+
+    fun previewVoice() = voice.speak("Привет, ${store.value.settings.name}! Я Искра. Так звучит мой голос.")
 
 
     private fun isOnline(): Boolean {
@@ -121,12 +128,11 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
             null -> {}
             else -> if (!_online.value) {
                 answer = if (req is OnlineRequest.Ask && req.searchHint == null) {
-                    "Без сети я понимаю только команды — скажи «что ты умеешь». Вопрос можно задать, когда появится интернет."
+                    "Чтобы найти ответ, нужен интернет (VPN не нужен). Без сети я умею команды, калькулятор, напоминания и задачи — скажи «что ты умеешь»."
                 } else {
                     "Сейчас нет интернета. Могу записать это в задачи: скажи «задача …»."
                 }
             } else {
-                if (req is OnlineRequest.Ask && store.value.settings.apiKey.isNotBlank()) say("Секунду, думаю…", speak = false)
                 val result = withContext(Dispatchers.IO) {
                     when (req) {
                         is OnlineRequest.Ask -> iskra.online.answer(req).let { it.text to it.link }

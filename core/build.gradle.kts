@@ -20,5 +20,6 @@ dependencies {
     api(libs.kotlinx.coroutines.core)
     api(libs.kotlinx.serialization.json)
     implementation(libs.anthropic.java)
+    implementation(libs.jsoup)
     testImplementation(libs.junit)
 }

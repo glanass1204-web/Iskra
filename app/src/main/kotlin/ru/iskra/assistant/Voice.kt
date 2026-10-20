@@ -11,17 +11,22 @@ import android.speech.tts.TextToSpeech
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import ru.iskra.core.Settings
 import java.util.Locale
+
+data class VoiceOption(val name: String, val label: String, val offline: Boolean)
+data class EngineOption(val pkg: String, val label: String)
 
 /**
  * Голос Искры: распознавание речи и озвучка на русском.
- * Если на телефоне скачан офлайн-пакет русского языка, оба работают без интернета.
- * Все методы вызываются из главного потока.
+ * Движок, голос, скорость и тон выбираются в настройках. Все методы — из главного потока.
  */
-class Voice(private val context: Context) : TextToSpeech.OnInitListener {
+class Voice(private val context: Context) {
     private val russian = Locale.forLanguageTag("ru-RU")
-    private val tts = TextToSpeech(context, this)
+    private var tts: TextToSpeech? = null
     private var ttsReady = false
+    private var settings = Settings()
+    private var engine: String? = null
     private var recognizer: SpeechRecognizer? = null
 
     private val _listening = MutableStateFlow(false)
@@ -30,21 +35,63 @@ class Voice(private val context: Context) : TextToSpeech.OnInitListener {
     private val _partial = MutableStateFlow("")
     val partial: StateFlow<String> = _partial.asStateFlow()
 
+    private val _voices = MutableStateFlow<List<VoiceOption>>(emptyList())
+    val voices: StateFlow<List<VoiceOption>> = _voices.asStateFlow()
+
+    private val _engines = MutableStateFlow<List<EngineOption>>(emptyList())
+    val engines: StateFlow<List<EngineOption>> = _engines.asStateFlow()
+
     val canListen get() = SpeechRecognizer.isRecognitionAvailable(context)
 
-    override fun onInit(status: Int) {
-        if (status == TextToSpeech.SUCCESS) {
-            ttsReady = tts.setLanguage(russian) >= TextToSpeech.LANG_AVAILABLE
+    /** Применяет настройки голоса; при смене движка перезапускает озвучку. */
+    fun configure(s: Settings) {
+        settings = s
+        if (tts == null || engine != s.ttsEngine) {
+            engine = s.ttsEngine
+            ttsReady = false
+            tts?.shutdown()
+            val listener = TextToSpeech.OnInitListener { status -> onInit(status) }
+            tts = if (s.ttsEngine.isBlank()) TextToSpeech(context, listener) else TextToSpeech(context, listener, s.ttsEngine)
+        } else if (ttsReady) {
+            applyVoice()
         }
     }
 
+    private fun onInit(status: Int) {
+        val t = tts ?: return
+        _engines.value = t.engines.map { EngineOption(it.name, it.label) }
+        if (status != TextToSpeech.SUCCESS) return
+        ttsReady = t.setLanguage(russian) >= TextToSpeech.LANG_AVAILABLE
+        _voices.value = try {
+            t.voices.orEmpty()
+                .filter { it.locale.language == "ru" && !it.features.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED) }
+                .sortedWith(compareBy({ it.isNetworkConnectionRequired }, { it.name }))
+                .mapIndexed { i, v ->
+                    VoiceOption(v.name, "Голос ${i + 1}" + if (v.isNetworkConnectionRequired) " (нужен интернет)" else "", !v.isNetworkConnectionRequired)
+                }
+        } catch (e: Exception) {
+            emptyList()
+        }
+        applyVoice()
+    }
+
+    private fun applyVoice() {
+        val t = tts ?: return
+        if (settings.voiceName.isNotBlank()) {
+            t.voices?.firstOrNull { it.name == settings.voiceName }?.let { t.voice = it }
+        }
+        t.setSpeechRate(settings.speechRate)
+        t.setPitch(settings.pitch)
+    }
+
     fun speak(text: String) {
+        val t = tts ?: return
         if (!ttsReady || text.isBlank()) return
-        tts.speak(text.replace(Regex("[•🔥«»]"), ""), TextToSpeech.QUEUE_FLUSH, null, "iskra")
+        t.speak(text.replace(Regex("[•🔥«»]"), ""), TextToSpeech.QUEUE_FLUSH, null, "iskra")
     }
 
     fun stopSpeaking() {
-        tts.stop()
+        tts?.stop()
     }
 
     /** Слушает одну фразу; [onText] получает распознанный текст, [onError] — понятное объяснение. */
@@ -110,6 +157,7 @@ class Voice(private val context: Context) : TextToSpeech.OnInitListener {
     fun release() {
         recognizer?.destroy()
         recognizer = null
-        tts.shutdown()
+        tts?.shutdown()
+        tts = null
     }
 }

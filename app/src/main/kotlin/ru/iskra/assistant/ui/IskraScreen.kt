@@ -40,6 +40,9 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -55,6 +58,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -100,7 +104,7 @@ fun IskraScreen(vm: AssistantViewModel, onExport: () -> Unit) {
     Column(
         Modifier
             .fillMaxSize()
-            .background(Brush.verticalGradient(listOf(androidx.compose.ui.graphics.Color(0xFF2A160B), Coal, Coal)))
+            .background(Brush.verticalGradient(listOf(Top, Coal, Coal)))
             .statusBarsPadding()
             .navigationBarsPadding()
             .imePadding(),
@@ -116,7 +120,13 @@ fun IskraScreen(vm: AssistantViewModel, onExport: () -> Unit) {
         )
         PrimaryScrollableTabRow(selectedTabIndex = tab, containerColor = androidx.compose.ui.graphics.Color.Transparent, edgePadding = 12.dp) {
             TABS.forEachIndexed { i, title ->
-                Tab(selected = tab == i, onClick = { tab = i }, text = { Text(title) })
+                Tab(
+                    selected = tab == i,
+                    onClick = { tab = i },
+                    text = { Text(title, fontSize = 16.sp, fontWeight = if (tab == i) FontWeight.Bold else FontWeight.Medium) },
+                    selectedContentColor = Ember,
+                    unselectedContentColor = MaterialTheme.colorScheme.onSurface,
+                )
             }
         }
         Box(Modifier.weight(1f)) {
@@ -174,10 +184,12 @@ private fun Chat(lines: List<ChatLine>, onChip: (String) -> Unit) {
         items(lines) { line ->
             val mine = line.who == Speaker.ME
             Row(Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) {
+                val shape = RoundedCornerShape(18.dp, 18.dp, if (mine) 6.dp else 18.dp, if (mine) 18.dp else 6.dp)
                 Column(
                     Modifier.widthIn(max = 320.dp)
-                        .clip(RoundedCornerShape(18.dp, 18.dp, if (mine) 6.dp else 18.dp, if (mine) 18.dp else 6.dp))
+                        .clip(shape)
                         .background(if (mine) Ember else Surface2)
+                        .border(1.dp, if (mine) Ember else Line, shape)
                         .padding(horizontal = 14.dp, vertical = 10.dp),
                 ) {
                     Text(line.text, color = if (mine) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface)
@@ -196,12 +208,14 @@ private fun Chat(lines: List<ChatLine>, onChip: (String) -> Unit) {
         }
         item {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 8.dp)) {
-                listOf("Что ты умеешь?", "Мои задачи", "Заряд батареи", "Включи фонарик", "Баланс").forEach { chip ->
+                listOf("Что ты умеешь?", "Какая погода", "Курс доллара", "Новости", "Мои задачи", "Расскажи анекдот").forEach { chip ->
                     Text(
                         chip,
-                        fontSize = 14.sp,
-                        modifier = Modifier.clip(CircleShape).border(1.dp, Line, CircleShape).background(Surface1)
-                            .clickable { onChip(chip) }.padding(horizontal = 12.dp, vertical = 6.dp),
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = Ember,
+                        modifier = Modifier.clip(CircleShape).border(1.5.dp, Ember, CircleShape).background(Surface1)
+                            .clickable { onChip(chip) }.padding(horizontal = 14.dp, vertical = 8.dp),
                     )
                 }
             }
@@ -345,7 +359,7 @@ private fun SettingsTab(data: IskraData, vm: AssistantViewModel, onExport: () ->
         label = { Text("Ключ Claude API (необязательно)") },
         placeholder = { Text("sk-ant-…") },
         visualTransformation = PasswordVisualTransformation(),
-        supportingText = { Text("Включает «умный» режим и поиск в интернете, когда есть сеть. Запросы платные.") },
+        supportingText = { Text("Не нужен: Искра сама ищет погоду, курсы, новости и ответы. Claude из России работает только через VPN.") },
         keyboardActions = KeyboardActions(onDone = { vm.updateSettings { it.copy(apiKey = key.trim()) } }),
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
     )
@@ -355,6 +369,18 @@ private fun SettingsTab(data: IskraData, vm: AssistantViewModel, onExport: () ->
     ) { Text("Сохранить") }
     SwitchRow("Отвечать голосом", s.voiceReplies) { v -> vm.updateSettings { it.copy(voiceReplies = v) } }
     SwitchRow("Слушать сразу при открытии", s.autoListen) { v -> vm.updateSettings { it.copy(autoListen = v) } }
+    SwitchRow("Тёмная тема", s.darkTheme) { v -> vm.updateSettings { it.copy(darkTheme = v) } }
+    var city by remember(s.city) { mutableStateOf(s.city) }
+    OutlinedTextField(
+        value = city, onValueChange = { city = it }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+        label = { Text("Мой город (для погоды)") },
+        placeholder = { Text("Например, Москва") },
+        keyboardActions = KeyboardActions(onDone = { vm.updateSettings { it.copy(city = city.trim()) } }),
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+    )
+    OutlinedButton(onClick = { vm.updateSettings { it.copy(city = city.trim()) } }, modifier = Modifier.padding(top = 4.dp)) { Text("Сохранить город") }
+
+    VoiceSettings(s, vm)
 
     Section("Быстрый вызов")
     Text(
@@ -373,6 +399,56 @@ private fun SettingsTab(data: IskraData, vm: AssistantViewModel, onExport: () ->
         "Все данные хранятся только на этом телефоне. Ключ API отправляется только в Anthropic.",
         color = Muted, fontSize = 13.sp, modifier = Modifier.padding(vertical = 12.dp),
     )
+}
+
+@Composable
+private fun VoiceSettings(s: ru.iskra.core.Settings, vm: AssistantViewModel) {
+    val engines by vm.voice.engines.collectAsStateWithLifecycle()
+    val voices by vm.voice.voices.collectAsStateWithLifecycle()
+    Section("Голос Искры")
+    if (engines.size > 1) {
+        Text("Программа озвучки", fontWeight = FontWeight.Medium)
+        ChoiceRow("Системная по умолчанию", s.ttsEngine.isBlank()) { vm.updateSettings { it.copy(ttsEngine = "", voiceName = "") } }
+        engines.forEach { e ->
+            ChoiceRow(e.label, s.ttsEngine == e.pkg) { vm.updateSettings { it.copy(ttsEngine = e.pkg, voiceName = "") } }
+        }
+    }
+    Text("Русский голос", fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 8.dp))
+    if (voices.isEmpty()) {
+        Text("Русские голоса не найдены. Скачай их: Настройки → Общие настройки → Преобразование текста в речь.", color = Muted, fontSize = 14.sp)
+    }
+    ChoiceRow("По умолчанию", s.voiceName.isBlank()) { vm.updateSettings { it.copy(voiceName = "") } }
+    voices.forEach { v ->
+        ChoiceRow(v.label, s.voiceName == v.name) {
+            vm.updateSettings { it.copy(voiceName = v.name) }
+            vm.previewVoice()
+        }
+    }
+    var rate by remember(s.speechRate) { mutableFloatStateOf(s.speechRate) }
+    var pitch by remember(s.pitch) { mutableFloatStateOf(s.pitch) }
+    Text("Скорость речи: ${"%.1f".format(rate)}", modifier = Modifier.padding(top = 8.dp))
+    Slider(value = rate, onValueChange = { rate = it }, valueRange = 0.5f..1.8f,
+        onValueChangeFinished = { vm.updateSettings { it.copy(speechRate = rate) }; vm.previewVoice() })
+    Text("Тон голоса: ${"%.1f".format(pitch)} (больше — выше)")
+    Slider(value = pitch, onValueChange = { pitch = it }, valueRange = 0.6f..1.6f,
+        onValueChangeFinished = { vm.updateSettings { it.copy(pitch = pitch) }; vm.previewVoice() })
+    Button(onClick = vm::previewVoice) { Text("Прослушать") }
+    Text(
+        "Больше русских голосов: бесплатная программа RHVoice (голоса Анна, Елена, Ирина и другие, работают без интернета) " +
+            "из RuStore или Google Play — после установки она появится в списке выше.",
+        color = Muted, fontSize = 14.sp, modifier = Modifier.padding(top = 8.dp),
+    )
+}
+
+@Composable
+private fun ChoiceRow(label: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable(onClick = onClick).padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = onClick)
+        Text(label)
+    }
 }
 
 @Composable

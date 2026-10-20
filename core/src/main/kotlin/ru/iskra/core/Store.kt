@@ -14,6 +14,14 @@ data class Settings(
     val apiKey: String = "",
     val voiceReplies: Boolean = true,
     val autoListen: Boolean = false,
+    /** Родной город для погоды, в именительном падеже. */
+    val city: String = "",
+    /** Движок озвучки (пакет) и голос; пусто — системные по умолчанию. */
+    val ttsEngine: String = "",
+    val voiceName: String = "",
+    val speechRate: Float = 1.0f,
+    val pitch: Float = 1.0f,
+    val darkTheme: Boolean = false,
 )
 
 @Serializable

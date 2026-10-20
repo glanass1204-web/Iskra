@@ -12,41 +12,9 @@ import com.anthropic.models.beta.messages.BetaOutputConfig
 import com.anthropic.models.beta.messages.BetaStopReason
 import com.anthropic.models.beta.messages.BetaWebSearchTool20260209
 import com.anthropic.models.beta.messages.MessageCreateParams
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import java.net.HttpURLConnection
-import java.net.URL
-import java.net.URLEncoder
 import java.time.Duration
 
 data class Answer(val text: String, val link: String? = null)
-
-/** Поиск без ключа Claude: краткая справка из русской Википедии + ссылка на полный поиск. */
-object WebLookup {
-    private val json = Json { ignoreUnknownKeys = true }
-
-    fun searchLink(query: String) = "https://duckduckgo.com/?kl=ru-ru&q=" + URLEncoder.encode(query, "UTF-8")
-
-    fun summary(query: String): Answer {
-        val link = searchLink(query)
-        val title = URLEncoder.encode(query.trim().replace(' ', '_'), "UTF-8")
-        return try {
-            val conn = URL("https://ru.wikipedia.org/api/rest_v1/page/summary/$title").openConnection() as HttpURLConnection
-            conn.connectTimeout = 8000
-            conn.readTimeout = 8000
-            conn.setRequestProperty("User-Agent", "Iskra/1.0 (personal assistant)")
-            if (conn.responseCode != 200) return Answer("Короткого ответа не нашла. Вот поиск по запросу «$query».", link)
-            val body = conn.inputStream.bufferedReader().use { it.readText() }
-            val extract = json.parseToJsonElement(body).jsonObject["extract"]?.jsonPrimitive?.contentOrNull
-            if (extract.isNullOrBlank()) Answer("Короткого ответа не нашла. Вот поиск по запросу «$query».", link)
-            else Answer(extract, link)
-        } catch (e: Exception) {
-            Answer("Не получилось загрузить ответ. Вот ссылка на поиск.", link)
-        }
-    }
-}
 
 /**
  * «Умный» режим: вопросы, которые не распознал локальный мозг, уходят в Claude
@@ -66,7 +34,8 @@ class ClaudeAssistant(private val clientFactory: (String) -> AnthropicClient = :
     }
 
     @Synchronized
-    fun ask(question: String, data: IskraData): String {
+    /** Ответ Claude или null, если до сервиса не достучаться (например, без VPN). */
+    fun ask(question: String, data: IskraData): String? {
         val key = data.settings.apiKey
         if (client == null || clientKey != key) {
             client = clientFactory(key)
@@ -109,13 +78,14 @@ class ClaudeAssistant(private val clientFactory: (String) -> AnthropicClient = :
         } catch (e: UnauthorizedException) {
             reset(); return "Ключ Claude не подошёл. Проверь его в настройках."
         } catch (e: PermissionDeniedException) {
-            reset(); return "У этого ключа нет доступа к модели. Проверь настройки аккаунта Anthropic."
+            // Так Anthropic отвечает и на запросы из недоступных регионов.
+            reset(); return null
         } catch (e: RateLimitException) {
             rollback(checkpoint); return "Слишком много запросов. Подожди минутку и спроси снова."
         } catch (e: AnthropicServiceException) {
             rollback(checkpoint); return "Claude ответил ошибкой (${e.statusCode()}). Попробуй позже."
         } catch (e: AnthropicIoException) {
-            rollback(checkpoint); return "Не получилось связаться с Claude — похоже, пропала сеть."
+            rollback(checkpoint); return null
         }
     }
 
@@ -157,16 +127,17 @@ $tasks"""
 class OnlineHelper(
     private val store: Store,
     private val claude: ClaudeAssistant = ClaudeAssistant(),
-    private val lookup: (String) -> Answer = WebLookup::summary,
+    private val knowledge: Knowledge = Knowledge(),
 ) {
     fun resetConversation() = claude.reset()
 
     fun answer(req: OnlineRequest.Ask): Answer {
         val data = store.value
-        if (data.settings.apiKey.isNotBlank()) return Answer(claude.ask(req.question, data))
-        val q = req.searchHint
-            ?: return Answer("Это я пока не умею без «умного режима». Добавь ключ Claude в настройках или скажи «найди …».")
-        return lookup(q)
+        if (data.settings.apiKey.isNotBlank()) {
+            // Из России Claude доступен только через VPN; если связи нет — ищем сами.
+            claude.ask(req.question, data)?.let { return Answer(it) }
+        }
+        return knowledge.answer(req.question, req.searchHint, data.settings)
     }
 
     /** Проверяет все запросы мониторинга. Возвращает сводку и список изменившихся тем. */
@@ -175,7 +146,7 @@ class OnlineHelper(
         if (watches.isEmpty()) return "В мониторинге пока ничего нет. Скажи «следи за …»." to emptyList()
         val changed = mutableListOf<String>()
         val lines = watches.map { w ->
-            val fresh = lookup(w.query).text
+            val fresh = knowledge.answer(w.query, w.query, store.value.settings).text
             val isNew = w.last.isNotEmpty() && fresh != w.last
             if (isNew) changed += w.query
             store.update { d -> d.copy(watches = d.watches.map { x -> if (x.id == w.id) x.copy(last = fresh, checkedAt = now) else x }) }

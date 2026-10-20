@@ -105,19 +105,24 @@ class BrainTest {
 
     @Test
     fun unknownQuestionsGoOnline() {
-        val r = brain.handle("Расскажи анекдот")
-        assertEquals(OnlineRequest.Ask("Расскажи анекдот"), r.online)
+        val r = brain.handle("Объясни теорию относительности")
+        assertEquals(OnlineRequest.Ask("Объясни теорию относительности"), r.online)
         assertEquals("погоду в москве", (brain.handle("найди погоду в Москве").online as OnlineRequest.Ask).searchHint)
     }
 
     @Test
-    fun offlineHelperFallsBackToLookup() {
-        val helper = OnlineHelper(store, lookup = { q -> Answer("про $q") })
-        assertEquals("про погоду", helper.answer(OnlineRequest.Ask("найди погоду", "погоду")).text)
+    fun onlineHelperSearchesWithoutKeyAndWatchesForChanges() {
+        var rate = "80.0"
+        val http = Http { url ->
+            if (url.contains("cbr-xml-daily")) """{"Valute":{"USD":{"Nominal":1,"Name":"Доллар США","Value":$rate}}}""" else null
+        }
+        val helper = OnlineHelper(store, knowledge = Knowledge(http))
+        assertEquals("Курс ЦБ: Доллар США — 80,00 ₽.", helper.answer(OnlineRequest.Ask("курс доллара")).text)
         brain.handle("следи за курсом доллара")
         assertTrue(helper.checkWatches(1).first.contains("запомнила текущее состояние"))
-        val changing = OnlineHelper(store, lookup = { q -> Answer("новое про $q") })
-        assertEquals(listOf("курсом доллара"), changing.checkWatches(2).second)
+        assertEquals(emptyList<String>(), helper.checkWatches(2).second)
+        rate = "81.5"
+        assertEquals(listOf("курсом доллара"), helper.checkWatches(3).second)
     }
 
     @Test
