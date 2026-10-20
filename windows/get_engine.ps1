@@ -5,9 +5,19 @@ $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $headers = @{ 'User-Agent' = 'Iskra' }
 if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
-$release = Invoke-RestMethod -Headers $headers 'https://api.github.com/repos/ggml-org/llama.cpp/releases/latest'
-$asset = $release.assets | Where-Object { $_.name -match 'bin-win-cpu-x64\.zip$' } | Select-Object -First 1
-if (-not $asset) { throw "В выпуске $($release.tag_name) нет сборки win-cpu-x64" }
+# Берём самый свежий выпуск, в котором есть сборка для Windows x64 на процессоре
+# (у llama.cpp бывают выпуски без бинарников под Windows).
+$releases = Invoke-RestMethod -Headers $headers 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30'
+$release = $null; $asset = $null
+foreach ($r in $releases) {
+  if ($r.draft) { continue }
+  $a = $r.assets | Where-Object { $_.name -match 'win.*cpu.*x64.*\.zip$' -and $_.name -notmatch 'cudart' } | Select-Object -First 1
+  if ($a) { $release = $r; $asset = $a; break }
+}
+if (-not $asset) {
+  $releases | Select-Object -First 3 | ForEach-Object { Write-Host $_.tag_name; $_.assets | ForEach-Object { Write-Host '   ' $_.name } }
+  throw 'Не найдена сборка llama.cpp для Windows x64 (CPU)'
+}
 $zip = Join-Path $env:TEMP $asset.name
 Write-Host "Скачиваю llama.cpp $($release.tag_name): $($asset.name)"
 Invoke-WebRequest -Headers $headers $asset.browser_download_url -OutFile $zip
