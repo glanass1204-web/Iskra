@@ -1,12 +1,12 @@
-ИСКРА 0.9 — локальная интеграция GigaChat
+ИСКРА — локальная интеграция GigaChat (актуально для 1.0: см. README.txt)
 
 Это ИСХОДНЫЙ КОД, не готовый EXE. Нейросеть и llama.cpp НЕ вложены в архив.
 
 Для полностью автономной сборки заранее (на разрешённом компьютере с интернетом):
-1. Получить Windows x64 CPU llama-cli.exe и необходимые DLL из официальных выпусков llama.cpp:
+1. Запустить get_engine.ps1 или вручную взять llama-completion.exe и DLL из выпусков llama.cpp (win-cpu-x64):
    https://github.com/ggml-org/llama.cpp/releases
    Использовать достаточно новую версию, поддерживающую GigaChat 3.1.
-2. Поместить llama-cli.exe и необходимые DLL в папку engine рядом с Iskra.exe.
+2. Поместить llama-completion.exe и DLL в папку engine рядом с Iskra.exe (в готовой сборке уже есть).
 3. Скачать GGUF Q4_K_M (около 6.47 ГБ) из:
    https://huggingface.co/SergeyLizin/GigaChat3.1-10B-A1.8B-GGUF
    Поместить .gguf в папку models рядом с Iskra.exe.

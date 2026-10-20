@@ -7,6 +7,15 @@ from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Font, PatternFill
 
 
+def append_as_values(ws, row):
+    """Write text that starts with '=' as text, not as a formula (protects against formula injection).
+    Other leading characters (+ - @) are harmless in .xlsx, so the text is kept exactly as in the source."""
+    ws.append(row)
+    for cell in ws[ws.max_row]:
+        if cell.data_type == 'f':
+            cell.data_type = 's'
+
+
 def key(value):
     return re.sub(r'\s+', ' ', str(value or '').strip()).casefold()
 
@@ -67,9 +76,9 @@ def consolidate(template_path, source_paths, output_path, key_column=None):
                         report.append(['Нет столбцов',source.name,sh.title,1,', '.join(missing)[:1000]]); issues += 1
                     for rownum, values in enumerate(rows,start=2):
                         if not any(v is not None and str(v).strip() for v in values): continue
-                        data = [values[source_map[h]] if h in source_map and source_map[h] < len(values) else None for h in template_map]
-                        # formula strings in source are loaded as cached values; escape text to avoid formula injection
-                        data = [("'"+v if isinstance(v,str) and v.startswith(('=','+','-','@')) else v) for v in data]
+                        # One value per template column, including unnamed ones, so columns never shift.
+                        data = [values[source_map[key(h)]] if h and key(h) in source_map and source_map[key(h)] < len(values) else None
+                                for h in headers]
                         if key_column:
                             id_value = data[template_map[key(key_column)]]
                             identifier = key(id_value)
@@ -80,7 +89,7 @@ def consolidate(template_path, source_paths, output_path, key_column=None):
                             else: seen[identifier] = f'{source.name} / {sh.title} / {rownum}'
                         if all(v is None or str(v).strip()=='' for v in data):
                             report.append(['Пустая строка',source.name,sh.title,rownum,'Нет данных в столбцах шаблона']); issues += 1; continue
-                        target.append(data+[source.name,sh.title,rownum]); total += 1
+                        append_as_values(target, data+[source.name,sh.title,rownum]); total += 1
             finally: book.close()
         except Exception as exc:
             report.append(['Ошибка чтения',source.name,'','',str(exc)[:500]]); issues += 1; skipped += 1

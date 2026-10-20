@@ -1,4 +1,4 @@
-import os, sys, sqlite3, threading, queue, subprocess, re
+import os, threading, queue
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -9,96 +9,9 @@ from iskra_consolidate import consolidate
 from iskra_crossformat import merge_crossformat
 from iskra_giga import generate, local_files
 
-# Portable mode: keep index and settings beside the executable, not in AppData.
-BASE=Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
-ROOT=Path(os.environ.get('ISKRA_DATA_DIR', str(BASE / 'data'))).resolve()
-ROOT.mkdir(parents=True,exist_ok=True)
-DB=ROOT/'index.sqlite3'
-EXT={'.docx','.xlsx','.pptx','.pdf','.txt','.md','.csv'}
+from iskra_index import ROOT, extract, index_folder, search_docs, forget_folder
 
-def extract(p):
-    ext=p.suffix.lower()
-    if ext in ('.txt','.md','.csv'):
-        for enc in ('utf-8-sig','cp1251','utf-16'):
-            try:return p.read_text(encoding=enc,errors='strict')
-            except UnicodeError:pass
-        return ''
-    if ext=='.docx':
-        from docx import Document
-        d=Document(p)
-        lines=[x.text for x in d.paragraphs]
-        for t in d.tables:
-            for r in t.rows:lines.append(' | '.join(c.text for c in r.cells))
-        return '\n'.join(lines)
-    if ext=='.xlsx':
-        from openpyxl import load_workbook
-        w=load_workbook(p,read_only=True,data_only=False)
-        try:
-            return '\n'.join(f'{s.title}!{row[0].row}: '+' | '.join(str(c.value) for c in row if c.value is not None) for s in w for row in s.iter_rows() if any(c.value is not None for c in row))
-        finally:w.close()
-    if ext=='.pptx':
-        from pptx import Presentation
-        return '\n'.join(sh.text for sl in Presentation(p).slides for sh in sl.shapes if sh.has_text_frame)
-    if ext=='.pdf':
-        from pypdf import PdfReader
-        return '\n'.join(page.extract_text() or '' for page in PdfReader(str(p)).pages)
-    return ''
-
-def connect():
-    c=sqlite3.connect(DB)
-    c.execute('CREATE TABLE IF NOT EXISTS docs (path TEXT PRIMARY KEY, mtime INTEGER, size INTEGER, content TEXT)')
-    c.execute('CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(path UNINDEXED, content, tokenize="unicode61")')
-    c.commit();return c
-
-def index_folder(folder,notify):
-    c=connect();found=set();done=0;errors=0;failed=set()
-    scan_errors=[]
-    def walk_error(err):
-        scan_errors.append(str(err))
-        notify(f'Нет доступа к папке: {err}')
-    for base,dirs,files in os.walk(folder, onerror=walk_error):
-        dirs[:]=[d for d in dirs if not d.startswith('.') and d not in ('$RECYCLE.BIN','System Volume Information')]
-        for name in files:
-            p=Path(base)/name
-            if p.suffix.lower() not in EXT or name.startswith('~$'):continue
-            path=str(p);found.add(path)
-            try:
-                st=p.stat();mtime=st.st_mtime_ns
-                old=c.execute('SELECT mtime,size FROM docs WHERE path=?',(path,)).fetchone()
-                if old!=(mtime,st.st_size):
-                    content=extract(p)
-                    c.execute('DELETE FROM search WHERE path=?',(path,))
-                    c.execute('INSERT INTO search(path,content) VALUES (?,?)',(path,content[:2000000]))
-                    c.execute('INSERT OR REPLACE INTO docs VALUES (?,?,?,?)',(path,mtime,st.st_size,content[:2000000]))
-                done+=1
-                if done%20==0:
-                    c.commit()
-                    notify(f'Обработано: {done}, ошибок: {errors}')
-            except Exception as e:
-                errors+=1;failed.add(path);notify(f'Не удалось прочитать {name}: {e}')
-    # Never delete stale records when traversal was incomplete due to access errors.
-    if scan_errors:
-        c.commit();c.close();notify(f'Проверка частичная: {len(scan_errors)} ошибок доступа. Удаление записей пропущено.');return
-    # Only remove entries from this folder; other indexed folders remain untouched.
-    prefix=str(Path(folder).resolve())+os.sep
-    for (path,) in c.execute('SELECT path FROM docs').fetchall():
-        if path.startswith(prefix) and path not in found and path not in failed:
-            c.execute('DELETE FROM docs WHERE path=?',(path,))
-            c.execute('DELETE FROM search WHERE path=?',(path,))
-    c.commit();c.close();notify(f'Готово: {done} файлов, ошибок: {errors}')
-
-def search_docs(q):
-    c=connect()
-    tokens=re.findall(r'[^\W_]+',q.lower(),re.UNICODE)
-    if not tokens:return []
-    expression=' AND '.join('"'+x.replace('"','')+'"*' for x in tokens[:12])
-    try:
-        rows=c.execute('SELECT path, snippet(search,1,"[","]","…",18) FROM search WHERE search MATCH ? ORDER BY rank LIMIT 100',(expression,)).fetchall()
-    except sqlite3.OperationalError:
-        rows=[]
-    finally:
-        c.close()
-    return rows
+ROOT.mkdir(parents=True, exist_ok=True)
 
 class App:
     def __init__(self,root):
@@ -113,6 +26,7 @@ class App:
         top=ttk.Frame(frame);top.pack(fill='x')
         ttk.Button(top,text='Выбрать папку и создать индекс',command=self.choose).pack(side='left')
         ttk.Button(top,text='Проверить новые файлы',command=self.indexer.scan_now).pack(side='left',padx=8)
+        ttk.Button(top,text='Папки',command=self.folders_window).pack(side='left')
         ttk.Button(top,text='Открыть папку результатов',command=lambda:os.startfile(str(ROOT))).pack(side='left',padx=8)
         self.status=tk.StringVar(value='Готов к работе');ttk.Label(frame,textvariable=self.status).pack(anchor='w',pady=8)
         s=ttk.Frame(frame);s.pack(fill='x')
@@ -148,20 +62,24 @@ class App:
             while True:
                 event=self.events.get_nowait()
                 if isinstance(event,tuple) and event[0]=='giga_ok':
-                    _,win,field,status,answer=event
+                    _,win,field,status,answer,truncated,done=event
                     if win.winfo_exists():
-                        field.delete('1.0','end');field.insert('1.0',answer);status.set('Готов проект. Проверьте факты по исходным документам.')
+                        field.delete('1.0','end');field.insert('1.0',answer)
+                        note='Готов проект. Проверьте факты по исходным документам.'
+                        if truncated:note+=' Не поместились целиком: '+', '.join(truncated[:5])+'.'
+                        status.set(note);done()
                 elif isinstance(event,tuple) and event[0]=='giga_error':
-                    _,win,status,error=event
-                    if win.winfo_exists():status.set('Ошибка: '+error)
+                    _,win,status,error,done=event
+                    if win.winfo_exists():status.set('Ошибка: '+error);done()
                 else:self.status.set(str(event))
         except queue.Empty:pass
         self.root.after(150,self.poll)
     def find(self):
         self.results=search_docs(self.query.get());self.listbox.delete(0,'end')
         for path,_ in self.results:self.listbox.insert('end',f'{Path(path).name}   —   {path}')
-        self.status.set(f'Найдено: {len(self.results)} (показаны первые 100)')
-        save_history(ROOT,'Поиск',self.query.get())
+        more=' (показаны первые 100)' if len(self.results)>=100 else ''
+        self.status.set(f'Найдено: {len(self.results)}{more}')
+        if self.query.get().strip():save_history(ROOT,'Поиск',self.query.get())
     def show(self,event=None):
         i=self.selected()
         if i is None:return
@@ -185,6 +103,28 @@ class App:
     def close(self):
         self.indexer.stop()
         self.root.destroy()
+
+    def folders_window(self):
+        win=tk.Toplevel(self.root);win.title('Искра · папки для поиска');win.geometry('700x360')
+        ttk.Label(win,text='Эти папки проверяются при запуске и каждые 15 минут.').pack(anchor='w',padx=12,pady=8)
+        box=tk.Listbox(win,font=('Segoe UI',10));box.pack(fill='both',expand=True,padx=12)
+        def refresh():
+            box.delete(0,'end')
+            for f in self.indexer.folders():
+                box.insert('end',f+('' if Path(f).is_dir() else '   (сейчас недоступна)'))
+        def remove():
+            ix=box.curselection()
+            if not ix:return
+            folder=self.indexer.folders()[ix[0]]
+            if not messagebox.askyesno('Убрать папку',f'Убрать из поиска?\n{folder}\n\nСами файлы не удаляются.',parent=win):return
+            self.indexer.remove_folder(folder)
+            removed=forget_folder(folder)
+            self.status.set(f'Папка убрана из поиска, записей удалено: {removed}')
+            refresh()
+        buttons=ttk.Frame(win);buttons.pack(fill='x',padx=12,pady=8)
+        ttk.Button(buttons,text='Добавить папку',command=lambda:(self.choose(),refresh())).pack(side='left')
+        ttk.Button(buttons,text='Убрать выбранную',command=remove).pack(side='left',padx=8)
+        refresh()
 
     def crossformat(self):
         files=filedialog.askopenfilenames(title='Выберите Word и Excel документы',filetypes=[('Word и Excel','*.docx *.xlsx *.xlsm')])
@@ -246,27 +186,35 @@ class App:
             chosen.set('Выбрано документов: '+str(len(files))+'; '+', '.join(Path(p).name for p in files[:6]))
         ttk.Button(win,text='Выбрать документы-источники',command=add_files).pack(anchor='w',padx=12)
         result=tk.Text(win,wrap='word');result.pack(fill='both',expand=True,padx=12,pady=8)
+        cancel=threading.Event()
+        def finished():
+            run_button.configure(state='normal');stop_button.configure(state='disabled')
         def run():
             if not files:
                 messagebox.showwarning('Нет источников','Выберите исходные документы.',parent=win);return
-            status.set('Генерация локально, подождите...')
+            # One generation at a time: several llama.cpp processes would choke the CPU.
+            run_button.configure(state='disabled');stop_button.configure(state='normal');cancel.clear()
+            status.set('Генерация на этом компьютере, обычно 2–10 минут. Можно остановить.')
             task=request.get('1.0','end-1c')
             def work():
                 try:
                     sources=[(Path(p).name,extract(Path(p))) for p in files]
-                    answer=generate(task,sources)
-                    self.events.put(('giga_ok',win,result,status,answer))
-                except Exception as exc:self.events.put(('giga_error',win,status,str(exc)))
+                    answer,truncated=generate(task,sources,cancel=cancel)
+                    self.events.put(('giga_ok',win,result,status,answer,truncated,finished))
+                except Exception as exc:self.events.put(('giga_error',win,status,str(exc),finished))
             threading.Thread(target=work,daemon=True).start()
+        win.protocol('WM_DELETE_WINDOW',lambda:(cancel.set(),win.destroy()))
         def save():
             path=filedialog.asksaveasfilename(parent=win,defaultextension='.docx',filetypes=[('Word','*.docx')])
             if path:
                 from docx import Document
                 d=Document()
                 for line in result.get('1.0','end-1c').splitlines():d.add_paragraph(line)
-                d.save(path)
+                d.save(path);status.set('Сохранено: '+path)
+                save_history(ROOT,'Проект GigaChat',Path(path).name)
         buttons=ttk.Frame(win);buttons.pack(fill='x',padx=12,pady=8)
-        ttk.Button(buttons,text='Создать проект',command=run).pack(side='left')
+        run_button=ttk.Button(buttons,text='Создать проект',command=run);run_button.pack(side='left')
+        stop_button=ttk.Button(buttons,text='Остановить',command=cancel.set,state='disabled');stop_button.pack(side='left',padx=8)
         ttk.Button(buttons,text='Сохранить в Word',command=save).pack(side='left',padx=8)
         ttk.Label(win,text='Ответ нейросети требует проверки по оригиналам. Факты не подтверждаются автоматически.',wraplength=800).pack(anchor='w',padx=12,pady=5)
 

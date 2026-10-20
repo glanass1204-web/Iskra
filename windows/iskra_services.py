@@ -14,7 +14,9 @@ def settings_path(root):
 def load_settings(root):
     try:
         data = json.loads(settings_path(root).read_text(encoding='utf-8'))
-        return {'folders': [str(Path(p).resolve()) for p in data.get('folders', []) if Path(p).is_dir()],
+        # Keep folders that are offline right now (network drive, USB): the indexer reports them,
+        # and dropping them here would erase them from settings on the next save.
+        return {'folders': [str(Path(p).resolve()) for p in data.get('folders', []) if str(p).strip()],
                 'interval_minutes': max(1, int(data.get('interval_minutes', 15)))}
     except (OSError, ValueError, TypeError):
         return {'folders': [], 'interval_minutes': 15}
@@ -47,6 +49,17 @@ class AutoIndexer:
                 self.settings['folders'].append(folder)
                 save_settings(self.root, self.settings)
         self._wake.set()
+
+    def remove_folder(self, folder):
+        folder = str(Path(folder).resolve())
+        with self._lock:
+            if folder in self.settings['folders']:
+                self.settings['folders'].remove(folder)
+                save_settings(self.root, self.settings)
+
+    def folders(self):
+        with self._lock:
+            return list(self.settings['folders'])
 
     def start(self):
         if self._thread is None:

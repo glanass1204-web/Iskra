@@ -9,9 +9,12 @@ MISSING='НЕ НАЙДЕНО'
 def norm(v):
     return re.sub(r'\s+', ' ', str(v or '').strip()).casefold().replace('ё','е')
 
-def safe(v):
-    if isinstance(v,str) and v.startswith(('=','+','-','@')): return "'"+v
-    return v
+def append_as_values(ws, row):
+    """Text starting with '=' stays text instead of becoming a formula; everything else is written as is."""
+    ws.append(row)
+    for cell in ws[ws.max_row]:
+        if cell.data_type == 'f':
+            cell.data_type = 's'
 
 def word_fields(path, headings):
     doc=Document(path)
@@ -92,11 +95,11 @@ def merge_crossformat(paths,headings,output,output_format='xlsx'):
     output.parent.mkdir(parents=True,exist_ok=True)
     if output_format=='xlsx':
         wb=Workbook();ws=wb.active;ws.title='Сводная';ws.append(['Источник']+headings)
-        for name,values in records:ws.append([name]+[safe(values[h]) for h in headings])
+        for name,values in records:append_as_values(ws,[name]+[values[h] for h in headings])
         audit=wb.create_sheet('Проверка');audit.append(['Файл','Поле','Статус','Пояснение'])
-        for issue in issues:audit.append(list(issue))
+        for issue in issues:append_as_values(audit,list(issue))
         source=wb.create_sheet('Источники');source.append(['Строка сводной','Поле','Файл','Место в документе','Значение'])
-        for r,h,name,loc,value in provenance:source.append([r+1,h,name,loc,safe(value)])
+        for r,h,name,loc,value in provenance:append_as_values(source,[r+1,h,name,loc,value])
         ws.freeze_panes='B2';ws.auto_filter.ref=ws.dimensions
         wb.save(output)
         check=load_workbook(output,read_only=True)
