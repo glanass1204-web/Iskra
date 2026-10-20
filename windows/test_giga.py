@@ -1,4 +1,3 @@
-import os
 import stat
 import sys
 import tempfile
@@ -71,6 +70,22 @@ class Tests(unittest.TestCase):
             self.assertEqual(local_files(td)[0].name, 'llama-cli')
             fake_engine(td, 'llama-completion', ECHO)
             self.assertEqual(local_files(td)[0].name, 'llama-completion')
+
+    def test_cuts_runaway_generation(self):
+        from iskra_giga import clean_answer
+        raw = (' Срок — до 25 октября, исполнитель Иванов (приказ. txt).\n\nРЕЗУЛЬТАТ: повтор\n'
+               'ЗАДАЧА: Какая информация\nИСТОЧНИКИ:\n')
+        self.assertEqual(clean_answer(raw), 'Срок — до 25 октября, исполнитель Иванов (приказ.txt).')
+
+    @unittest.skipIf(sys.platform == 'win32', 'фиктивный движок собран как скрипт для Linux/macOS')
+    def test_stops_engine_once_answer_is_done(self):
+        rambling = 'import sys, time\nprint("Ответ готов.\\nЗАДАЧА: ещё", flush=True)\ntime.sleep(30)\n'
+        with tempfile.TemporaryDirectory() as td:
+            fake_engine(td, 'llama-completion', rambling)
+            started = __import__('time').monotonic()
+            answer, _ = generate('сводка', [('a', 'текст')], base=td)
+            self.assertEqual(answer, 'Ответ готов.')
+            self.assertLess(__import__('time').monotonic() - started, 10)
 
     @unittest.skipIf(sys.platform == 'win32', 'фиктивный движок собран как скрипт для Linux/macOS')
     def test_can_be_cancelled(self):

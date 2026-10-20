@@ -64,14 +64,7 @@ jobs:
         run: |
           ./get_model.ps1 -Target dist/Iskra/models
           $env:PYTHONIOENCODING = 'utf-8'
-          python -c "import time, iskra_giga as g; t=time.time(); a,tr=g.generate('Кому адресован документ и какой срок исполнения?', [('приказ.txt','Приказ № 15. Начальнику отдела кадров Иванову И.И. Подготовить отчёт до 25 октября 2026 года.')], base='dist/Iskra', timeout=1500); print('ОТВЕТ:', a); print('секунд:', round(time.time()-t))"
-          # Для сравнения: тот же вопрос через шаблон диалога модели (один ход).
-          $sys = 'Ты локальный помощник по рабочим документам. Используй только предоставленный источник. Если сведений нет, пиши НЕ НАЙДЕНО.'
-          $user = 'ИСТОЧНИК: Приказ № 15. Начальнику отдела кадров Иванову И.И. Подготовить отчёт до 25 октября 2026 года. ЗАДАЧА: Кому адресован документ и какой срок исполнения?'
-          Set-Content -Encoding utf8 sys.txt $sys; Set-Content -Encoding utf8 user.txt $user
-          $t = Get-Date
-          & dist/Iskra/engine/llama-completion.exe -m (Resolve-Path dist/Iskra/models/*.gguf) -sysf sys.txt -f user.txt -st -n 300 -c 4096 --temp 0 --no-display-prompt -ngl 0 2>$null
-          Write-Host "ШАБЛОН ДИАЛОГА, секунд: $([int]((Get-Date) - $t).TotalSeconds), код $LASTEXITCODE"
+          python -c "import time, iskra_giga as g; t=time.time(); a,tr=g.generate('Кому адресован документ и какой срок исполнения?', [('приказ.txt','Приказ № 15. Начальнику отдела кадров Иванову И.И. Подготовить отчёт до 25 октября 2026 года.')], base='dist/Iskra', timeout=1500); print('ОТВЕТ:', a); print('секунд:', round(time.time()-t)); assert '25 октября' in a and 'ЗАДАЧА' not in a"
           Remove-Item dist/Iskra/models/*.gguf
 
       - name: Zip

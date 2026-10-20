@@ -1,5 +1,7 @@
 """Offline-only GigaChat adapter: runs bundled llama.cpp with a local GGUF model, no sockets."""
 from pathlib import Path
+import codecs
+import re
 import subprocess
 import sys
 import tempfile
@@ -67,12 +69,26 @@ def make_prompt(task, sources, limit=MAX_SOURCE_CHARS):
     return prompt, truncated
 
 
+# In plain completion mode the model does not stop after the answer: it starts inventing the next
+# «ЗАДАЧА:» / «ИСТОЧНИКИ:» block. Generation is cut at the first such line.
+STOP_LINES = re.compile(r'^\s*(ЗАДАЧА:|ИСТОЧНИКИ:|НАЧАЛО ИСТОЧНИКА|КОНЕЦ ИСТОЧНИКА|ОТВЕТ:|РЕЗУЛЬТАТ:|ИМЯ_ФАЙЛА|Ты локальный помощник)',
+                        re.MULTILINE)
+
+
+def cut_answer(text):
+    """Returns (answer, finished): the text before the first runaway block, and whether one was found."""
+    text = text.replace('[end of text]', '')
+    first = STOP_LINES.search(text, 1)
+    return (text[:first.start()] if first else text), first is not None
+
+
 def clean_answer(text):
-    text = text.replace('[end of text]', '').strip()
+    text = cut_answer(text)[0].strip()
     # Some builds echo a trailing chat prompt marker.
     if text.endswith('>'):
         text = text[:-1].rstrip()
-    return text
+    # The detokenizer sometimes inserts a space into file names: «приказ. txt».
+    return re.sub(r'(\w)\. (txt|docx|xlsx|xlsm|pptx|pdf|csv|md)\b', r'\1.\2', text)
 
 
 def generate(task, sources, base=None, timeout=900, cancel=None):
@@ -95,20 +111,40 @@ def generate(task, sources, base=None, timeout=900, cancel=None):
                '-no-cnv']
     try:
         proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
-                                text=True, encoding='utf-8', errors='replace', cwd=str(binary.parent),
+                                cwd=str(binary.parent),
                                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     except OSError as exc:
         _cleanup(tmp)
         raise GigaError('Не удалось запустить локальный движок: ' + str(exc)) from exc
 
-    out = {}
-    readers = [threading.Thread(target=lambda: out.__setitem__('stdout', proc.stdout.read()), daemon=True),
-               threading.Thread(target=lambda: out.__setitem__('stderr', proc.stderr.read()), daemon=True)]
+    chunks = []
+    err = {}
+
+    def read_stdout():
+        # Bytes as they arrive (read1 does not wait for a full buffer), decoded incrementally.
+        decoder = codecs.getincrementaldecoder('utf-8')('replace')
+        while True:
+            piece = proc.stdout.read1(4096)
+            if not piece:
+                chunks.append(decoder.decode(b'', final=True))
+                break
+            chunks.append(decoder.decode(piece))
+
+    def read_stderr():
+        err['stderr'] = proc.stderr.read().decode('utf-8', 'replace')
+
+    readers = [threading.Thread(target=read_stdout, daemon=True), threading.Thread(target=read_stderr, daemon=True)]
     for r in readers:
         r.start()
     started = time.monotonic()
+    stopped_early = False
     try:
         while proc.poll() is None:
+            if cut_answer(''.join(chunks))[1]:
+                # The answer is complete and the model started rambling: no need to wait for the token limit.
+                proc.kill()
+                stopped_early = True
+                break
             if cancel is not None and cancel.is_set():
                 proc.kill()
                 raise GigaError('Генерация остановлена.')
@@ -120,9 +156,10 @@ def generate(task, sources, base=None, timeout=900, cancel=None):
             r.join(5)
     finally:
         _cleanup(tmp)
-    if proc.returncode:
-        raise GigaError('Ошибка локального движка: ' + out.get('stderr', '')[-800:])
-    answer = clean_answer(out.get('stdout', ''))
+    proc.wait(10)
+    if proc.returncode and not stopped_early:
+        raise GigaError('Ошибка локального движка: ' + err.get('stderr', '')[-800:])
+    answer = clean_answer(''.join(chunks))
     if not answer:
         raise GigaError('Модель вернула пустой ответ.')
     return answer, truncated
