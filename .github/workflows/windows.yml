@@ -7,11 +7,6 @@ on:
       - "windows/**"
       - ".github/workflows/windows.yml"
   workflow_dispatch:
-    inputs:
-      smoke:
-        description: "Скачать GigaChat (6,5 ГБ) и проверить настоящий ответ модели"
-        type: boolean
-        default: false
 
 permissions:
   contents: write
@@ -44,28 +39,14 @@ jobs:
         shell: cmd
         run: build_windows.bat nopause
 
-      - name: Bundle llama.cpp
-        shell: pwsh
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: ./get_engine.ps1 -Target dist/Iskra/engine
-
-      - name: Check engine starts
+      - name: Check EXE starts
         shell: pwsh
         run: |
-          Get-ChildItem dist/Iskra/engine | Select-Object Name, Length | Format-Table
-          $exe = if (Test-Path dist/Iskra/engine/llama-completion.exe) { 'dist/Iskra/engine/llama-completion.exe' } else { 'dist/Iskra/engine/llama-cli.exe' }
-          & $exe --version
-          if ($LASTEXITCODE -ne 0) { throw "engine failed: $LASTEXITCODE" }
-
-      - name: Real GigaChat answer
-        if: ${{ inputs.smoke }}
-        shell: pwsh
-        run: |
-          ./get_model.ps1 -Target dist/Iskra/models
-          $env:PYTHONIOENCODING = 'utf-8'
-          python -c "import time, iskra_giga as g; t=time.time(); a,tr=g.generate('Кому адресован документ и какой срок исполнения?', [('приказ.txt','Приказ № 15. Начальнику отдела кадров Иванову И.И. Подготовить отчёт до 25 октября 2026 года.')], base='dist/Iskra', timeout=1500); print('ОТВЕТ:', a); print('секунд:', round(time.time()-t)); assert '25 октября' in a and 'ЗАДАЧА' not in a"
-          Remove-Item dist/Iskra/models/*.gguf
+          $p = Start-Process dist/Iskra/Iskra.exe -PassThru
+          Start-Sleep -Seconds 8
+          if ($p.HasExited) { throw "Iskra.exe закрылась сразу, код $($p.ExitCode)" }
+          Stop-Process -Id $p.Id
+          Write-Host 'Iskra.exe запускается и работает'
 
       - name: Zip
         shell: pwsh
@@ -87,4 +68,4 @@ jobs:
             --prerelease \
             --target "$GITHUB_SHA" \
             --title "Искра для Windows — последняя сборка" \
-            --notes "Сборка ${GITHUB_RUN_NUMBER}. Распакуйте архив целиком, запустите Iskra.exe. Модель GigaChat (6,5 ГБ) скачивается отдельно: get_model.ps1 или вручную в папку models."
+            --notes "Сборка ${GITHUB_RUN_NUMBER}. Распакуйте архив целиком и запустите Iskra.exe. Python и интернет не нужны."

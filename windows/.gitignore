@@ -4,6 +4,3 @@ build/
 dist/
 *.spec
 data/
-engine/*.exe
-engine/*.dll
-models/*.gguf

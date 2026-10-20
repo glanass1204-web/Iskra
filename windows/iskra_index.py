@@ -176,3 +176,21 @@ def search_docs(q, limit=100):
         return []
     finally:
         c.close()
+
+
+def stats():
+    c = connect()
+    try:
+        return c.execute('SELECT COUNT(*) FROM docs').fetchone()[0]
+    finally:
+        c.close()
+
+
+def iter_documents():
+    """(path, indexed text) for every document — for checks across all files, e.g. deadlines."""
+    c = connect()
+    try:
+        for path, content in c.execute('SELECT path, content FROM search'):
+            yield path, content
+    finally:
+        c.close()

@@ -1,4 +1,6 @@
 import os, threading, queue
+from dataclasses import replace
+from datetime import date
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -7,123 +9,409 @@ from iskra_macros import MACROS, export_macro
 from iskra_workflows import compare_texts, normalize_layout, draft_from_sources, save_history, read_history
 from iskra_consolidate import consolidate
 from iskra_crossformat import merge_crossformat
-from iskra_giga import generate, local_files
-
-from iskra_index import ROOT, extract, index_folder, search_docs, forget_folder
+from iskra_index import ROOT, extract, index_folder, search_docs, forget_folder, stats, iter_documents
+import iskra_assistant as assistant
 
 ROOT.mkdir(parents=True, exist_ok=True)
+VERSION = '1.1'
+ACCENT = '#24518A'
+
 
 class App:
-    def __init__(self,root):
-        self.root=root;root.title('Искра — локальный помощник');root.geometry('950x680');root.minsize(700,480)
-        self.events=queue.Queue();self.results=[]
-        self.indexer=AutoIndexer(ROOT,index_folder,self.events.put)
+    def __init__(self, root):
+        self.root = root
+        root.title(f'Искра {VERSION} — помощник по документам')
+        root.geometry('1180x740'); root.minsize(860, 540)
+        self.events = queue.Queue()
+        self.results = []          # [(path, snippet)] — так же, как раньше, для инструментов
+        self.doc_cache = {}        # path -> text выбранных документов
+        self.indexer = AutoIndexer(ROOT, index_folder, self.events.put)
         self.indexer.start()
-        root.protocol('WM_DELETE_WINDOW',self.close)
-        frame=ttk.Frame(root,padding=12);frame.pack(fill='both',expand=True)
-        ttk.Label(frame,text='Искра · поиск по документам',font=('Segoe UI',17,'bold')).pack(anchor='w')
-        ttk.Label(frame,text='Всё обрабатывается на этом компьютере. Исходные файлы не изменяются.').pack(anchor='w',pady=(0,12))
-        top=ttk.Frame(frame);top.pack(fill='x')
-        ttk.Button(top,text='Выбрать папку и создать индекс',command=self.choose).pack(side='left')
-        ttk.Button(top,text='Проверить новые файлы',command=self.indexer.scan_now).pack(side='left',padx=8)
-        ttk.Button(top,text='Папки',command=self.folders_window).pack(side='left')
-        ttk.Button(top,text='Открыть папку результатов',command=lambda:os.startfile(str(ROOT))).pack(side='left',padx=8)
-        self.status=tk.StringVar(value='Готов к работе');ttk.Label(frame,textvariable=self.status).pack(anchor='w',pady=8)
-        s=ttk.Frame(frame);s.pack(fill='x')
-        self.query=tk.StringVar();entry=ttk.Entry(s,textvariable=self.query,font=('Segoe UI',12));entry.pack(side='left',fill='x',expand=True);entry.bind('<Return>',lambda e:self.find())
-        ttk.Button(s,text='Найти',command=self.find).pack(side='left',padx=(8,0))
-        pane=ttk.Panedwindow(frame,orient='vertical');pane.pack(fill='both',expand=True,pady=10)
-        listframe=ttk.Frame(pane);pane.add(listframe,weight=2)
-        self.listbox=tk.Listbox(listframe,font=('Segoe UI',10));self.listbox.pack(side='left',fill='both',expand=True)
-        scroll=ttk.Scrollbar(listframe,command=self.listbox.yview);scroll.pack(side='right',fill='y');self.listbox.config(yscrollcommand=scroll.set)
-        self.listbox.bind('<<ListboxSelect>>',self.show)
-        preview=ttk.Frame(pane);pane.add(preview,weight=1)
-        self.text=tk.Text(preview,wrap='word',font=('Segoe UI',10),height=10);self.text.pack(fill='both',expand=True)
-        actions=ttk.Frame(frame);actions.pack(fill='x')
-        ttk.Button(actions,text='Открыть документ',command=self.open_selected).pack(side='left')
-        ttk.Button(actions,text='Скопировать фрагмент',command=self.copy).pack(side='left',padx=8)
-        ttk.Button(actions,text='Сохранить текст в Word',command=self.save_word).pack(side='left')
-        ttk.Button(actions,text='Формулы Excel',command=self.formulas).pack(side='right')
-        ttk.Button(actions,text='Собрать сводную',command=self.consolidation).pack(side='right',padx=8)
-        ttk.Button(actions,text='Word ↔ Excel',command=self.crossformat).pack(side='right',padx=8)
-        ttk.Button(actions,text='Библиотека макросов',command=self.macros).pack(side='right',padx=8)
-        ttk.Button(actions,text='ИИ GigaChat',command=self.giga_window).pack(side='right',padx=8)
-        ttk.Button(actions,text='Телеграммы',command=self.telegrams).pack(side='right',padx=8)
-        ttk.Button(actions,text='Сравнить',command=self.compare_files).pack(side='right',padx=8)
-        ttk.Button(actions,text='История',command=self.history).pack(side='right',padx=8)
-        self.root.after(100,self.poll)
+        root.protocol('WM_DELETE_WINDOW', self.close)
+        self._style()
+        self._menu()
+
+        top = ttk.Frame(root, padding=(12, 10, 12, 4)); top.pack(fill='x')
+        ttk.Label(top, text='Искра', style='Title.TLabel').pack(side='left')
+        ttk.Label(top, text='  поиск и помощник по документам · всё на этом компьютере, без интернета',
+                  style='Muted.TLabel').pack(side='left')
+        ttk.Button(top, text='Папки…', command=self.folders_window).pack(side='right')
+        ttk.Button(top, text='Обновить индекс', command=self.indexer.scan_now).pack(side='right', padx=6)
+
+        bar = ttk.Frame(root, padding=(12, 4)); bar.pack(fill='x')
+        self.query = tk.StringVar()
+        entry = ttk.Entry(bar, textvariable=self.query, font=('Segoe UI', 12))
+        entry.pack(side='left', fill='x', expand=True); entry.bind('<Return>', lambda e: self.find())
+        ttk.Button(bar, text='Найти', style='Accent.TButton', command=self.find).pack(side='left', padx=(8, 0))
+        entry.focus_set()
+
+        pane = ttk.Panedwindow(root, orient='horizontal'); pane.pack(fill='both', expand=True, padx=12, pady=6)
+        left = ttk.Frame(pane); pane.add(left, weight=2)
+        self.found_label = tk.StringVar(value='Документы: введите запрос и нажмите «Найти»')
+        ttk.Label(left, textvariable=self.found_label, style='Muted.TLabel').pack(anchor='w')
+        lf = ttk.Frame(left); lf.pack(fill='both', expand=True, pady=(4, 0))
+        self.listbox = tk.Listbox(lf, font=('Segoe UI', 10), activestyle='none', selectbackground=ACCENT, exportselection=False)
+        self.listbox.pack(side='left', fill='both', expand=True)
+        sc = ttk.Scrollbar(lf, command=self.listbox.yview); sc.pack(side='right', fill='y'); self.listbox.config(yscrollcommand=sc.set)
+        self.listbox.bind('<<ListboxSelect>>', self.show)
+        self.listbox.bind('<Double-Button-1>', lambda e: self.open_selected())
+        self.listbox.bind('<Return>', lambda e: self.open_selected())
+
+        right = ttk.Frame(pane); pane.add(right, weight=3)
+        self.tabs = ttk.Notebook(right); self.tabs.pack(fill='both', expand=True)
+        self._assistant_tab()
+        self._document_tab()
+        self._deadlines_tab()
+
+        self.status = tk.StringVar(value='Готов к работе')
+        ttk.Label(root, textvariable=self.status, style='Muted.TLabel', padding=(12, 2, 12, 8)).pack(fill='x')
+        self.say(assistant.HELP)
+        self.say(f'Сейчас в поиске документов: {stats()}. Папки для поиска добавляются кнопкой «Папки…».')
+        self.root.after(100, self.poll)
+
+    # ---------- оформление ----------
+
+    def _style(self):
+        st = ttk.Style()
+        if 'vista' in st.theme_names():
+            st.theme_use('vista')
+        st.configure('.', font=('Segoe UI', 10))
+        st.configure('Title.TLabel', font=('Segoe UI', 18, 'bold'), foreground=ACCENT)
+        st.configure('Muted.TLabel', foreground='#555555')
+        st.configure('Accent.TButton', font=('Segoe UI', 10, 'bold'))
+        st.configure('TNotebook.Tab', padding=(14, 6))
+
+    def _menu(self):
+        m = tk.Menu(self.root)
+        f = tk.Menu(m, tearoff=False)
+        f.add_command(label='Папки для поиска…', command=self.folders_window)
+        f.add_command(label='Обновить индекс', command=self.indexer.scan_now)
+        f.add_command(label='Открыть папку данных', command=lambda: os.startfile(str(ROOT)))
+        f.add_separator(); f.add_command(label='Выход', command=self.close)
+        m.add_cascade(label='Файл', menu=f)
+        t = tk.Menu(m, tearoff=False)
+        t.add_command(label='Контроль сроков', command=lambda: (self.tabs.select(2), self.refresh_deadlines()))
+        t.add_command(label='Сравнить две редакции…', command=self.compare_files)
+        t.add_command(label='Сводная Excel по шаблону…', command=self.consolidation)
+        t.add_command(label='Собрать поля Word ↔ Excel…', command=self.crossformat)
+        t.add_command(label='Редактор телеграмм', command=self.telegrams)
+        t.add_command(label='Формулы Excel', command=self.formulas)
+        t.add_command(label='Библиотека макросов VBA', command=self.macros)
+        t.add_separator(); t.add_command(label='История действий', command=self.history)
+        m.add_cascade(label='Инструменты', menu=t)
+        h = tk.Menu(m, tearoff=False)
+        h.add_command(label='Что умеет помощник', command=lambda: (self.tabs.select(0), self.say(assistant.HELP)))
+        h.add_command(label='О программе', command=lambda: messagebox.showinfo(
+            'Искра', f'Искра {VERSION}\nЛокальный поиск и помощник по документам.\nДанные: {ROOT}\nСеть не используется.'))
+        m.add_cascade(label='Справка', menu=h)
+        self.root.config(menu=m)
+
+    # ---------- вкладка «Помощник» ----------
+
+    def _assistant_tab(self):
+        tab = ttk.Frame(self.tabs, padding=8); self.tabs.add(tab, text='Помощник')
+        self.chat = tk.Text(tab, wrap='word', font=('Segoe UI', 10), state='disabled', relief='flat',
+                            background='#FAFAFA', padx=10, pady=8, spacing1=2, spacing3=4)
+        self.chat.tag_configure('me', foreground=ACCENT, font=('Segoe UI', 10, 'bold'), spacing1=10)
+        self.chat.tag_configure('iskra', foreground='#1A1A1A')
+        self.chat.tag_configure('value', foreground='#1A1A1A', font=('Segoe UI', 10, 'bold'))
+        self.chat.tag_configure('proof', foreground='#666666', lmargin1=18, lmargin2=18)
+        sc = ttk.Scrollbar(tab, command=self.chat.yview); self.chat.config(yscrollcommand=sc.set)
+        quick = ttk.Frame(tab); quick.pack(side='bottom', fill='x', pady=(6, 0))
+        for label, cmd in (('Кратко', 'кратко'), ('Сроки', 'сроки'), ('Кто', 'кто'), ('Номера', 'номера'),
+                           ('Суммы', 'суммы'), ('Все даты', 'даты'), ('Ближайшие сроки', 'ближайшие сроки')):
+            ttk.Button(quick, text=label, command=lambda c=cmd: self.ask(c)).pack(side='left', padx=(0, 4))
+        row = ttk.Frame(tab); row.pack(side='bottom', fill='x', pady=(6, 0))
+        self.question = tk.StringVar()
+        q = ttk.Entry(row, textvariable=self.question, font=('Segoe UI', 11))
+        q.pack(side='left', fill='x', expand=True); q.bind('<Return>', lambda e: self.ask())
+        ttk.Button(row, text='Спросить', style='Accent.TButton', command=self.ask).pack(side='left', padx=(6, 0))
+        sc.pack(side='right', fill='y'); self.chat.pack(fill='both', expand=True)
+
+    def say(self, text, tag='iskra'):
+        self.chat.configure(state='normal')
+        self.chat.insert('end', text + '\n', tag)
+        self.chat.configure(state='disabled'); self.chat.see('end')
+
+    def say_found(self, title, items, empty):
+        if not items:
+            self.say(empty); return
+        self.say(title)
+        self.chat.configure(state='normal')
+        for f in items[:40]:
+            self.chat.insert('end', '• ' + f.value + '\n', 'value')
+            self.chat.insert('end', f.context + '\n', 'proof')
+        if len(items) > 40:
+            self.chat.insert('end', f'…и ещё {len(items) - 40}\n', 'proof')
+        self.chat.configure(state='disabled'); self.chat.see('end')
+
+    def ask(self, text=None):
+        text = (text if text is not None else self.question.get()).strip()
+        if not text:
+            return
+        self.question.set('')
+        self.say('Вы: ' + text, 'me')
+        cmd, arg = assistant.intent(text)
+        if cmd == 'help':
+            self.say(assistant.HELP)
+        elif cmd == 'stats':
+            self.say(f'В поиске документов: {stats()}. Папки: ' + ('; '.join(self.indexer.folders()) or 'не добавлены'))
+        elif cmd == 'formula':
+            formula, note = excel_formula(arg or text)
+            self.say((formula + '\n' if formula else '') + note)
+        elif cmd == 'search':
+            self.query.set(arg); self.find(report=True)
+        elif cmd == 'upcoming':
+            self.tabs.select(2); self.refresh_deadlines(report=True)
+        else:
+            self.about_selected(cmd)
+
+    def about_selected(self, cmd):
+        i = self.selected()
+        if i is None:
+            self.say('Сначала выберите документ в списке слева — найдите его поиском.')
+            return
+        path = self.results[i][0]
+        name = Path(path).name
+
+        def answer(text):
+            if cmd == 'summary':
+                lines = assistant.summary(text)
+                self.say(f'Кратко о «{name}» (главные предложения из текста):' if lines else f'В «{name}» не нашла текста.')
+                for line in lines:
+                    self.say('• ' + line)
+            elif cmd == 'deadlines':
+                items = [replace(f, value=f'{f.value} — {assistant.deadline_status(f.sort_key)}') for f in assistant.deadlines(text)]
+                self.say_found(f'Сроки в «{name}»:', items, f'В «{name}» сроков не нашла (ищу даты после слов «до», «не позднее», «срок»).')
+            elif cmd == 'dates':
+                self.say_found(f'Все даты в «{name}»:', assistant.all_dates(text), f'В «{name}» дат нет.')
+            elif cmd == 'people':
+                self.say_found(f'ФИО в «{name}»:', assistant.people(text), f'В «{name}» не нашла ФИО вида «Иванов И.И.».')
+            elif cmd == 'numbers':
+                self.say_found(f'Номера в «{name}»:', assistant.numbers(text), f'В «{name}» номеров со знаком № нет.')
+            elif cmd == 'money':
+                self.say_found(f'Суммы в «{name}»:', assistant.money(text), f'В «{name}» сумм в рублях нет.')
+            elif cmd == 'contacts':
+                self.say_found(f'Контакты в «{name}»:', assistant.contacts(text), f'В «{name}» телефонов и почты нет.')
+            save_history(ROOT, 'Помощник', f'{cmd}: {name}')
+
+        self.with_text(path, answer)
+
+    def with_text(self, path, callback):
+        """Read a document in the background (big PDFs take time) and call back in the window thread."""
+        if path in self.doc_cache:
+            callback(self.doc_cache[path]); return
+        self.status.set('Читаю документ…')
+
+        def work():
+            try:
+                text = extract(Path(path))
+                self.events.put(('call', lambda: (self.doc_cache.__setitem__(path, text), self.status.set('Готов к работе'), callback(text))))
+            except Exception as exc:
+                msg = str(exc)
+                self.events.put(('call', lambda: (self.status.set('Готов к работе'), self.say(f'Не удалось прочитать документ: {msg}'))))
+        threading.Thread(target=work, daemon=True).start()
+
+    # ---------- вкладка «Документ» ----------
+
+    def _document_tab(self):
+        tab = ttk.Frame(self.tabs, padding=8); self.tabs.add(tab, text='Документ')
+        self.text = tk.Text(tab, wrap='word', font=('Segoe UI', 10), relief='flat', background='#FAFAFA', padx=10, pady=8)
+        self.text.tag_configure('hit', background='#FFE58F')
+        actions = ttk.Frame(tab); actions.pack(side='bottom', fill='x', pady=(6, 0))
+        ttk.Button(actions, text='Открыть документ', style='Accent.TButton', command=self.open_selected).pack(side='left')
+        ttk.Button(actions, text='Открыть папку', command=self.open_folder).pack(side='left', padx=6)
+        ttk.Button(actions, text='Скопировать', command=self.copy).pack(side='left')
+        ttk.Button(actions, text='Сохранить в Word', command=self.save_word).pack(side='left', padx=6)
+        ttk.Button(actions, text='Показать весь текст', command=self.show_full).pack(side='left')
+        self.text.pack(fill='both', expand=True)
+
+    def show(self, event=None):
+        i = self.selected()
+        if i is None:
+            return
+        path, snip = self.results[i]
+        self.text.delete('1.0', 'end')
+        self.text.insert('end', f'Файл: {path}\n\n')
+        # Fragments come with [найденные] слова: highlight them instead of showing brackets.
+        for k, part in enumerate(snip.replace(']', '[').split('[')):
+            self.text.insert('end', part, 'hit' if k % 2 else ())
+
+    def show_full(self):
+        i = self.selected()
+        if i is None:
+            return
+        path = self.results[i][0]
+        self.with_text(path, lambda text: (self.text.delete('1.0', 'end'), self.text.insert('end', f'Файл: {path}\n\n{text}')))
+
+    # ---------- вкладка «Контроль сроков» ----------
+
+    def _deadlines_tab(self):
+        tab = ttk.Frame(self.tabs, padding=8); self.tabs.add(tab, text='Контроль сроков')
+        top = ttk.Frame(tab); top.pack(fill='x')
+        ttk.Label(top, text='Сроки из всех документов: просроченные за неделю и на 30 дней вперёд.').pack(side='left')
+        ttk.Button(top, text='Обновить', command=self.refresh_deadlines).pack(side='right')
+        cols = ('date', 'status', 'file', 'text')
+        self.deadline_view = ttk.Treeview(tab, columns=cols, show='headings', height=16)
+        for c, title, w in zip(cols, ('Дата', 'Когда', 'Документ', 'Что сделать'), (90, 130, 200, 520)):
+            self.deadline_view.heading(c, text=title); self.deadline_view.column(c, width=w, anchor='w')
+        self.deadline_view.tag_configure('late', foreground='#B3261E')
+        self.deadline_view.tag_configure('soon', foreground='#8A5300')
+        self.deadline_view.pack(fill='both', expand=True, pady=(6, 0))
+        self.deadline_view.bind('<Double-Button-1>', self.open_deadline)
+        self.deadline_paths = {}
+
+    def refresh_deadlines(self, report=False):
+        self.status.set('Проверяю сроки во всех документах…')
+
+        def work():
+            try:
+                rows = assistant.upcoming(iter_documents())
+            except Exception as exc:
+                msg = str(exc)
+                self.events.put(('call', lambda: self.status.set(f'Не удалось проверить сроки: {msg}'))); return
+            self.events.put(('call', lambda: self.show_deadlines(rows, report)))
+        threading.Thread(target=work, daemon=True).start()
+
+    def show_deadlines(self, rows, report):
+        v = self.deadline_view
+        v.delete(*v.get_children()); self.deadline_paths.clear()
+        today = date.today()
+        for d, status, path, context in rows:
+            tag = 'late' if d < today else ('soon' if (d - today).days <= 3 else '')
+            item = v.insert('', 'end', values=(d.strftime('%d.%m.%Y'), status, Path(path).name, context), tags=(tag,))
+            self.deadline_paths[item] = path
+        late = sum(1 for r in rows if r[0] < today)
+        self.status.set(f'Сроков: {len(rows)}, просрочено: {late}. Двойной щелчок открывает документ.')
+        if report:
+            if not rows:
+                self.say('Ближайших сроков в документах не нашла.')
+            else:
+                self.say(f'Нашла сроков: {len(rows)}, из них просрочено: {late}. Список — на вкладке «Контроль сроков». Первые:')
+                for d, status, path, context in rows[:5]:
+                    self.say(f'• {d.strftime("%d.%m.%Y")} ({status}) — {Path(path).name}: {context[:160]}')
+
+    def open_deadline(self, event=None):
+        item = self.deadline_view.focus()
+        path = self.deadline_paths.get(item)
+        if path:
+            self._open(path)
+
+    # ---------- поиск и файлы ----------
+
     def choose(self):
-        folder=filedialog.askdirectory(title='Выберите папку с документами')
+        folder = filedialog.askdirectory(title='Выберите папку с документами')
         if folder:
             self.indexer.add_folder(folder)
             self.status.set('Папка добавлена. Индексирование запущено в фоне.')
+
     def poll(self):
         try:
             while True:
-                event=self.events.get_nowait()
-                if isinstance(event,tuple) and event[0]=='giga_ok':
-                    _,win,field,status,answer,truncated,done=event
-                    if win.winfo_exists():
-                        field.delete('1.0','end');field.insert('1.0',answer)
-                        note='Готов проект. Проверьте факты по исходным документам.'
-                        if truncated:note+=' Не поместились целиком: '+', '.join(truncated[:5])+'.'
-                        status.set(note);done()
-                elif isinstance(event,tuple) and event[0]=='giga_error':
-                    _,win,status,error,done=event
-                    if win.winfo_exists():status.set('Ошибка: '+error);done()
-                else:self.status.set(str(event))
-        except queue.Empty:pass
-        self.root.after(150,self.poll)
-    def find(self):
-        self.results=search_docs(self.query.get());self.listbox.delete(0,'end')
-        for path,_ in self.results:self.listbox.insert('end',f'{Path(path).name}   —   {path}')
-        more=' (показаны первые 100)' if len(self.results)>=100 else ''
-        self.status.set(f'Найдено: {len(self.results)}{more}')
-        if self.query.get().strip():save_history(ROOT,'Поиск',self.query.get())
-    def show(self,event=None):
-        i=self.selected()
-        if i is None:return
-        path,snip=self.results[i];self.text.delete('1.0','end');self.text.insert('end',f'Файл: {path}\n\n{snip}')
+                event = self.events.get_nowait()
+                if isinstance(event, tuple) and event[0] == 'call':
+                    event[1]()
+                else:
+                    self.status.set(str(event))
+        except queue.Empty:
+            pass
+        self.root.after(150, self.poll)
+
+    def find(self, report=False):
+        q = self.query.get().strip()
+        if not q:
+            return
+        self.status.set('Ищу…')
+
+        def work():
+            rows = search_docs(q)
+            self.events.put(('call', lambda: self.show_results(q, rows, report)))
+        threading.Thread(target=work, daemon=True).start()
+
+    def show_results(self, q, rows, report):
+        self.results = rows; self.listbox.delete(0, 'end')
+        for path, _ in rows:
+            self.listbox.insert('end', f'{Path(path).name}   —   {Path(path).parent}')
+        more = ' (показаны первые 100)' if len(rows) >= 100 else ''
+        self.found_label.set(f'Найдено по «{q}»: {len(rows)}{more}')
+        self.status.set('Выберите документ: справа — фрагмент, помощник отвечает по нему.')
+        save_history(ROOT, 'Поиск', q)
+        if rows:
+            self.listbox.selection_set(0); self.show()
+        if report:
+            if not rows:
+                self.say(f'По запросу «{q}» ничего не нашла. Проверьте, добавлена ли папка с документами.')
+            else:
+                self.say(f'Нашла документов: {len(rows)}. Первый выбран — спросите «кратко», «сроки» или «кто».')
+                for path, snip in rows[:5]:
+                    self.say(f'• {Path(path).name}: {snip.replace("[", "").replace("]", "")[:160]}')
+
     def selected(self):
-        ids=self.listbox.curselection();return ids[0] if ids else None
+        ids = self.listbox.curselection()
+        return ids[0] if ids else None
+
+    def _open(self, path):
+        try:
+            os.startfile(path)
+        except OSError as e:
+            messagebox.showerror('Ошибка', str(e))
+
     def open_selected(self):
-        i=self.selected()
+        i = self.selected()
         if i is not None:
-            try:os.startfile(self.results[i][0])
-            except OSError as e:messagebox.showerror('Ошибка',str(e))
+            self._open(self.results[i][0])
+
+    def open_folder(self):
+        i = self.selected()
+        if i is not None:
+            self._open(str(Path(self.results[i][0]).parent))
+
     def copy(self):
-        self.root.clipboard_clear();self.root.clipboard_append(self.text.get('1.0','end-1c'))
+        self.root.clipboard_clear(); self.root.clipboard_append(self.text.get('1.0', 'end-1c'))
+        self.status.set('Скопировано в буфер обмена.')
+
     def save_word(self):
         from docx import Document
-        path=filedialog.asksaveasfilename(defaultextension='.docx',filetypes=[('Word','*.docx')],initialdir=str(ROOT))
+        path = filedialog.asksaveasfilename(defaultextension='.docx', filetypes=[('Word', '*.docx')], initialdir=str(ROOT))
         if path:
-            d=Document()
-            for line in self.text.get('1.0','end-1c').splitlines():d.add_paragraph(line)
-            d.save(path);self.status.set(f'Сохранено: {path}')
+            d = Document()
+            for line in self.text.get('1.0', 'end-1c').splitlines():
+                d.add_paragraph(line)
+            d.save(path); self.status.set(f'Сохранено: {path}')
+
     def close(self):
         self.indexer.stop()
         self.root.destroy()
 
     def folders_window(self):
-        win=tk.Toplevel(self.root);win.title('Искра · папки для поиска');win.geometry('700x360')
-        ttk.Label(win,text='Эти папки проверяются при запуске и каждые 15 минут.').pack(anchor='w',padx=12,pady=8)
-        box=tk.Listbox(win,font=('Segoe UI',10));box.pack(fill='both',expand=True,padx=12)
+        win = tk.Toplevel(self.root); win.title('Искра · папки для поиска'); win.geometry('720x380'); win.transient(self.root)
+        ttk.Label(win, text='Эти папки проверяются при запуске и каждые 15 минут. Сами файлы не изменяются.').pack(anchor='w', padx=12, pady=8)
+        box = tk.Listbox(win, font=('Segoe UI', 10)); box.pack(fill='both', expand=True, padx=12)
+
         def refresh():
-            box.delete(0,'end')
+            box.delete(0, 'end')
             for f in self.indexer.folders():
-                box.insert('end',f+('' if Path(f).is_dir() else '   (сейчас недоступна)'))
+                box.insert('end', f + ('' if Path(f).is_dir() else '   (сейчас недоступна)'))
+
+        def add():
+            self.choose(); refresh()
+
         def remove():
-            ix=box.curselection()
-            if not ix:return
-            folder=self.indexer.folders()[ix[0]]
-            if not messagebox.askyesno('Убрать папку',f'Убрать из поиска?\n{folder}\n\nСами файлы не удаляются.',parent=win):return
+            ix = box.curselection()
+            if not ix:
+                return
+            folder = self.indexer.folders()[ix[0]]
+            if not messagebox.askyesno('Убрать папку', f'Убрать из поиска?\n{folder}\n\nСами файлы не удаляются.', parent=win):
+                return
             self.indexer.remove_folder(folder)
-            removed=forget_folder(folder)
+            removed = forget_folder(folder)
             self.status.set(f'Папка убрана из поиска, записей удалено: {removed}')
             refresh()
-        buttons=ttk.Frame(win);buttons.pack(fill='x',padx=12,pady=8)
-        ttk.Button(buttons,text='Добавить папку',command=lambda:(self.choose(),refresh())).pack(side='left')
-        ttk.Button(buttons,text='Убрать выбранную',command=remove).pack(side='left',padx=8)
+
+        buttons = ttk.Frame(win); buttons.pack(fill='x', padx=12, pady=8)
+        ttk.Button(buttons, text='Добавить папку…', style='Accent.TButton', command=add).pack(side='left')
+        ttk.Button(buttons, text='Убрать выбранную', command=remove).pack(side='left', padx=8)
+        ttk.Button(buttons, text='Закрыть', command=win.destroy).pack(side='right')
         refresh()
 
     def crossformat(self):
@@ -168,55 +456,6 @@ class App:
                 win.destroy()
             except Exception as exc:messagebox.showerror('Ошибка объединения',str(exc),parent=win)
         ttk.Button(win,text='Собрать и проверить',command=run).pack(pady=8)
-
-    def giga_window(self):
-        win=tk.Toplevel(self.root);win.title('Искра · GigaChat офлайн');win.geometry('850x650')
-        binary,model=local_files()
-        status=tk.StringVar(value=('Движок: '+('есть' if binary.is_file() else 'НЕТ')+'; GGUF: '+(model.name if model else 'НЕТ')))
-        ttk.Label(win,textvariable=status,wraplength=800).pack(anchor='w',padx=12,pady=8)
-        ttk.Label(win,text='Задача (только по выбранным источникам):').pack(anchor='w',padx=12)
-        request=tk.Text(win,height=3,wrap='word');request.pack(fill='x',padx=12)
-        request.insert('1.0','Подготовь проект ответа на документ. Не добавляй отсутствующих сведений.')
-        files=[]
-        chosen=tk.StringVar(value='Источники не выбраны')
-        ttk.Label(win,textvariable=chosen,wraplength=800).pack(anchor='w',padx=12,pady=4)
-        def add_files():
-            for p in filedialog.askopenfilenames(parent=win,title='Выберите исходные документы',filetypes=[('Документы','*.docx *.xlsx *.pptx *.pdf *.txt *.md *.csv')]):
-                if p not in files:files.append(p)
-            chosen.set('Выбрано документов: '+str(len(files))+'; '+', '.join(Path(p).name for p in files[:6]))
-        ttk.Button(win,text='Выбрать документы-источники',command=add_files).pack(anchor='w',padx=12)
-        result=tk.Text(win,wrap='word');result.pack(fill='both',expand=True,padx=12,pady=8)
-        cancel=threading.Event()
-        def finished():
-            run_button.configure(state='normal');stop_button.configure(state='disabled')
-        def run():
-            if not files:
-                messagebox.showwarning('Нет источников','Выберите исходные документы.',parent=win);return
-            # One generation at a time: several llama.cpp processes would choke the CPU.
-            run_button.configure(state='disabled');stop_button.configure(state='normal');cancel.clear()
-            status.set('Генерация на этом компьютере, обычно 2–10 минут. Можно остановить.')
-            task=request.get('1.0','end-1c')
-            def work():
-                try:
-                    sources=[(Path(p).name,extract(Path(p))) for p in files]
-                    answer,truncated=generate(task,sources,cancel=cancel)
-                    self.events.put(('giga_ok',win,result,status,answer,truncated,finished))
-                except Exception as exc:self.events.put(('giga_error',win,status,str(exc),finished))
-            threading.Thread(target=work,daemon=True).start()
-        win.protocol('WM_DELETE_WINDOW',lambda:(cancel.set(),win.destroy()))
-        def save():
-            path=filedialog.asksaveasfilename(parent=win,defaultextension='.docx',filetypes=[('Word','*.docx')])
-            if path:
-                from docx import Document
-                d=Document()
-                for line in result.get('1.0','end-1c').splitlines():d.add_paragraph(line)
-                d.save(path);status.set('Сохранено: '+path)
-                save_history(ROOT,'Проект GigaChat',Path(path).name)
-        buttons=ttk.Frame(win);buttons.pack(fill='x',padx=12,pady=8)
-        run_button=ttk.Button(buttons,text='Создать проект',command=run);run_button.pack(side='left')
-        stop_button=ttk.Button(buttons,text='Остановить',command=cancel.set,state='disabled');stop_button.pack(side='left',padx=8)
-        ttk.Button(buttons,text='Сохранить в Word',command=save).pack(side='left',padx=8)
-        ttk.Label(win,text='Ответ нейросети требует проверки по оригиналам. Факты не подтверждаются автоматически.',wraplength=800).pack(anchor='w',padx=12,pady=5)
 
     def telegrams(self):
         win=tk.Toplevel(self.root);win.title('Искра · редактор телеграмм');win.geometry('800x650')
@@ -331,5 +570,9 @@ class App:
             result.insert('1.0',(formula+'\n\n' if formula else '')+note)
         ttk.Button(win,text='Подобрать формулу',command=suggest).pack(pady=(0,10))
 
-if __name__=='__main__':
-    root=tk.Tk();App(root);root.mainloop()
+
+
+if __name__ == '__main__':
+    root = tk.Tk()
+    App(root)
+    root.mainloop()
