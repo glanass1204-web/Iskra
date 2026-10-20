@@ -201,7 +201,12 @@ class Knowledge(
         val q = query.trim().trimEnd('?', '.', '!')
         if (q.isEmpty()) return Answer("Что найти?")
         // Сначала поисковики (Яндекс, Google), затем Википедия.
-        val web = webSearch(question.trim().ifEmpty { q }).firstOrNull()?.let { r ->\n            Answer("Нашла страницу «${r.title}», но не могу подтвердить, что она отвечает на вопрос. Открой источник по ссылке.", r.url)\n        }
+        val web = webSearch(question.trim().ifEmpty { q }).firstOrNull()?.let { result ->
+            Answer(
+                "Нашла страницу «${result.title}», но не могу подтвердить, что она отвечает на вопрос. Открой источник по ссылке.",
+                result.url,
+            )
+        }
         return web ?: wikipedia(q) ?: if (engine == "google") {
             Answer("Не нашла быстрого ответа. Открой поиск Google по ссылке.", "https://www.google.com/search?hl=ru&q=" + enc(q))
         } else {
