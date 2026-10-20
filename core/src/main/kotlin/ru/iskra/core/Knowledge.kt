@@ -49,6 +49,11 @@ object DefaultHttp : Http {
 
 data class SearchResult(val title: String, val snippet: String, val url: String)
 
+/** Поисковик, который приложение подключает снаружи (Яндекс и Google через встроенный браузер). */
+fun interface Searcher {
+    fun search(query: String): List<SearchResult>
+}
+
 private val RU = Locale.forLanguageTag("ru-RU")
 private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
@@ -56,7 +61,11 @@ private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
  * Поиск информации без ключей и без VPN. Только источники, которые работают в России:
  * Open-Meteo (погода), ЦБ РФ (курсы), ленты новостей, Википедия, веб-поиск.
  */
-class Knowledge(private val http: Http = DefaultHttp) {
+class Knowledge(
+    private val http: Http = DefaultHttp,
+    /** Поисковики в порядке приоритета; если все молчат — DuckDuckGo и Bing. */
+    private val searchers: () -> List<Searcher> = { emptyList() },
+) {
     private val json = Json { ignoreUnknownKeys = true }
 
     fun answer(question: String, hint: String?, settings: Settings): Answer {
@@ -65,7 +74,7 @@ class Knowledge(private val http: Http = DefaultHttp) {
             Regex("(погод|температур|дожд|снег|градус|зонтик|холодно|тепло)").containsMatchIn(q) -> weather(question, settings.city)
             Regex("курс|(сколько стоит|почем) (доллар|евро|юан)").containsMatchIn(q) -> currency(q)
             Regex("новост").containsMatchIn(q) -> news(q)
-            else -> facts(hint ?: stripQuestion(question), question)
+            else -> facts(hint ?: stripQuestion(question), question, settings.searchEngine)
         }
     }
 
@@ -188,14 +197,16 @@ class Knowledge(private val http: Http = DefaultHttp) {
 
     // ---------- Факты: Википедия и веб-поиск ----------
 
-    fun facts(query: String, question: String = query): Answer {
+    fun facts(query: String, question: String = query, engine: String = "yandex"): Answer {
         val q = query.trim().trimEnd('?', '.', '!')
         if (q.isEmpty()) return Answer("Что найти?")
-        val definition = Regex("^(кто так|что так|что значит|что означает|расскажи (о|об|про))").containsMatchIn(normalize(question))
-        val wiki = { wikipedia(q) }
-        val web = { webSearch(q).firstOrNull()?.let { r -> Answer(r.snippet, r.url) } }
-        val first = if (definition) wiki() ?: web() else web() ?: wiki()
-        return first ?: Answer("Не нашла быстрого ответа. Открой поиск Яндекса по ссылке.", yandexLink(q))
+        // Сначала поисковики (Яндекс, Google), затем Википедия.
+        val web = webSearch(question.trim().ifEmpty { q }).firstOrNull()?.let { r -> Answer(shorten(r.snippet), r.url) }
+        return web ?: wikipedia(q) ?: if (engine == "google") {
+            Answer("Не нашла быстрого ответа. Открой поиск Google по ссылке.", "https://www.google.com/search?hl=ru&q=" + enc(q))
+        } else {
+            Answer("Не нашла быстрого ответа. Открой поиск Яндекса по ссылке.", yandexLink(q))
+        }
     }
 
     fun wikipedia(query: String): Answer? {
@@ -212,8 +223,12 @@ class Knowledge(private val http: Http = DefaultHttp) {
         return Answer(shorten(extract), url)
     }
 
-    /** Веб-поиск: DuckDuckGo, затем Bing. Возвращает пусто, если оба недоступны. */
+    /** Веб-поиск: подключённые поисковики по приоритету, затем DuckDuckGo и Bing. */
     fun webSearch(query: String): List<SearchResult> {
+        for (searcher in searchers()) {
+            val found = try { searcher.search(query) } catch (e: Exception) { emptyList() }
+            if (found.isNotEmpty()) return found
+        }
         http.get("https://html.duckduckgo.com/html/?kl=ru-ru&q=" + enc(query))?.let { parseDuckDuckGo(it) }?.takeIf { it.isNotEmpty() }?.let { return it }
         http.get("https://www.bing.com/search?setlang=ru&cc=RU&q=" + enc(query))?.let { parseBing(it) }?.takeIf { it.isNotEmpty() }?.let { return it }
         return emptyList()

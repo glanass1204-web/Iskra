@@ -65,6 +65,10 @@
                 android:resource="@xml/shortcuts" />
         </activity>
 
+        <activity
+            android:name=".SearchCheckActivity"
+            android:exported="false" />
+
         <receiver
             android:name=".ReminderReceiver"
             android:exported="false" />

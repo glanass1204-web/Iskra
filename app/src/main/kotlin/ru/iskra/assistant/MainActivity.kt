@@ -16,6 +16,11 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.CompletableDeferred
 import ru.iskra.assistant.ui.IskraScreen
 import ru.iskra.assistant.ui.IskraTheme
@@ -53,6 +58,15 @@ class MainActivity : ComponentActivity() {
             }
             IskraTheme(dark = dark) {
                 IskraScreen(vm, onExport = ::shareExport)
+            }
+        }
+        // Если Яндекс или Google попросили капчу — показываем её один раз.
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                SearchCheck.pending.filterNotNull().collect { url ->
+                    SearchCheck.clear()
+                    startActivity(Intent(this@MainActivity, SearchCheckActivity::class.java).putExtra(SearchCheckActivity.EXTRA_URL, url))
+                }
             }
         }
         // Два запроса разрешений одновременно Android не покажет, поэтому уведомления — только если не слушаем сразу.

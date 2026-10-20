@@ -91,7 +91,6 @@ class KnowledgeTest {
         val a = Knowledge(http).answer("Кто такой Пушкин", "пушкин", settings)
         assertEquals("Алекса́ндр Серге́евич Пу́шкин — русский поэт.", a.text)
         assertEquals("https://ru.m.wikipedia.org/wiki/Pushkin", a.link)
-        assertTrue(http.calls.none { it.contains("duckduckgo") })
     }
 
     @Test
@@ -106,6 +105,12 @@ class KnowledgeTest {
         val bing = """<ol><li class="b_algo"><h2><a href="https://bing.example/x">Т</a></h2>
             <div class="b_caption"><p>Ответ из Bing.</p></div></li></ol>"""
         assertEquals("Ответ из Bing.", Knowledge(FakeHttp(listOf("bing.com" to bing))).answer("вопрос", null, settings).text)
+
+        // Яндекс и Google идут первыми; если они молчат или падают — следующий источник.
+        val yandex = Searcher { listOf(SearchResult("Эрмитаж", "Открыт с 11:00 до 18:00.", "https://hermitage.ru")) }
+        val broken = Searcher { error("капча") }
+        val first = Knowledge(FakeHttp(listOf("duckduckgo" to ddg))) { listOf(broken, yandex) }.answer("когда открывается эрмитаж", null, settings)
+        assertEquals("Открыт с 11:00 до 18:00.", first.text)
 
         val none = Knowledge(FakeHttp(emptyList())).answer("вопрос без ответа", null, settings)
         assertTrue(none.link!!.startsWith("https://yandex.ru/search/?text="))

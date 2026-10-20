@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import ru.iskra.core.Brain
+import ru.iskra.core.Knowledge
 import ru.iskra.core.OnlineHelper
 import ru.iskra.core.Store
 import java.io.File
@@ -12,7 +13,14 @@ import java.io.File
 class IskraApp : Application() {
     val store by lazy { Store(File(filesDir, "iskra.json")) }
     val brain by lazy { Brain(store) }
-    val online by lazy { OnlineHelper(store) }
+    val online by lazy {
+        // Сначала выбранный поисковик, затем второй; если оба молчат — запасные источники.
+        val knowledge = Knowledge(searchers = {
+            val primary = SearchEngine.byId(store.value.settings.searchEngine)
+            (listOf(primary) + SearchEngine.entries.filter { it != primary }).map { WebViewSearcher(this, it) }
+        })
+        OnlineHelper(store, knowledge = knowledge)
+    }
     val reminders by lazy { ReminderScheduler(this) }
 
     override fun onCreate() {

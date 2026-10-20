@@ -24,6 +24,8 @@ data class Settings(
     val darkTheme: Boolean = false,
     /** Режим «с матом» (18+), только по желанию пользователя. */
     val rudeMode: Boolean = false,
+    /** Основной поисковик: "yandex" или "google"; второй идёт запасным. */
+    val searchEngine: String = "yandex",
 )
 
 @Serializable

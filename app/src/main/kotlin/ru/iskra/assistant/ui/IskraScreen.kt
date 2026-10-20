@@ -381,6 +381,12 @@ private fun SettingsTab(data: IskraData, vm: AssistantViewModel, onExport: () ->
     )
     OutlinedButton(onClick = { vm.updateSettings { it.copy(city = city.trim()) } }, modifier = Modifier.padding(top = 4.dp)) { Text("Сохранить город") }
 
+    Section("Поиск")
+    Text("Основной поисковик (второй — запасной)", fontWeight = FontWeight.Medium)
+    ru.iskra.assistant.SearchEngine.entries.forEach { e ->
+        ChoiceRow(e.label, s.searchEngine == e.id) { vm.updateSettings { it.copy(searchEngine = e.id) } }
+    }
+
     VoiceSettings(s, vm)
 
     Section("Быстрый вызов")
