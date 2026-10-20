@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Искра</string>
+    <string name="tile_label">Искра</string>
+    <string name="shortcut_listen">Сказать Искре</string>
+</resources>

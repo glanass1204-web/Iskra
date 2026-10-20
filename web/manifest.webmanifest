@@ -1,0 +1,14 @@
+{
+  "name": "Искра — персональный ИИ-помощник",
+  "short_name": "Искра",
+  "lang": "ru",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f0a08",
+  "theme_color": "#0f0a08",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f0a08" />
+  <meta name="description" content="Искра — персональный голосовой ИИ-помощник" />
+  <title>Искра</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <img src="icon.svg" alt="" width="36" height="36" />
+      <div>
+        <h1>Искра</h1>
+        <p id="status" class="status">Готова</p>
+      </div>
+    </div>
+    <span id="net" class="net" title="Состояние сети">офлайн</span>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="chat" aria-selected="true">Чат</button>
+    <button role="tab" data-tab="tasks" aria-selected="false">Задачи</button>
+    <button role="tab" data-tab="memory" aria-selected="false">Память</button>
+    <button role="tab" data-tab="money" aria-selected="false">Заработок</button>
+    <button role="tab" data-tab="settings" aria-selected="false">Настройки</button>
+  </nav>
+
+  <main>
+    <section id="tab-chat" class="panel active" role="tabpanel">
+      <ol id="feed" class="feed" aria-live="polite"></ol>
+      <div class="chips" id="chips">
+        <button data-say="что ты умеешь">Что ты умеешь?</button>
+        <button data-say="мои задачи">Мои задачи</button>
+        <button data-say="напомни через 10 минут проверить почту">Напомни через 10 минут</button>
+        <button data-say="баланс">Баланс</button>
+      </div>
+    </section>
+
+    <section id="tab-tasks" class="panel" role="tabpanel">
+      <h2>Задачи</h2>
+      <ul id="task-list" class="list"></ul>
+      <h2>Напоминания</h2>
+      <ul id="reminder-list" class="list"></ul>
+    </section>
+
+    <section id="tab-memory" class="panel" role="tabpanel">
+      <h2>Что я о тебе помню</h2>
+      <ul id="memory-list" class="list"></ul>
+      <h2>Мониторинг</h2>
+      <ul id="watch-list" class="list"></ul>
+    </section>
+
+    <section id="tab-money" class="panel" role="tabpanel">
+      <h2>Проекты и заработок</h2>
+      <div id="money-summary" class="summary"></div>
+      <ul id="ledger-list" class="list"></ul>
+    </section>
+
+    <section id="tab-settings" class="panel" role="tabpanel">
+      <h2>Настройки</h2>
+      <label class="field">
+        <span>Как к тебе обращаться</span>
+        <input id="set-name" type="text" autocomplete="off" placeholder="дружище" />
+      </label>
+      <label class="field">
+        <span>Ключ Claude API (необязательно — включает «умный» режим при наличии сети)</span>
+        <input id="set-key" type="password" autocomplete="off" placeholder="sk-ant-…" />
+      </label>
+      <label class="check">
+        <input id="set-voice" type="checkbox" checked />
+        <span>Отвечать голосом</span>
+      </label>
+      <div class="row">
+        <button id="btn-notify" class="ghost">Разрешить уведомления</button>
+        <button id="btn-export" class="ghost">Экспорт данных</button>
+        <button id="btn-wipe" class="danger">Стереть всё</button>
+      </div>
+      <p class="hint">Все данные хранятся только на этом телефоне. Ключ API отправляется только в Anthropic.</p>
+    </section>
+  </main>
+
+  <form id="composer" class="composer" autocomplete="off">
+    <input id="input" type="text" placeholder="Скажи или напиши…" enterkeyhint="send" />
+    <button id="mic" type="button" class="mic" aria-label="Говорить">
+      <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path fill="currentColor" d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-2.08A7 7 0 0 0 19 12h-2z"/></svg>
+    </button>
+  </form>
+
+  <dialog id="confirm" class="confirm">
+    <form method="dialog">
+      <p class="confirm-title">Подтверди действие</p>
+      <p id="confirm-text"></p>
+      <div class="row">
+        <button value="no" class="ghost">Отмена</button>
+        <button value="yes" class="primary">Да, выполнить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
