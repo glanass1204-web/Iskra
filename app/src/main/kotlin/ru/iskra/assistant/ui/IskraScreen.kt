@@ -161,7 +161,7 @@ private fun Header(status: String, online: Boolean) {
                 .background(Brush.radialGradient(listOf(Glow, Ember, EmberDeep))),
         )
         Column(Modifier.padding(start = 12.dp).weight(1f)) {
-            Text("Искра", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text("Искра", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
             Text(status, fontSize = 13.sp, color = Muted)
         }
         Text(
@@ -192,7 +192,7 @@ private fun Chat(lines: List<ChatLine>, onChip: (String) -> Unit) {
                         .border(1.dp, if (mine) Ember else Line, shape)
                         .padding(horizontal = 14.dp, vertical = 10.dp),
                 ) {
-                    Text(line.text, color = if (mine) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface)
+                    Text(line.text, color = if (mine) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface, fontSize = 16.sp, lineHeight = 23.sp)
                     line.link?.let { url ->
                         Text(
                             "Открыть в браузере",
@@ -232,7 +232,7 @@ private fun Composer(listening: Boolean, partial: String, onSend: (String) -> Un
         OutlinedTextField(
             value = if (listening && partial.isNotEmpty()) partial else text,
             onValueChange = { text = it },
-            placeholder = { Text(if (listening) "Говори…" else "Скажи или напиши…") },
+            placeholder = { Text(if (listening) "Говори…" else "Скажи или напиши…", color = MaterialTheme.colorScheme.onSurfaceVariant) },
             modifier = Modifier.weight(1f),
             shape = CircleShape,
             singleLine = true,
@@ -328,7 +328,7 @@ private fun MoneyTab(data: IskraData, vm: AssistantViewModel) = Scrollable {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         listOf("Доход" to income, "Расход" to expense, "Итого" to income - expense).forEach { (label, value) ->
             Column(Modifier.weight(1f).clip(RoundedCornerShape(14.dp)).background(Surface1).border(1.dp, Line, RoundedCornerShape(14.dp)).padding(10.dp)) {
-                Text(formatMoney(value), fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Text(formatMoney(value), fontWeight = FontWeight.Bold, fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurface)
                 Text(label, color = Muted, fontSize = 12.sp)
             }
         }
