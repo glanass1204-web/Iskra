@@ -104,6 +104,15 @@ class BrainTest {
     }
 
     @Test
+    fun casualGreetingDoesNotTriggerWebSearch() {
+        for (phrase in listOf("Ну как твои дела?", "Как у тебя дела?", "Как дела?", "Слушай, как настроение?")) {
+            val reply = brain.handle(phrase)
+            assertNull("Не должен искать в интернете: $phrase", reply.online)
+            assertTrue("Должен ответить по-человечески: $phrase", reply.text.isNotBlank())
+        }
+    }
+
+    @Test
     fun unknownQuestionsGoOnline() {
         val r = brain.handle("Объясни теорию относительности")
         assertEquals(OnlineRequest.Ask("Объясни теорию относительности"), r.online)
