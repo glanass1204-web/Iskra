@@ -39,17 +39,17 @@ private val Light = IskraPalette(
 )
 
 private val Dark = IskraPalette(
-    top = Color(0xFF3A1E0E),
-    bg = Color(0xFF15100D),
-    surface = Color(0xFF241A14),
-    bubble = Color(0xFF2E221A),
-    line = Color(0xFF6B5446),
-    muted = Color(0xFFD9C5B6),
-    accent = Color(0xFFFF8A3D),
+    top = Color(0xFF251A16),
+    bg = Color(0xFF121212),
+    surface = Color(0xFF242424),
+    bubble = Color(0xFF303030),
+    line = Color(0xFF777777),
+    muted = Color(0xFFE0D8D2),
+    accent = Color(0xFFFFA65B),
     glow = Color(0xFFFFB25A),
-    deep = Color(0xFFC2410C),
+    deep = Color(0xFFB74414),
     ok = Color(0xFF86EFAC),
-    text = Color(0xFFFFF4EC),
+    text = Color(0xFFFFFFFF),
 )
 
 private val LocalPalette = staticCompositionLocalOf { Light }
@@ -72,7 +72,13 @@ fun IskraTheme(dark: Boolean, content: @Composable () -> Unit) {
         darkColorScheme(
             primary = p.accent, onPrimary = Color(0xFF1A0B02), secondary = p.glow,
             background = p.bg, onBackground = p.text, surface = p.surface, onSurface = p.text,
-            surfaceVariant = p.bubble, onSurfaceVariant = p.muted, outline = p.line, error = Color(0xFFFF6B60),
+            surfaceVariant = p.bubble, onSurfaceVariant = p.muted, outline = p.line, error = Color(0xFFFF8A80),
+            onSecondary = Color(0xFF1A0B02), onPrimaryContainer = p.text, primaryContainer = p.surface,
+            onSecondaryContainer = p.text, secondaryContainer = p.surface,
+            onTertiary = Color(0xFF1A0B02), tertiary = p.glow,
+            onError = Color(0xFF1A0B02), onErrorContainer = p.text, errorContainer = Color(0xFF682521),
+            surfaceContainer = p.surface, surfaceContainerHigh = p.bubble, surfaceContainerHighest = p.bubble,
+            inverseSurface = p.text, inverseOnSurface = p.bg,
         )
     } else {
         lightColorScheme(
