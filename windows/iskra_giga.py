@@ -28,7 +28,8 @@ def _exe(name):
 def local_files(base=None):
     """Engine and model next to the program. New llama.cpp builds ship llama-completion for one-shot runs;
     their llama-cli is an interactive chat that ignores -no-cnv and waits for input forever."""
-    base = Path(base) if base else base_dir()
+    # Absolute paths: the engine runs with its own folder as the working directory.
+    base = Path(base).resolve() if base else base_dir()
     engine = base / 'engine'
     binary = engine / _exe('llama-completion')
     if not binary.is_file():
