@@ -99,18 +99,18 @@ class KnowledgeTest {
             <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.ru%2Fpage&amp;rut=x">Заголовок</a></h2>
             <a class="result__snippet" href="#">Ответ из <b>поиска</b>.</a></div>"""
         val a = Knowledge(FakeHttp(listOf("duckduckgo" to ddg))).answer("когда открывается эрмитаж", null, settings)
-        assertEquals("Ответ из поиска.", a.text)
+        assertEquals("Нашла страницу «Заголовок», но не могу подтвердить, что она отвечает на вопрос. Открой источник по ссылке.", a.text)
         assertEquals("https://example.ru/page", a.link)
 
         val bing = """<ol><li class="b_algo"><h2><a href="https://bing.example/x">Т</a></h2>
             <div class="b_caption"><p>Ответ из Bing.</p></div></li></ol>"""
-        assertEquals("Ответ из Bing.", Knowledge(FakeHttp(listOf("bing.com" to bing))).answer("вопрос", null, settings).text)
+        assertEquals("Нашла страницу «Т», но не могу подтвердить, что она отвечает на вопрос. Открой источник по ссылке.", Knowledge(FakeHttp(listOf("bing.com" to bing))).answer("вопрос", null, settings).text)
 
         // Яндекс и Google идут первыми; если они молчат или падают — следующий источник.
         val yandex = Searcher { listOf(SearchResult("Эрмитаж", "Открыт с 11:00 до 18:00.", "https://hermitage.ru")) }
         val broken = Searcher { error("капча") }
         val first = Knowledge(FakeHttp(listOf("duckduckgo" to ddg))) { listOf(broken, yandex) }.answer("когда открывается эрмитаж", null, settings)
-        assertEquals("Открыт с 11:00 до 18:00.", first.text)
+        assertEquals("Нашла страницу «Эрмитаж», но не могу подтвердить, что она отвечает на вопрос. Открой источник по ссылке.", first.text)
 
         val none = Knowledge(FakeHttp(emptyList())).answer("вопрос без ответа", null, settings)
         assertTrue(none.link!!.startsWith("https://yandex.ru/search/?text="))
