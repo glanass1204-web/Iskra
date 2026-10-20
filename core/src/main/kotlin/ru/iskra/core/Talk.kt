@@ -136,7 +136,7 @@ object SmallTalk {
     fun tryAnswer(text: String, name: String, rude: Boolean = false, random: Random = Random.Default): String? {
         val t = normalize(text)
         return when {
-            Regex("^(как дела|как ты|как поживаешь|как настроение)").containsMatchIn(t) -> (if (rude) Rude.MOOD else MOOD).random(random)
+            Regex("^(?:(?:ну|слушай|скажи)[, ]+)?(?:как\\s+(?:у\\s+тебя\\s+)?(?:твои\\s+)?дела|как\\s+ты|как\\s+поживаешь|как\\s+настроение)(?:\\s+там)?$").matches(t) -> (if (rude) Rude.MOOD else MOOD).random(random)
             Regex("(анекдот|пошути|шутк|рассмеши)").containsMatchIn(t) -> (if (rude) Rude.JOKES + JOKES else JOKES).random(random)
             Regex("(подбрось|брось|кинь) монет").containsMatchIn(t) -> if (random.nextBoolean()) "Орёл!" else "Решка!"
             Regex("(брось|кинь) (кубик|кость)").containsMatchIn(t) -> "Выпало ${random.nextInt(1, 7)}."
