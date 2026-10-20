@@ -17,6 +17,7 @@ import kotlinx.coroutines.withContext
 import ru.iskra.core.DeviceAction
 import ru.iskra.core.IskraData
 import ru.iskra.core.OnlineRequest
+import ru.iskra.core.Rude
 import ru.iskra.core.Speaker
 import ru.iskra.core.normalize
 
@@ -146,6 +147,8 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
 
         if ((store.value.memory to store.value.settings.name) != memoryBefore) iskra.online.resetConversation()
         iskra.reminders.sync()
+        // В режиме с матом Искра приправляет и обычные ответы.
+        if (store.value.settings.rudeMode && reply.action == null) answer = Rude.spice(answer)
         if (answer.isNotBlank()) say(answer, link)
     }
 

@@ -54,7 +54,11 @@ class Brain(
 ) {
     private fun epochMillis(t: LocalDateTime) = t.atZone(zone).toInstant().toEpochMilli()
 
-    fun handle(raw: String): Reply {
+    fun handle(said: String): Reply {
+        if (Rude.isInsult(said)) {
+            return Reply(if (store.value.settings.rudeMode) Rude.comeback() else Rude.HINT)
+        }
+        val raw = Rude.stripLeading(said)
         val t = normalize(raw)
         val data = store.value
         val name = data.settings.name.ifBlank { "дружище" }
@@ -70,6 +74,14 @@ class Brain(
         }
         if (Regex("(что ты умеешь|помощь|команды|справка)").containsMatchIn(t)) return Reply(HELP)
         if (Regex("(спасибо|благодарю)").containsMatchIn(t)) return Reply("Всегда пожалуйста, $name!")
+        if (Regex("(включи|режим с) мат|(можешь|можно|давай) материться|^матерись|ругайся матом").containsMatchIn(t)) {
+            store.update { d -> d.copy(settings = d.settings.copy(rudeMode = true)) }
+            return Reply(Rude.ON)
+        }
+        if (Regex("(выключи|отключи) мат|без мата|не матерись|хватит материться").containsMatchIn(t)) {
+            store.update { d -> d.copy(settings = d.settings.copy(rudeMode = false)) }
+            return Reply(Rude.OFF)
+        }
 
         Regex("^(?:мой город|я живу в|я живу во|я из)\\s+(.+)$", RegexOption.IGNORE_CASE).find(raw.trim().trimEnd('.', '!'))?.let {
             val city = it.groupValues[1].trim().replaceFirstChar { c -> c.uppercase() }
@@ -158,7 +170,7 @@ class Brain(
 
         // Калькулятор и разговор — без интернета
         Calculator.tryAnswer(raw)?.let { return Reply(it) }
-        SmallTalk.tryAnswer(raw, name)?.let { return Reply(it) }
+        SmallTalk.tryAnswer(raw, name, data.settings.rudeMode)?.let { return Reply(it) }
 
         // Телефон
         if (Regex("(заряд|батаре)").containsMatchIn(t)) return Reply("", DeviceAction.Battery)

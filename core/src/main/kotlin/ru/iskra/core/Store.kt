@@ -22,6 +22,8 @@ data class Settings(
     val speechRate: Float = 1.0f,
     val pitch: Float = 1.0f,
     val darkTheme: Boolean = false,
+    /** Режим «с матом» (18+), только по желанию пользователя. */
+    val rudeMode: Boolean = false,
 )
 
 @Serializable

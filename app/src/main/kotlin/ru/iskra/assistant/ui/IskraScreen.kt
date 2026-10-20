@@ -370,6 +370,7 @@ private fun SettingsTab(data: IskraData, vm: AssistantViewModel, onExport: () ->
     SwitchRow("Отвечать голосом", s.voiceReplies) { v -> vm.updateSettings { it.copy(voiceReplies = v) } }
     SwitchRow("Слушать сразу при открытии", s.autoListen) { v -> vm.updateSettings { it.copy(autoListen = v) } }
     SwitchRow("Тёмная тема", s.darkTheme) { v -> vm.updateSettings { it.copy(darkTheme = v) } }
+    SwitchRow("Режим с матом (18+)", s.rudeMode) { v -> vm.updateSettings { it.copy(rudeMode = v) } }
     var city by remember(s.city) { mutableStateOf(s.city) }
     OutlinedTextField(
         value = city, onValueChange = { city = it }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp),

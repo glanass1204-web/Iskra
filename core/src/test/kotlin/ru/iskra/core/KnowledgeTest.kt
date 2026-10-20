@@ -128,11 +128,30 @@ class KnowledgeTest {
         val store = Store(null)
         val brain = Brain(store)
         assertEquals("Получается 4.", brain.handle("сколько будет 2 плюс 2").text)
-        assertTrue(SmallTalk.tryAnswer("подбрось монетку", "друг", Random(1)) in setOf("Орёл!", "Решка!"))
+        assertTrue(SmallTalk.tryAnswer("подбрось монетку", "друг", random = Random(1)) in setOf("Орёл!", "Решка!"))
         assertTrue(brain.handle("расскажи анекдот").text.isNotBlank())
         brain.handle("Мой город казань")
         assertEquals("Казань", store.value.settings.city)
         assertEquals(OnlineRequest.Ask("Какая погода завтра"), brain.handle("Какая погода завтра").online)
         assertEquals(OnlineRequest.Ask("курс доллара"), brain.handle("курс доллара").online)
+    }
+
+    @Test
+    fun rudeModeIsOptIn() {
+        val store = Store(null)
+        val brain = Brain(store)
+        assertEquals(Rude.HINT, brain.handle("иди нахуй").text)
+        assertEquals(Rude.ON, brain.handle("включи мат").text)
+        assertTrue(store.value.settings.rudeMode)
+        assertTrue(Rude.hasSwearing(brain.handle("ты охуела").text))
+        // Крепкое словцо в начале не мешает командам.
+        assertEquals("Добавила задачу: «купить пиво».", brain.handle("Бля, задача купить пиво").text)
+        assertTrue(brain.handle("бля, что ты умеешь").text.startsWith("Вот что я умею"))
+        assertTrue(Rude.hasSwearing(SmallTalk.tryAnswer("как дела", "друг", rude = true)!!))
+        assertEquals(Rude.OFF, brain.handle("без мата").text)
+        assertTrue(!store.value.settings.rudeMode)
+        assertTrue(!Rude.hasSwearing("небо себя хуже сукно"))
+        val spiced = (0 until 20).map { Rude.spice("Готово.", Random(it)) }
+        assertTrue(spiced.any { Rude.hasSwearing(it) })
     }
 }
