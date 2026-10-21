@@ -475,10 +475,23 @@ COMMANDS = {
 }
 
 
+ROUTE_EXAMPLES = (
+    'Примеры:\n'
+    'Фраза: «хочу чтобы эксель сам удалял пустые строки» → {"команда": "macro", "что": "удалить пустые строки в Excel"}\n'
+    'Фраза: «до какого числа сдавать сведения о численности» → {"команда": "ask", "что": "до какого числа сдавать сведения о численности"}\n'
+    'Фраза: «какие поля должны быть у служебного письма» → {"команда": "chat", "что": "какие поля должны быть у служебного письма"}\n'
+    'Фраза: «нужно посчитать сумму по госпиталю в экселе» → {"команда": "formula", "что": "сумма по госпиталю"}\n'
+    'Фраза: «надо ответить штабу что всё сделано» → {"команда": "write", "что": "ответ штабу, что всё сделано"}\n'
+    'Фраза: «где телеграмма про учения» → {"команда": "search", "что": "телеграмма учения"}\n\n')
+# Команды, которым нужен выбранный документ; без него — вопрос по всем документам.
+NEEDS_DOC = {'summary', 'deadlines'}
+
+
 def route(text, **kw):
     """Свободная фраза → (команда, что именно). Только из списка COMMANDS, иначе ('search', текст)."""
     listing = '\n'.join(f'{k} — {v}' for k, v in COMMANDS.items())
-    user = (f'Пользователь написал помощнику: «{text.strip()}»\n\nВыбери одну команду из списка:\n{listing}\n\n'
+    user = (f'Выбери одну команду из списка:\n{listing}\n\n{ROUTE_EXAMPLES}'
+            f'Фраза: «{text.strip()}»\n'
             'Ответь только JSON без пояснений: {"команда": "...", "что": "..."} — в «что» перепиши суть просьбы.')
     out = run(chat_prompt(user, system='Ты определяешь, какую команду программы выполнить. Отвечаешь только JSON.'),
               max_tokens=80, temperature=0.0, **kw)
@@ -533,7 +546,8 @@ def extract_fields(text, fields, **kw):
     """Значения полей из документа. Принимается только то, что дословно есть в тексте (проверка от выдумок)."""
     names = ', '.join(f'«{f}»' for f in fields)
     user = (f'Документ:\n{text[:7000]}\n\nНайди в документе значения полей: {names}. '
-            'Ответь только JSON вида {"поле": "значение точно как в документе"}. Если значения нет — пустая строка.')
+            'Ответь только JSON вида {"поле": "значение"}. Значение копируй из документа без изменений '
+            '(тот же падеж, те же сокращения). Если значения нет — пустая строка.')
     data = _json(run(chat_prompt(user, system='Ты извлекаешь данные из документов. Отвечаешь только JSON.'),
                      max_tokens=60 + 40 * len(fields), temperature=0.0, **kw))
     flat = ' '.join(text.split()).lower().replace('ё', 'е')
@@ -543,9 +557,31 @@ def extract_fields(text, fields, **kw):
         if v is None:
             v = next((val for key, val in data.items() if key.strip().lower() == f.strip().lower()), '')
         v = ' '.join(str(v or '').split()).strip(' "«»')
-        if v and v.lower().replace('ё', 'е') in flat:
+        if v and supported(v, flat):
             out[f] = v
     return out
+
+
+def supported(value, flat_text):
+    """Значение действительно взято из текста: дословно, или каждое слово есть в тексте с точностью до окончания
+    («Петров Петр Петрович» при «Петрову Петру Петровичу»). Числа должны совпадать точно."""
+    v = value.lower().replace('ё', 'е')
+    if v in flat_text:
+        return True
+    words = re.findall(r'[а-яa-z]+|\d+', v)
+    if not words:
+        return False
+    text_words = set(re.findall(r'[а-яa-z]+|\d+', flat_text))
+    for w in words:
+        if w.isdigit():
+            if w not in text_words:
+                return False
+        elif len(w) <= 3:
+            if w not in text_words:
+                return False
+        elif not any(t.startswith(w[:max(4, len(w) - 2)]) for t in text_words):
+            return False
+    return True
 
 
 # ---------- макросы VBA ----------

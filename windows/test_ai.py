@@ -133,6 +133,13 @@ class AITest(unittest.TestCase):
         out = ai.extract_fields(text, ['ФИО', 'Должность'], base=self.base)
         self.assertEqual(out, {'ФИО': 'Иванов Иван Иванович'})          # «генерал армии» в тексте нет — отброшено
 
+    def test_supported_forms(self):
+        flat = 'справка. выдана петрову петру петровичу, 1985 г. р., в должности начальника склада.'
+        self.assertTrue(ai.supported('Петров Петр Петрович', flat))      # другой падеж — те же слова
+        self.assertTrue(ai.supported('начальник склада', flat))
+        self.assertFalse(ai.supported('Сидоров Иван', flat))
+        self.assertFalse(ai.supported('1986', flat))                      # числа — только точно
+
     def test_vba_checked(self):
         os.environ['FAKE_MODE'] = 'vba'
         code, problems = ai.vba('пронумеровать строки', 'excel', base=self.base)

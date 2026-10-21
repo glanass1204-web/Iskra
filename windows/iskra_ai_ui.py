@@ -311,6 +311,8 @@ class AIMixin:
 
         def done(result):
             cmd, what = result
+            if cmd in ai.NEEDS_DOC and self.selected() is None:
+                cmd, what = 'ask', text                 # документ не выбран — ищем ответ по всем документам
             if cmd == 'chat':
                 self.ai_chat(text)
             elif cmd == 'search':
