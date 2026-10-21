@@ -30,8 +30,10 @@ TASKS = [
 ]
 
 if __name__ == '__main__':
-    base = sys.argv[1]
-    binary, model = ai.local_files(base)
+    ai.BASE = sys.argv[1]
+    binary, model = ai.local_files()
+    if not binary.is_file() or model is None:
+        sys.exit(f'Нет движка или модели в {ai.BASE}')
     print(f'Модель: {model.name}, движок: {binary.name}\n', flush=True)
     total = time.time()
     for name, job in TASKS:

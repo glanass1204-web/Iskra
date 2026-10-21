@@ -26,7 +26,12 @@ class AIError(RuntimeError):
     pass
 
 
+BASE = None                 # папка с engine и models, если не рядом с программой (проверка качества)
+
+
 def base_dir():
+    if BASE:
+        return Path(BASE).resolve()
     return Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
 
 
