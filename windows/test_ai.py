@@ -26,6 +26,16 @@ elif mode == 'echo':
         + ('без размышлений' if prompt.rstrip().endswith('</think>') else 'с размышлениями'))
 elif mode == 'formula':
     say('=СУММЕСЛИ(A:A;"Госпиталь";C:C)\nСумма по столбцу C для строк, где в A «Госпиталь».')
+elif mode == 'route':
+    say('```json\n{"команда": "svod", "что": "свести 5 таблиц"}\n```')
+elif mode == 'route_bad':
+    say('{"команда": "format_disk", "что": "x"}')
+elif mode == 'fields':
+    say('{"ФИО": "Иванов Иван Иванович", "Должность": "генерал армии"}')
+elif mode == 'vba':
+    say('```vba\nOption Explicit\nSub Iskra_Macro()\n    Dim i As Long\n    On Error GoTo Err1\n    For i = 1 To 10\n        Cells(i, 1).Value = i\n    Next i\n    MsgBox "Готово"\n    Exit Sub\nErr1:\n    MsgBox Err.Description\nEnd Sub\n```')
+elif mode == 'merge':
+    say('ТЕЛЕГРАММА\n\nТекст:\n1. Представить сведения до 25.10.2026.\n2. Выделить 15 человек.')
 elif mode == 'slow':
     say('Очень долгий ответ ' * 200, 0.05)
 elif mode == 'fail':
@@ -106,6 +116,35 @@ class AITest(unittest.TestCase):
         with self.assertRaises(ai.AIError) as e:
             ai.run('x', base=Path(tempfile.mkdtemp()))
         self.assertIn('не установлена', str(e.exception))
+
+    def test_route(self):
+        os.environ['FAKE_MODE'] = 'route'
+        ai.BASE = self.base
+        try:
+            self.assertEqual(ai.route('надо пять табличек склеить в одну'), ('svod', 'свести 5 таблиц'))
+            os.environ['FAKE_MODE'] = 'route_bad'
+            self.assertEqual(ai.route('отформатируй диск'), ('search', 'отформатируй диск'))   # только команды из списка
+        finally:
+            ai.BASE = None
+
+    def test_extract_fields_only_verbatim(self):
+        os.environ['FAKE_MODE'] = 'fields'
+        text = 'Справка. Выдана Иванов Иван Иванович, проходящему службу в должности начальника отдела.'
+        out = ai.extract_fields(text, ['ФИО', 'Должность'], base=self.base)
+        self.assertEqual(out, {'ФИО': 'Иванов Иван Иванович'})          # «генерал армии» в тексте нет — отброшено
+
+    def test_vba_checked(self):
+        os.environ['FAKE_MODE'] = 'vba'
+        code, problems = ai.vba('пронумеровать строки', 'excel', base=self.base)
+        self.assertTrue(code.startswith('Option Explicit'))
+        self.assertNotIn('```', code)
+        self.assertEqual(problems, [])
+
+    def test_merge_and_unverified(self):
+        os.environ['FAKE_MODE'] = 'merge'
+        sources = [('т1', 'Представить сведения до 25 октября 2026 года.'), ('т2', 'Выделить людей на работы.')]
+        text, _ = ai.merge(sources, base=self.base)
+        self.assertEqual(ai.unverified(text, sources), ['15'])               # «15 человек» нет ни в одной телеграмме
 
     def test_retrieve(self):
         docs = {'a.docx': 'Общие сведения. Телеграмма о проверке готовности техники. Срок до 25.10.2026. Прочее.',

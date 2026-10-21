@@ -66,6 +66,12 @@ class ToolsMixin:
         sc = ttk.Scrollbar(frame, command=box.yview); sc.pack(side='right', fill='y'); box.config(yscrollcommand=sc.set)
         ttk.Label(win, text='Своё поле (если его нет в списке) — точная подпись из документов:').pack(anchor='w', padx=12, pady=(8, 2))
         extra = tk.StringVar(); ttk.Entry(win, textvariable=extra).pack(fill='x', padx=12)
+        use_ai = tk.BooleanVar(value=getattr(self, 'ai_ready', False))
+        ai_box = ttk.Checkbutton(win, variable=use_ai, text='Чего нет в виде «Поле: значение» — найти нейросетью '
+                                 '(берётся только значение, которое дословно есть в документе; помечается на листе «Проверка»)')
+        ai_box.pack(anchor='w', padx=12, pady=(6, 0))
+        if not getattr(self, 'ai_ready', False):
+            ai_box.state(['disabled'])
         status = tk.StringVar(value='Ищу поля в документах…')
         ttk.Label(win, textvariable=status, wraplength=720).pack(anchor='w', padx=12, pady=6)
         labels = []
@@ -89,22 +95,44 @@ class ToolsMixin:
                                                   initialdir=str(ROOT), filetypes=[('Excel', '*.xlsx')])
             if not output:
                 return
-            try:
-                if mode.get() == 'tables':
-                    r = collect_tables(files, output)
-                    msg = f"Строк: {r['rows']}, листов: {r['sheets']}.\nНе прочитано файлов: {len(r['failed'])}."
-                else:
-                    chosen = [labels[i] for i in box.curselection()] + [x.strip() for x in extra.get().split(';') if x.strip()]
-                    if not chosen:
-                        messagebox.showwarning('Поля', 'Отметьте хотя бы одно поле.', parent=win); return
-                    r = merge_crossformat(files, chosen, output, 'xlsx')
-                    msg = f"Записей: {r['rows']}, замечаний: {r['issues']}.\nПустые и противоречивые значения — «НЕ НАЙДЕНО», подробности на листе «Проверка»."
-                save_history(ROOT, 'Word → Excel', f'{len(files)} файлов → {Path(output).name}')
-                if messagebox.askyesno('Готово', msg + f'\n\n{output}\n\nОткрыть файл?', parent=win):
+            chosen = [labels[i] for i in box.curselection()] + [x.strip() for x in extra.get().split(';') if x.strip()]
+            if mode.get() != 'tables' and not chosen:
+                messagebox.showwarning('Поля', 'Отметьте хотя бы одно поле.', parent=win); return
+            ai_on = use_ai.get() and mode.get() != 'tables'
+            filled = {'n': 0}
+
+            def filler(path, missing):
+                import iskra_ai
+                filled['n'] += 1
+                self.events.put(('call', lambda n=filled['n'], name=Path(path).name: status.set(
+                    f'Нейросеть ищет недостающие поля: {name} ({n})… Esc — остановить')))
+                if self.ai_cancel_all.is_set():
+                    return {}
+                return iskra_ai.extract_fields(extract(Path(path)), missing, cancel=self.ai_cancel_all)
+
+            def work():
+                try:
+                    if mode.get() == 'tables':
+                        r = collect_tables(files, output)
+                        msg = f"Строк: {r['rows']}, листов: {r['sheets']}.\nНе прочитано файлов: {len(r['failed'])}."
+                    else:
+                        r = merge_crossformat(files, chosen, output, 'xlsx', filler=filler if ai_on else None)
+                        msg = (f"Записей: {r['rows']}, замечаний: {r['issues']}.\nПустые и противоречивые значения — «НЕ НАЙДЕНО», "
+                               "подробности на листе «Проверка»." + ("\nЗначения от нейросети — с пометкой «ЗАПОЛНЕНО НЕЙРОСЕТЬЮ»." if ai_on else ''))
+                    save_history(ROOT, 'Word → Excel', f'{len(files)} файлов → {Path(output).name}')
+                    self.events.put(('call', lambda: finish(msg)))
+                except Exception as exc:
+                    err = str(exc)
+                    self.events.put(('call', lambda: messagebox.showerror('Ошибка', err, parent=win) if win.winfo_exists() else None))
+
+            def finish(msg):
+                if messagebox.askyesno('Готово', msg + f'\n\n{output}\n\nОткрыть файл?', parent=win if win.winfo_exists() else None):
                     _open_path(output)
-                win.destroy()
-            except Exception as exc:
-                messagebox.showerror('Ошибка', str(exc), parent=win)
+                if win.winfo_exists():
+                    win.destroy()
+            self.ai_cancel_all.clear()
+            status.set('Собираю…')
+            threading.Thread(target=work, daemon=True).start()
         ttk.Button(win, text='Собрать в Excel', style='Accent.TButton', command=run).pack(pady=(0, 12))
 
     # ---------- Excel → Word ----------
@@ -239,6 +267,7 @@ class ToolsMixin:
             self.editor_ai(buttons, t, status).pack(side='left', padx=(0, 6))
         ttk.Button(buttons, text='Сохранить в Word', style='Accent.TButton', command=save).pack(side='right')
         ttk.Button(buttons, text='Шаблон оформления…', command=lambda: self.telegram_template_window(win)).pack(side='right', padx=6)
+        return win, t, status
 
     def telegram_settings(self):
         try:
@@ -286,6 +315,11 @@ class ToolsMixin:
         ttk.Checkbutton(win, text='Даты к одному виду: «25 октября 2026 года» → 25.10.2026', variable=dates).pack(anchor='w', padx=12, pady=2)
         ttk.Checkbutton(win, text='Исправить типовые ошибки («в течении», «по приезду», двойные пробелы, «и и»)', variable=typos).pack(anchor='w', padx=12, pady=2)
         me = self.telegram_settings().get('me', {})
+        polish = tk.BooleanVar(value=getattr(self, 'ai_ready', False))
+        pb = ttk.Checkbutton(win, text='Свести нейросетью в связный текст (числа и даты сверяются с исходными телеграммами)', variable=polish)
+        pb.pack(anchor='w', padx=12, pady=2)
+        if not getattr(self, 'ai_ready', False):
+            pb.state(['disabled'])
         mine = tk.BooleanVar(value=bool(me.get('signature')))
         if me.get('signature'):
             ttk.Checkbutton(win, text='Подпись и «От кого» — мои (из реквизитов), а не из исходных телеграмм', variable=mine).pack(anchor='w', padx=12, pady=2)
@@ -306,8 +340,14 @@ class ToolsMixin:
                     m.header['От кого'] = me['from']
             save_history(ROOT, 'Объединение телеграмм', ', '.join(Path(p).name for p in files)[:400])
             win.destroy()
-            self.telegrams(m.text(), ' '.join(m.report[:3]) + ' Проверьте пометки [УТОЧНИТЬ], [ДАТА], [НОМЕР] и нажмите «Орфография».',
-                           report=m.report)
+            ed = self.telegrams(m.text(), ' '.join(m.report[:3]) + ' Проверьте пометки [УТОЧНИТЬ], [ДАТА], [НОМЕР] и нажмите «Орфография».',
+                                report=m.report)
+            if polish.get():
+                import iskra_ai
+                sources = [(Path(p).name, extract(Path(p))) for p in files]
+                draft = m.text().split('--- ИСТОЧНИКИ')[0]
+                self.ai_into_editor(ed, lambda cancel, update: iskra_ai.merge(sources, draft, me=me, on_text=update, cancel=cancel)[0],
+                                    sources, 'Объединение нейросетью')
         ttk.Button(win, text='Объединить', style='Accent.TButton', command=run).pack(pady=(0, 12))
 
     # ---------- Орфография ----------
@@ -403,6 +443,23 @@ class ToolsMixin:
         ttk.Button(actions, text='Исправить', style='Accent.TButton', command=apply).pack(side='left')
         ttk.Button(actions, text='Добавить в словарь', command=learn).pack(side='left', padx=6)
         ttk.Button(top, text='Проверить', style='Accent.TButton', command=run_check).pack(side='right')
+
+        def ai_fix():
+            import iskra_ai
+            text = t.get('1.0', 'end-1c')
+            if not text.strip():
+                return
+            status.set('Нейросеть исправляет ошибки… (Ctrl+Z — вернуть как было)')
+            t.edit_separator()
+
+            def done(result):
+                if win.winfo_exists():
+                    body, sep, tail = text.partition('--- ИСТОЧНИКИ')
+                    t.delete('1.0', 'end'); t.insert('1.0', result + ('\n\n' + sep + tail if sep else ''))
+                    run_check()
+            self.ai_background(lambda cancel: iskra_ai.edit(text.partition('--- ИСТОЧНИКИ')[0], 'Исправить ошибки', cancel=cancel), done)
+        if getattr(self, 'ai_ready', False):
+            ttk.Button(top, text='Исправить всё нейросетью', command=ai_fix).pack(side='right', padx=6)
         if target is None:
             ttk.Button(top, text='Открыть документ…', command=open_doc).pack(side='right', padx=6)
         else:
@@ -442,6 +499,18 @@ class ToolsMixin:
             formula['value'] = f or ''
             if f:
                 result.insert('1.0', f + '\n\n' + note + '\n\nИз чего состоит:\n' + explain_formula(f))
+            elif getattr(self, 'ai_ready', False):
+                import iskra_ai
+                result.insert('1.0', 'В справочнике готовой формулы нет — спрашиваю нейросеть…')
+
+                def done(res):
+                    if not win.winfo_exists():
+                        return
+                    formula['value'] = res[0]
+                    result.delete('1.0', 'end')
+                    result.insert('1.0', res[0] + '\n\n' + (res[1] or '') + '\n(формула от нейросети: число аргументов проверено, '
+                                  'диапазоны проверьте сами)\n\nИз чего состоит:\n' + explain_formula(res[0]))
+                self.ai_background(lambda cancel: iskra_ai.formula(text, cancel=cancel), done)
             else:
                 result.insert('1.0', note + '\n\n' + examples)
 
@@ -471,6 +540,10 @@ class ToolsMixin:
         for text, value in (('Определить само', 'auto'), ('Excel', 'excel'), ('Word', 'word')):
             ttk.Radiobutton(row, text=text, variable=app, value=value).pack(side='left', padx=(0, 10))
         ttk.Button(row, text='Написать макрос', style='Accent.TButton', command=lambda: build()).pack(side='left', padx=(10, 6))
+        ai_btn = ttk.Button(row, text='Написать нейросетью', command=lambda: build_ai())
+        ai_btn.pack(side='left', padx=(0, 6))
+        if not getattr(self, 'ai_ready', False):
+            ai_btn.state(['disabled'])
         ttk.Button(row, text='Что я умею / примеры', command=lambda: show_help()).pack(side='left')
         ttk.Button(row, text='Готовые макросы', command=self.macros).pack(side='right')
 
@@ -515,13 +588,35 @@ class ToolsMixin:
                 parts.append(('', 'ok'))
                 parts.append(('Не поняла (в макрос не вошло):', 'head'))
                 parts += [('• ' + u, 'bad') for u in unknown]
-                parts.append(('Перефразируйте словами из списка «Что я умею».', 'bad'))
+                parts.append(('Перефразируйте словами из списка «Что я умею»' +
+                              (' или нажмите «Написать нейросетью» — она напишет макрос целиком.' if getattr(self, 'ai_ready', False) else '.'), 'bad'))
             steps_text(parts)
             problems = iskra_vba.lint(vba)
             status.set(f'Готово: шагов {len(steps)}.' + (f' Не понято частей: {len(unknown)}.' if unknown else '') +
                        (' Проверка кода: замечаний нет.' if not problems else f' Замечаний в коде: {len(problems)}.') +
                        f' Запускать в {kind}: Alt+F11 → Insert → Module → вставить → F5.')
             save_history(ROOT, 'Макрос', text[:300])
+
+        def build_ai():
+            import iskra_ai
+            text = task_box.get('1.0', 'end').strip()
+            target = app.get() if app.get() != 'auto' else iskra_vba.detect_app(text)
+            steps_text([('Нейросеть пишет макрос для ' + ('Excel' if target == 'excel' else 'Word') + '…', 'head'),
+                        ('Код проверяется так же, как макросы из шаблонов; при ошибках нейросеть исправляет его ещё раз.', 'ok')])
+
+            def done(res):
+                vba, problems = res
+                if not win.winfo_exists():
+                    return
+                code.delete('1.0', 'end'); code.insert('1.0', vba)
+                mark(problems)
+                steps_text([('Макрос написан нейросетью.', 'head'),
+                            ('Проверка кода: замечаний нет.' if not problems else f'Осталось замечаний: {len(problems)} — строки подсвечены.',
+                             'ok' if not problems else 'warn'),
+                            ('Перед запуском сохраните копию файла и прочитайте код: нейросеть может ошибиться.', 'warn')])
+                status.set('Макрос от нейросети. Запуск: Alt+F11 → Insert → Module → вставить → F5. Ошибка — «Была ошибка при запуске».')
+                save_history(ROOT, 'Макрос (нейросеть)', text[:300])
+            self.ai_background(lambda cancel: iskra_ai.vba(text, target, cancel=cancel), done)
 
         def show_help():
             excel, word = iskra_vba.capabilities()
@@ -571,6 +666,16 @@ class ToolsMixin:
                     out.insert('end', '\n\nВ коде можно исправить автоматически:\n' + '\n'.join('• ' + c for c in changes) +
                                '\nНажмите «Исправить код» и вставьте макрос заново.')
                 out.configure(state='disabled')
+                if getattr(self, 'ai_ready', False) and err.get('1.0', 'end').strip():
+                    import iskra_ai
+                    out.configure(state='normal'); out.insert('end', '\n\nНейросеть разбирает ошибку в вашем коде…'); out.configure(state='disabled')
+
+                    def done(text):
+                        if dlg.winfo_exists():
+                            out.configure(state='normal')
+                            out.delete('end-2l linestart', 'end')
+                            out.insert('end', '\n\nРАЗБОР НЕЙРОСЕТИ:\n' + text); out.configure(state='disabled')
+                    self.ai_background(lambda cancel: iskra_ai.vba_error(code.get('1.0', 'end-1c'), err.get('1.0', 'end'), cancel=cancel), done)
             row2 = ttk.Frame(dlg); row2.pack(pady=(0, 10))
             ttk.Button(row2, text='Объяснить', style='Accent.TButton', command=explain).pack(side='left')
             ttk.Button(row2, text='Исправить код', command=lambda: (fix(), dlg.destroy())).pack(side='left', padx=8)

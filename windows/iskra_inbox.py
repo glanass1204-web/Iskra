@@ -161,6 +161,13 @@ class Inbox:
                     i['status'] = status
             self._save()
 
+    def update(self, path, **fields):
+        with self._lock:
+            for i in self.state['items']:
+                if same(i['path'], path):
+                    i.update(fields)
+            self._save()
+
     def forget(self, path):
         with self._lock:
             self.state['items'] = [i for i in self.state['items'] if not same(i['path'], path)]

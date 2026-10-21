@@ -8,9 +8,10 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 import iskra_assistant as assistant
+import iskra_ai as ai
 import iskra_compose as compose
 from iskra_inbox import Inbox
-from iskra_index import ROOT, extract
+from iskra_index import ROOT, extract, search_docs
 from iskra_svod import read_tables, svod_files, describe
 from iskra_tools_ui import _window, _open_path
 from iskra_workflows import save_history
@@ -113,6 +114,12 @@ class WorkMixin:
         show_me()
         ttk.Label(form, textvariable=me_info, style='Muted.TLabel', wraplength=560).grid(row=7, column=1, sticky='w', pady=(6, 0))
         ttk.Button(form, text='Мои реквизиты…', command=lambda: self.my_details_window(win, show_me)).grid(row=7, column=0, sticky='w', pady=(6, 0))
+        use_ai = tk.BooleanVar(value=getattr(self, 'ai_ready', False))
+        ai_box = ttk.Checkbutton(form, variable=use_ai, text='Написать нейросетью (по шаблону и найденным документам; '
+                                 'числа и даты сверяются с источниками)')
+        ai_box.grid(row=8, column=1, sticky='w', pady=(6, 0))
+        if not getattr(self, 'ai_ready', False):
+            ai_box.state(['disabled'])
 
         def switch(*_):
             is_reply = v['kind'].get() == 'Ответ на входящую'
@@ -134,18 +141,34 @@ class WorkMixin:
                 if not path or not Path(path).is_file():
                     messagebox.showinfo('Входящая', 'Выберите файл входящей телеграммы.', parent=win); return
                 try:
-                    text = compose.reply(extract(Path(path)), me, Path(path).name)
+                    source_text = extract(Path(path))
+                    text = compose.reply(source_text, me, Path(path).name)
                 except Exception as exc:
                     messagebox.showerror('Ошибка', str(exc), parent=win); return
+                ai_job = (lambda cancel, update: ai.reply(source_text, Path(path).name, me=me, on_text=update, cancel=cancel)[0],
+                          [(Path(path).name, source_text)])
             else:
                 text = compose.compose(kind, me, to=v['to'].get().strip(), basis=v['basis'].get().strip(),
                                        subject=v['subject'].get().strip(), deadline=v['deadline'].get().strip(),
                                        points=points.get('1.0', 'end-1c').splitlines())
+                fields = {'кому': v['to'].get().strip(), 'основание': v['basis'].get().strip(), 'тема': v['subject'].get().strip(),
+                          'срок': v['deadline'].get().strip()}
+                pts = [x.strip() for x in points.get('1.0', 'end-1c').splitlines() if x.strip()]
+                task = f'Составь телеграмму вида «{kind}». ' + '; '.join(f'{k}: {x}' for k, x in fields.items() if x)
+                if pts:
+                    task += '. Пункты: ' + '; '.join(pts)
+                query = ' '.join([fields['тема'], fields['основание']] + pts)
+                found, _ = ai.retrieve(query, lambda q, any_word: search_docs(q, 4, any_word), lambda p: extract(Path(p))) if query.strip() else ([], [])
+                draft = text
+                ai_job = (lambda cancel, update: ai.write(task + '\nОпирайся на черновик по шаблону:\n' + draft, found, me=me,
+                                                          on_text=update, cancel=cancel)[0], found + [('черновик', draft)])
             save_history(ROOT, 'Черновик телеграммы', kind)
             left = compose.unfilled(text)
             win.destroy()
-            self.telegrams(initial=text, note=(f'Черновик готов. Впишите места [УТОЧНИТЬ…] — их {len(left)}. ' if left else 'Черновик готов. ')
-                           + 'Затем «Орфография» и «Сохранить в Word».')
+            ed = self.telegrams(initial=text, note=(f'Черновик готов. Впишите места [УТОЧНИТЬ…] — их {len(left)}. ' if left else 'Черновик готов. ')
+                                + 'Затем «Орфография» и «Сохранить в Word».')
+            if use_ai.get():
+                self.ai_into_editor(ed, ai_job[0], ai_job[1], 'Телеграмма от нейросети')
 
         ttk.Button(win, text='Сделать черновик', style='Accent.TButton', command=make).pack(side='right', padx=12, pady=10)
 
@@ -269,8 +292,13 @@ class WorkMixin:
         def report():
             r = state.get('r')
             if r:
-                self.telegrams(initial=compose.svod_report(r['svod'], self.my_details()),
-                               note='Доклад по своду. Проверьте цифры и впишите места [УТОЧНИТЬ…].')
+                me = self.my_details()
+                ed = self.telegrams(initial=compose.svod_report(r['svod'], me),
+                                    note='Доклад по своду. Проверьте цифры и впишите места [УТОЧНИТЬ…].')
+                if getattr(self, 'ai_ready', False):
+                    table = svod_table_text(r['svod'])
+                    self.ai_into_editor(ed, lambda cancel, update: ai.svod_report(table, me=me, on_text=update, cancel=cancel)[0],
+                                        [('свод', table)], 'Доклад по своду от нейросети')
 
         go = ttk.Button(buttons, text='Собрать свод', style='Accent.TButton', command=run)
         go.pack(side='right')
@@ -374,7 +402,9 @@ class WorkMixin:
                 text += f'\nОт кого: {it["sender"]}'
             if it['deadline']:
                 text += f'\nСрок {it["deadline"]}: {it["deadline_text"]}'
-            if it['summary']:
+            if it.get('ai_brief'):
+                text += f'\nНейросеть: {it["ai_brief"]}'
+            elif it['summary']:
                 text += f'\nКратко: {it["summary"]}'
             if it.get('note'):
                 text += f'\n{it["note"]}'
@@ -400,9 +430,13 @@ class WorkMixin:
             return
 
         def make(text):
-            draft = compose.reply(text, self.my_details(), it['name'])
+            me = self.my_details()
+            draft = compose.reply(text, me, it['name'])
             left = compose.unfilled(draft)
-            self.telegrams(initial=draft, note=f'Ответ на «{it["name"]}» по пунктам. Впишите, что сделано, — мест [УТОЧНИТЬ…]: {len(left)}.')
+            ed = self.telegrams(initial=draft, note=f'Ответ на «{it["name"]}» по пунктам. Впишите, что сделано, — мест [УТОЧНИТЬ…]: {len(left)}.')
+            if getattr(self, 'ai_ready', False):
+                self.ai_into_editor(ed, lambda cancel, update: ai.reply(text, it['name'], me=me, on_text=update, cancel=cancel)[0],
+                                    [(it['name'], text)], 'Ответ от нейросети')
             self.inbox.set_status(it['path'], 'в работе'); self.refresh_inbox()
         self.with_text(it['path'], make)
 
@@ -425,6 +459,8 @@ class WorkMixin:
 
     def on_new_files(self, items):
         self.refresh_inbox()
+        if getattr(self, 'ai_ready', False):
+            self.inbox_briefs([it for it in items if it['kind'] != 'Таблица Excel'])
         for it in items:
             line = f'Новый файл: {it["kind"].lower()} «{it["name"]}»'
             if it['number']:
@@ -498,3 +534,22 @@ class WorkMixin:
         b = ttk.Frame(win); b.pack(fill='x', padx=12, pady=8)
         ttk.Button(b, text='Добавить папку…', style='Accent.TButton', command=add).pack(side='left')
         ttk.Button(b, text='Убрать', command=remove).pack(side='left', padx=6)
+
+
+def svod_table_text(svod):
+    """Свод как текстовая таблица для нейросети (с итогом — чтобы цифры доклада сверялись)."""
+    from iskra_svod import numeric_columns
+    cols = svod.columns
+    lines = [' | '.join([svod.name_header] + cols)]
+    for org in svod.orgs:
+        lines.append(' | '.join([org.name] + [str(svod.value(org, c)[0] if svod.value(org, c)[0] is not None else '—') for c in cols]))
+    nums = set(numeric_columns(svod))
+    total = []
+    for c in cols:
+        if c in nums:
+            t = sum(v for v in (svod.value(o, c)[0] for o in svod.orgs) if isinstance(v, (int, float)))
+            total.append(str(round(t, 6) if isinstance(t, float) else t))
+        else:
+            total.append('')
+    lines.append(' | '.join(['Итого'] + total))
+    return '\n'.join(lines)

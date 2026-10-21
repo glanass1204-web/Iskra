@@ -20,6 +20,8 @@ SELECTED_DOC = ('по этому документ', 'по выбранному',
 class AIMixin:
     ai_ready = False
     ai_cancel = None
+    ai_cancel_all = threading.Event()      # Esc: остановить и фоновые задачи (поиск полей в Word → Excel)
+    _brief_queue = None
 
     # ---------- первый запуск ----------
 
@@ -226,6 +228,104 @@ class AIMixin:
     def ai_stop(self, _=None):
         if self.ai_cancel is not None:
             self.ai_cancel.set()
+        self.ai_cancel_all.set()
+
+    # ---------- нейросеть пишет прямо в редактор ----------
+
+    def ai_into_editor(self, editor, job, sources, title):
+        """editor = (окно, поле текста, строка состояния) из telegrams(). Пока нейросеть пишет, в редакторе черновик по правилам;
+        затем он заменяется её текстом. Числа и даты, которых нет в источниках, подсвечиваются."""
+        if not editor or not self.ai_ready:
+            return
+        win, t, status = editor
+        original = t.get('1.0', 'end-1c')
+        tail = original[original.find('--- ИСТОЧНИКИ'):] if '--- ИСТОЧНИКИ' in original else ''
+        t.tag_configure('unverified', background='#FFE0B2')
+        status.set(f'{title}: нейросеть пишет… (пока здесь черновик по шаблону; Esc в главном окне — остановить)')
+        state = {'started': False}
+
+        def update(value):
+            def put():
+                if not win.winfo_exists() or not value or value.startswith('…'):
+                    return
+                if not state['started']:
+                    state['started'] = True
+                    t.edit_separator()
+                t.delete('1.0', 'end'); t.insert('1.0', value)
+            self.events.put(('call', put))
+
+        def done(result):
+            if not win.winfo_exists():
+                return
+            t.delete('1.0', 'end'); t.insert('1.0', result + ('\n\n' + tail if tail else ''))
+            doubtful = ai.unverified(result, sources)
+            for start, end in ai.fact_spans(result, doubtful):
+                t.tag_add('unverified', f'1.0+{start}c', f'1.0+{end}c')
+            msg = f'{title}: готово. Отменить — Ctrl+Z (вернётся черновик по шаблону).'
+            if doubtful:
+                msg += ' ПРОВЕРЬТЕ — этих чисел/дат нет в документах (подсвечены): ' + ', '.join(doubtful[:10])
+            else:
+                msg += ' Все числа и даты есть в документах.'
+            status.set(msg)
+            save_history(ROOT, title, (sources[0][0] if sources else '')[:200])
+
+        def job_with_errors(cancel):
+            try:
+                return job(cancel, update)
+            except ai.AIError:
+                self.events.put(('call', lambda: win.winfo_exists() and (
+                    t.delete('1.0', 'end'), t.insert('1.0', original))))
+                raise
+        self.ai_background(job_with_errors, done)
+
+    # ---------- входящие: краткая справка нейросети в фоне ----------
+
+    def inbox_briefs(self, items):
+        """Каждый новый документ нейросеть кратко описывает в фоне (по одному, не мешая работе)."""
+        import queue as _queue
+        if self._brief_queue is None:
+            self._brief_queue = _queue.Queue()
+
+            def worker():
+                while True:
+                    it = self._brief_queue.get()
+                    try:
+                        text = extract(Path(it['path']))
+                        result = ai.brief(text)
+                        self.inbox.update(it['path'], ai_brief=' '.join(result.split())[:600])
+                        self.events.put(('call', lambda: (self.refresh_inbox(), self.inbox_show())))
+                    except Exception:
+                        pass
+            threading.Thread(target=worker, daemon=True).start()
+        for it in items:
+            self._brief_queue.put(it)
+
+    # ---------- понимание свободной фразы ----------
+
+    def ai_route(self, text):
+        """Фраза не похожа ни на одну команду — нейросеть решает, что сделать."""
+        self.say('Понимаю, что нужно…', 'proof')
+
+        def job(cancel):
+            return ai.route(text, cancel=cancel)
+
+        def done(result):
+            cmd, what = result
+            if cmd == 'chat':
+                self.ai_chat(text)
+            elif cmd == 'search':
+                self.query.set(what or text); self.find(report=True)
+            else:
+                self.say(f'Поняла так: {ai.COMMANDS.get(cmd, cmd)}.', 'proof')
+                self.ask(what if cmd in ('ask', 'write', 'formula', 'macro') and what else text, routed=cmd)
+        self.ai_background(job, done)
+
+    def ai_chat(self, text):
+        def job(cancel):
+            self.events.put(('call', lambda: self.tabs.select(0)))
+            update = self._stream_to_chat('Нейросеть:')
+            return ai.chat(text, on_text=update, cancel=cancel)
+        self.ai_background(job, lambda result: self.say('(ответ нейросети без документов — проверьте важное)', 'proof'))
 
     def _stream_to_chat(self, title):
         """Функция для фонового потока: показывает текст нейросети в чате по мере написания.

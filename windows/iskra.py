@@ -1,4 +1,4 @@
-import os, threading, queue
+import os, re, threading, queue
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -17,7 +17,7 @@ from iskra_index import ROOT, extract, index_folder, search_docs, forget_folder,
 import iskra_assistant as assistant
 
 ROOT.mkdir(parents=True, exist_ok=True)
-VERSION = '1.6'
+VERSION = '1.7'
 ACCENT = '#24518A'
 
 
@@ -177,13 +177,23 @@ class App(AIMixin, WorkMixin, ToolsMixin):
             self.chat.insert('end', f'…и ещё {len(items) - 40}\n', 'proof')
         self.chat.configure(state='disabled'); self.chat.see('end')
 
-    def ask(self, text=None):
+    def ask(self, text=None, routed=None):
         text = (text if text is not None else self.question.get()).strip()
         if not text:
             return
         self.question.set('')
-        self.say('Вы: ' + text, 'me')
-        cmd, arg = assistant.intent(text)
+        if routed:
+            cmd, arg = routed, text
+            if cmd in ('formula', 'macro'):
+                cmd, arg = assistant.intent(('формула ' if cmd == 'formula' else 'макрос ') + text)
+        else:
+            self.say('Вы: ' + text, 'me')
+            cmd, arg = assistant.intent(text)
+            # Не похоже ни на одну команду и это не явный поиск — пусть нейросеть поймёт, что нужно.
+            if (cmd == 'search' and self.ai_ready and len(text.split()) >= 3
+                    and not re.match(r'^(найди|найти|поиск|ищи|покажи|где)\b', text.lower())):
+                self.ai_route(text)
+                return
         if cmd == 'help':
             self.say(assistant.HELP)
         elif cmd == 'stats':
@@ -683,6 +693,13 @@ def selftest_ai():
           lambda e: 'течение' in e.lower())
     check('формула Excel', lambda: iskra_ai.formula('сумма значений столбца C, где в столбце A написано Госпиталь'),
           lambda f: f.startswith('='))
+    check('понимание фразы', lambda: str(iskra_ai.route('надо пять табличек по организациям свести в одну')),
+          lambda r: "'svod'" in r)
+    check('поля из документа', lambda: str(iskra_ai.extract_fields(
+        'Справка. Выдана Петрову Петру Петровичу в том, что он проходит службу в должности начальника склада.',
+        ['ФИО', 'Должность'])), lambda r: 'Петров' in r)
+    check('макрос VBA', lambda: (lambda c: c[0] + f'\nзамечаний проверки: {len(c[1])}')(
+        iskra_ai.vba('удалить пустые строки на активном листе', 'excel')), lambda c: 'Sub ' in c and 'замечаний проверки: 0' in c)
     (ROOT / 'selftest_ai.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
     return 0 if ok else 1
 

@@ -122,6 +122,24 @@ def run(prompt, max_tokens=700, on_text=None, cancel=None, timeout=600, base=Non
     if missing_parts(model):
         raise AIError('Не хватает второй части модели (' + ', '.join(missing_parts(model)) + '). '
                       'Распакуйте архив «часть 2» в ту же папку, что и «часть 1».')
+    # Модель одна, процессор один: задачи (чат, входящие в фоне) идут по очереди.
+    waited = False
+    while not _LOCK.acquire(timeout=0.5):
+        if cancel is not None and cancel.is_set():
+            raise AIError('Остановлено.')
+        if on_text and not waited:
+            waited = True
+            on_text('… жду, пока нейросеть закончит предыдущую задачу')
+    try:
+        return _run_locked(binary, model, prompt, max_tokens, on_text, cancel, timeout, temperature)
+    finally:
+        _LOCK.release()
+
+
+_LOCK = threading.Lock()
+
+
+def _run_locked(binary, model, prompt, max_tokens, on_text, cancel, timeout, temperature):
     tmp = Path(tempfile.mkdtemp(prefix='iskra_ai_'))
     prompt_file = tmp / 'prompt.txt'
     # Через файл, а не командной строкой: командные строки видны всем в диспетчере задач.
@@ -171,6 +189,13 @@ def run(prompt, max_tokens=700, on_text=None, cancel=None, timeout=600, base=Non
             time.sleep(0.15)
         for r in readers:
             r.join(5)
+    except AIError:
+        proc.wait(10)
+        for r in readers:
+            r.join(5)
+        for stream in (proc.stdout, proc.stderr):
+            stream.close()
+        raise
     finally:
         _cleanup(tmp)
     proc.wait(10)
@@ -373,3 +398,193 @@ def retrieve(query, search_fn, read_fn, docs=4, extra=()):
             continue
         out.append((Path(p).name, passages(text, words) if p not in extra else text[:4000]))
     return out, paths
+
+
+# ---------- проверка фактов: числа и даты в ответе должны быть в документах ----------
+
+FACT = re.compile(r'\d{1,2}\.\d{1,2}\.\d{2,4}|\d+(?:[.,/-]\d+)*')
+
+
+def _facts(text):
+    out = set()
+    for m in FACT.finditer(text):
+        v = m.group(0).replace(',', '.')
+        if re.fullmatch(r'\d', v):
+            continue                       # нумерация пунктов «1.», «2.»
+        out.add(v)
+    return out
+
+
+def unverified(answer, sources):
+    """Числа и даты из ответа, которых нет ни в одном материале (возможная выдумка нейросети)."""
+    known = set()
+    for _, text in sources:
+        known |= _facts(text)
+    # Даты: 25.10.2026 и 25 октября 2026 — одно и то же.
+    from iskra_assistant import parse_dates
+    for _, text in sources:
+        for _, _, d in parse_dates(text):
+            known.add(d.strftime('%d.%m.%Y'))
+    body = answer.split('--- ИСТОЧНИКИ')[0]
+    today = __import__('datetime').date.today().strftime('%d.%m.%Y')
+    return sorted(f for f in _facts(body) if f not in known and f != today and not f.startswith('[')
+                  and f.lstrip('0') not in {k.lstrip('0') for k in known})
+
+
+def fact_spans(text, facts):
+    """Позиции целых чисел/дат из facts в тексте (до блока источников), не задевая «154» в «1543»."""
+    body = text.split('--- ИСТОЧНИКИ')[0]
+    wanted = set(facts)
+    return [(m.start(), m.end()) for m in FACT.finditer(body) if m.group(0).replace(',', '.') in wanted]
+
+
+def _json(text):
+    """Первый объект JSON из ответа модели (модель любит оборачивать его в ```)."""
+    import json
+    m = re.search(r'\{.*\}', text, re.DOTALL)
+    if not m:
+        raise AIError('нейросеть ответила не в том виде')
+    raw = m.group(0)
+    for candidate in (raw, re.sub(r',\s*}', '}', raw).replace("'", '"')):
+        try:
+            return json.loads(candidate)
+        except ValueError:
+            continue
+    raise AIError('нейросеть ответила не в том виде')
+
+
+# ---------- понимание команды в чате ----------
+
+COMMANDS = {
+    'search': 'найти документ или телеграмму на компьютере (что искать)',
+    'ask': 'вопрос по содержанию документов (сам вопрос)',
+    'write': 'составить, написать, подготовить текст, телеграмму, доклад, справку, ответ (задача)',
+    'summary': 'кратко пересказать выбранный документ',
+    'deadlines': 'сроки в выбранном документе',
+    'upcoming': 'ближайшие и просроченные сроки по всем документам',
+    'overview': 'обзор папок: что лежит, от кого, темы',
+    'inbox': 'новые входящие файлы',
+    'svod': 'свести несколько таблиц Excel в одну по организациям',
+    'merge': 'объединить несколько похожих телеграмм в одну',
+    'word2excel': 'собрать данные из многих документов Word в таблицу Excel',
+    'excel2word': 'сделать документы Word по строкам таблицы Excel',
+    'formula': 'формула Excel (описание задачи)',
+    'macro': 'макрос VBA для Excel или Word (описание задачи)',
+    'spell': 'проверить орфографию текста',
+    'chat': 'общий вопрос или просьба без документов (как оформить, что значит, совет)',
+}
+
+
+def route(text, **kw):
+    """Свободная фраза → (команда, что именно). Только из списка COMMANDS, иначе ('search', текст)."""
+    listing = '\n'.join(f'{k} — {v}' for k, v in COMMANDS.items())
+    user = (f'Пользователь написал помощнику: «{text.strip()}»\n\nВыбери одну команду из списка:\n{listing}\n\n'
+            'Ответь только JSON без пояснений: {"команда": "...", "что": "..."} — в «что» перепиши суть просьбы.')
+    out = run(chat_prompt(user, system='Ты определяешь, какую команду программы выполнить. Отвечаешь только JSON.'),
+              max_tokens=80, temperature=0.0, **kw)
+    try:
+        data = _json(out)
+    except AIError:
+        return 'search', text.strip()
+    cmd = str(data.get('команда') or data.get('command') or '').strip().lower()
+    what = str(data.get('что') or data.get('what') or text).strip()
+    return (cmd, what) if cmd in COMMANDS else ('search', text.strip())
+
+
+def chat(text, **kw):
+    """Общий вопрос без документов."""
+    user = (f'{text.strip()}\n\nОтветь по существу, кратко, по-русски. Если вопрос о правилах оформления документов — '
+            'опирайся на общепринятые нормы делопроизводства и честно говори, если не уверена.')
+    return run(chat_prompt(user), max_tokens=500, **kw)
+
+
+# ---------- входящие ----------
+
+def brief(text, **kw):
+    """2–3 строки о входящем документе: что требуют, срок, от кого."""
+    user = (f'Документ:\n{text[:6000]}\n\nКоротко, в 2–3 строки: что требуют или сообщают, какой срок, от кого. '
+            'Только факты из документа, без вступлений.')
+    return run(chat_prompt(user), max_tokens=160, temperature=0.1, **kw)
+
+
+def reply(text, name='', me=None, **kw):
+    """Ответ на входящую по её пунктам."""
+    task = ('Составь телеграмму-ответ на входящий документ «' + name + '»: ответь по каждому пункту, что сделано или будет '
+            'сделано и в какой срок. Чего не знаешь о выполнении — [УТОЧНИТЬ: что сделано].')
+    return write(task, [(name or 'входящий документ', text)], me=me, **kw)
+
+
+# ---------- объединение телеграмм ----------
+
+def merge(sources, draft='', me=None, **kw):
+    """Несколько похожих телеграмм → одна связная, без повторов. draft — результат объединения по правилам (подсказка)."""
+    task = ('Объедини эти похожие телеграммы в ОДНУ телеграмму: каждое поручение — один раз, без повторов и вводных фраз, '
+            'основание — в начале, «О выполнении доложить» — один раз в конце. Если в телеграммах разные сроки или числа '
+            'для одного поручения — не выбирай сам, напиши [УТОЧНИТЬ: срок 25.10 или 27.10].')
+    srcs = list(sources)
+    if draft:
+        srcs = [('черновик объединения (по правилам)', draft)] + srcs
+    return write(task, srcs, me=me, max_tokens=900, **kw)
+
+
+# ---------- Word → Excel ----------
+
+def extract_fields(text, fields, **kw):
+    """Значения полей из документа. Принимается только то, что дословно есть в тексте (проверка от выдумок)."""
+    names = ', '.join(f'«{f}»' for f in fields)
+    user = (f'Документ:\n{text[:7000]}\n\nНайди в документе значения полей: {names}. '
+            'Ответь только JSON вида {"поле": "значение точно как в документе"}. Если значения нет — пустая строка.')
+    data = _json(run(chat_prompt(user, system='Ты извлекаешь данные из документов. Отвечаешь только JSON.'),
+                     max_tokens=60 + 40 * len(fields), temperature=0.0, **kw))
+    flat = ' '.join(text.split()).lower().replace('ё', 'е')
+    out = {}
+    for f in fields:
+        v = data.get(f)
+        if v is None:
+            v = next((val for key, val in data.items() if key.strip().lower() == f.strip().lower()), '')
+        v = ' '.join(str(v or '').split()).strip(' "«»')
+        if v and v.lower().replace('ё', 'е') in flat:
+            out[f] = v
+    return out
+
+
+# ---------- макросы VBA ----------
+
+def vba(task, app='excel', **kw):
+    """Макрос VBA по описанию. Код проверяется тем же линтером, что и макросы из шаблонов; ошибки — одна попытка исправить."""
+    import iskra_vba
+    program = 'Excel' if app == 'excel' else 'Word'
+    user = (f'Напиши макрос VBA для {program} по задаче: {task.strip()}\n'
+            'Требования: Option Explicit; одна процедура Sub Iskra_Macro(); все переменные объявлены (Dim … As Long, не Integer); '
+            'обработка ошибок On Error GoTo с сообщением MsgBox; в конце MsgBox "Готово"; прямые кавычки "; '
+            'комментарии по-русски. Верни только код.')
+    for attempt in range(2):
+        out = run(chat_prompt(user, system='Ты опытный программист VBA для Microsoft Office. Пишешь рабочий код без лишнего текста.'),
+                  max_tokens=900, temperature=0.1, **kw)
+        code = re.sub(r'^```\w*\s*|```\s*$', '', out.strip(), flags=re.MULTILINE).strip()
+        code = iskra_vba.auto_fix(code)[0]
+        if not re.search(r'^\s*(Public |Private )?Sub\s+\w+', code, re.MULTILINE | re.IGNORECASE):
+            problems = [(0, 'нет процедуры Sub')]
+        else:
+            problems = iskra_vba.lint(code)
+        if not problems:
+            return code, []
+        user += '\n\nВ прошлом варианте ошибки: ' + '; '.join(f'строка {n}: {m}' for n, m in problems[:6]) + '. Исправь.'
+    return code, problems
+
+
+def vba_error(code, message, **kw):
+    """Объяснение ошибки запуска макроса и что исправить."""
+    user = (f'Макрос VBA:\n{code[:5000]}\n\nПри запуске ошибка: {message.strip()}\n\n'
+            'Объясни простыми словами, в какой строке и почему ошибка, и как исправить (покажи исправленную строку).')
+    return run(chat_prompt(user, system='Ты опытный программист VBA. Объясняешь понятно для бухгалтера или делопроизводителя.'),
+               max_tokens=500, temperature=0.1, **kw)
+
+
+# ---------- свод Excel ----------
+
+def svod_report(table_text, me=None, **kw):
+    """Доклад по своду: только цифры из таблицы."""
+    task = ('Подготовь телеграмму-доклад по своду: по каждой организации — её цифры, затем итог; кратко отметь, где «на лицо» '
+            'заметно меньше «по списку». Все цифры — только из таблицы, ничего не вычисляй, кроме того, что есть в строке «Итого».')
+    return write(task, [('свод', table_text)], me=me, **kw)

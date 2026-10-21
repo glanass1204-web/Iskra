@@ -68,8 +68,10 @@ def excel_fields(path,headings):
     finally:book.close()
     return result
 
-def merge_crossformat(paths,headings,output,output_format='xlsx'):
-    """Export exact named fields to a new XLSX or DOCX, with per-cell source audit."""
+def merge_crossformat(paths,headings,output,output_format='xlsx',filler=None):
+    """Export exact named fields to a new XLSX or DOCX, with per-cell source audit.
+    filler(path, [missing headings]) -> {heading: value}: fills fields the rules did not find (local neural network);
+    each such value is listed on the audit sheet as «ЗАПОЛНЕНО НЕЙРОСЕТЬЮ»."""
     paths=[Path(p).resolve() for p in paths];output=Path(output).resolve()
     headings=[h.strip() for h in headings if h.strip()]
     if not paths or not headings:raise ValueError('Нужны исходные файлы и названия столбцов')
@@ -86,6 +88,16 @@ def merge_crossformat(paths,headings,output,output_format='xlsx'):
             if not extracted:
                 issues.append((path.name,'','НЕТ ТАБЛИЦЫ','Не найдены заголовки из задания'))
             for values,locations,warnings,kind in extracted:
+                # Только «не найдено»; противоречия между значениями решает человек, а не нейросеть.
+                missing=[h for h,typ,_ in warnings if typ=='НЕ НАЙДЕНО' and values.get(h)==MISSING]
+                if filler and missing:
+                    try:found=filler(path,missing) or {}
+                    except Exception as exc:found={};issues.append((path.name,'','НЕЙРОСЕТЬ',str(exc)[:300]))
+                    for h,v in found.items():
+                        if h in missing and str(v).strip():
+                            values[h]=v;locations[h]='найдено нейросетью, значение есть в тексте документа'
+                            warnings=[w for w in warnings if w[0]!=h]
+                            issues.append((path.name,h,'ЗАПОЛНЕНО НЕЙРОСЕТЬЮ','Проверьте: '+str(v)[:200]))
                 records.append((path.name,values))
                 for h in headings:
                     provenance.append((len(records),h,path.name,locations.get(h,''),str(values[h])))
