@@ -1,0 +1,26 @@
+﻿# Скачивает свежий llama.cpp для Windows x64 (CPU) в папку engine. Нужен интернет — только при сборке.
+param([string]$Target = (Join-Path $PSScriptRoot 'engine'))
+$ErrorActionPreference = 'Stop'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$headers = @{ 'User-Agent' = 'Iskra' }
+if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
+# Самый свежий выпуск со сборкой для Windows x64 на процессоре (бывают выпуски без неё).
+$releases = Invoke-RestMethod -Headers $headers 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30'
+$release = $null; $asset = $null
+foreach ($r in $releases) {
+  if ($r.draft) { continue }
+  $a = $r.assets | Where-Object { $_.name -match 'win.*cpu.*x64.*\.zip$' -and $_.name -notmatch 'cudart' } | Select-Object -First 1
+  if ($a) { $release = $r; $asset = $a; break }
+}
+if (-not $asset) { throw 'Не найдена сборка llama.cpp для Windows x64 (CPU)' }
+$zip = Join-Path $env:TEMP $asset.name
+Write-Host "Скачиваю llama.cpp $($release.tag_name): $($asset.name)"
+Invoke-WebRequest -Headers $headers $asset.browser_download_url -OutFile $zip
+$unpacked = Join-Path $env:TEMP 'iskra_llama'
+if (Test-Path $unpacked) { Remove-Item $unpacked -Recurse -Force }
+Expand-Archive $zip $unpacked
+New-Item -ItemType Directory -Force $Target | Out-Null
+# Нужны только программа для одиночных ответов и её библиотеки (без сервера и сетевых утилит).
+Get-ChildItem $unpacked -Recurse -Include 'llama-completion.exe','llama-cli.exe','*.dll' | Copy-Item -Destination $Target -Force
+Set-Content (Join-Path $Target 'VERSION.txt') "llama.cpp $($release.tag_name) — https://github.com/ggml-org/llama.cpp (MIT)"
+Write-Host "Готово: $Target"

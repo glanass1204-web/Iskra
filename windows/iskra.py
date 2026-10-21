@@ -7,6 +7,8 @@ from tkinter import ttk, filedialog, messagebox
 from iskra_services import AutoIndexer
 from iskra_tools_ui import ToolsMixin
 from iskra_work_ui import WorkMixin
+from iskra_ai_ui import AIMixin
+import iskra_ai
 from iskra_formula import build_formula, explain_formula
 from iskra_macros import MACROS, export_macro
 from iskra_workflows import compare_texts, save_history, read_history
@@ -15,11 +17,11 @@ from iskra_index import ROOT, extract, index_folder, search_docs, forget_folder,
 import iskra_assistant as assistant
 
 ROOT.mkdir(parents=True, exist_ok=True)
-VERSION = '1.5'
+VERSION = '1.6'
 ACCENT = '#24518A'
 
 
-class App(WorkMixin, ToolsMixin):
+class App(AIMixin, WorkMixin, ToolsMixin):
     def __init__(self, root):
         self.root = root
         root.title(f'Искра {VERSION} — помощник по документам')
@@ -30,6 +32,8 @@ class App(WorkMixin, ToolsMixin):
         self.indexer = AutoIndexer(ROOT, index_folder, self.events.put)
         self.indexer.start()
         self.start_inbox()
+        self.ai_ready = iskra_ai.available()
+        root.bind('<Escape>', self.ai_stop)
         root.protocol('WM_DELETE_WINDOW', self.close)
         self._style()
         self._menu()
@@ -71,6 +75,8 @@ class App(WorkMixin, ToolsMixin):
         ttk.Label(root, textvariable=self.status, style='Muted.TLabel', padding=(12, 2, 12, 8)).pack(fill='x')
         self.say(assistant.HELP)
         self.say(f'Сейчас в поиске документов: {stats()}. Папки для поиска добавляются кнопкой «Папки…».')
+        self.say(self.ai_status_line(), 'proof')
+        self.root.after(600, self.maybe_first_run)
         self.root.after(100, self.poll)
 
     # ---------- оформление ----------
@@ -90,11 +96,13 @@ class App(WorkMixin, ToolsMixin):
         f = tk.Menu(m, tearoff=False)
         f.add_command(label='Папки для поиска…', command=self.folders_window)
         f.add_command(label='Папки входящих…', command=self.inbox_folders_window)
+        f.add_command(label='Мастер первого запуска…', command=self.first_run_window)
         f.add_command(label='Обновить индекс', command=self.indexer.scan_now)
         f.add_command(label='Открыть папку данных', command=lambda: os.startfile(str(ROOT)))
         f.add_separator(); f.add_command(label='Выход', command=self.close)
         m.add_cascade(label='Файл', menu=f)
         t = tk.Menu(m, tearoff=False)
+        t.add_command(label='Обзор папок', command=self.overview_window)
         t.add_command(label='Контроль сроков', command=lambda: (self.tabs.select(2), self.refresh_deadlines()))
         t.add_command(label='Word → Excel: собрать таблицу из документов…', command=self.word_to_excel)
         t.add_command(label='Excel → Word: документы по образцу…', command=self.excel_to_word)
@@ -133,7 +141,7 @@ class App(WorkMixin, ToolsMixin):
         sc = ttk.Scrollbar(tab, command=self.chat.yview); self.chat.config(yscrollcommand=sc.set)
         tasks = ttk.Frame(tab); tasks.pack(side='bottom', fill='x', pady=(6, 0))
         ttk.Label(tasks, text='Задачи:').pack(side='left', padx=(0, 6))
-        for label, cmd in (('Свод Excel', self.svod_window), ('Составить телеграмму', self.compose_window),
+        for label, cmd in (('Обзор папок', self.overview_window), ('Свод Excel', self.svod_window), ('Составить телеграмму', self.compose_window),
                            ('Объединить телеграммы', self.merge_telegrams_window), ('Word → Excel', self.word_to_excel),
                            ('Excel → Word', self.excel_to_word), ('Орфография', self.spell_window),
                            ('Формула Excel', self.formulas), ('Макрос', self.macro_builder)):
@@ -148,6 +156,8 @@ class App(WorkMixin, ToolsMixin):
         q = ttk.Entry(row, textvariable=self.question, font=('Segoe UI', 11))
         q.pack(side='left', fill='x', expand=True); q.bind('<Return>', lambda e: self.ask())
         ttk.Button(row, text='Спросить', style='Accent.TButton', command=self.ask).pack(side='left', padx=(6, 0))
+        self.stop_btn = ttk.Button(row, text='Стоп', command=self.ai_stop)
+        self.stop_btn.pack(side='left', padx=(6, 0)); self.stop_btn.state(['disabled'])
         sc.pack(side='right', fill='y'); self.chat.pack(fill='both', expand=True)
 
     def say(self, text, tag='iskra'):
@@ -180,9 +190,21 @@ class App(WorkMixin, ToolsMixin):
             self.say(f'В поиске документов: {stats()}. Папки: ' + ('; '.join(self.indexer.folders()) or 'не добавлены'))
         elif cmd == 'formula':
             formula, note = build_formula(arg or text)
+            if not formula and self.ai_ready:
+                self.ai_formula(arg or text)
+                return
             self.say((formula + '\n' if formula else '') + note)
             if formula:
                 self.say('Из чего состоит:\n' + explain_formula(formula))
+        elif cmd == 'write':
+            self.ai_write(arg)
+        elif cmd == 'ask':
+            if self.ai_ready:
+                self.ai_ask(arg)
+            else:
+                self.query.set(arg); self.find(report=True)
+        elif cmd == 'overview':
+            self.chat_overview()
         elif cmd == 'explain':
             self.say('Что делает формула:\n' + explain_formula(arg))
         elif cmd == 'spell':
@@ -194,11 +216,16 @@ class App(WorkMixin, ToolsMixin):
         elif cmd == 'merge':
             self.merge_telegrams_window()
         elif cmd == 'telegram':
-            self.compose_window()
+            if self.ai_ready and len(text.split()) > 3:
+                self.ai_write(text)
+            else:
+                self.compose_window()
         elif cmd == 'reply':
-            self.tabs.select(self.inbox_tab)
             if self.inbox_tree.selection():
+                self.tabs.select(self.inbox_tab)
                 self.inbox_reply()
+            elif self.ai_ready and len(text.split()) > 4:
+                self.ai_write(text)
             else:
                 self.compose_window('Ответ на входящую')
         elif cmd == 'svod':
@@ -619,8 +646,51 @@ def selftest():
     return 0 if ok else 1
 
 
+def selftest_ai():
+    """Iskra.exe --selftest-ai: настоящая модель на этом компьютере; ответы и время пишутся в data/selftest_ai.txt."""
+    import time
+    lines, ok = [], True
+    if not iskra_ai.available():
+        (ROOT / 'selftest_ai.txt').write_text('FAIL нейросеть не найдена (engine/models)\n', encoding='utf-8')
+        return 1
+    lines.append(f'Модель: {iskra_ai.model_name()}')
+    doc = ('тлг 154.txt', 'ТЕЛЕГРАММА № 154/2 от 20.10.2026. От кого: Штаб округа. '
+           'Представить сведения о численности личного состава до 25.10.2026. Обеспечить готовность техники.')
+
+    def check(name, fn, test):
+        nonlocal ok
+        t = time.time()
+        try:
+            out = fn()
+            text = out[0] if isinstance(out, tuple) else out
+            good = test(text)
+            lines.append(f'{"OK  " if good else "FAIL"} {name} ({time.time() - t:.0f} с):\n{text}\n')
+            ok = ok and good
+        except Exception as exc:
+            ok = False
+            lines.append(f'FAIL {name}: {exc!r}')
+
+    def russian(text):
+        letters = [c for c in text if c.isalpha()]
+        return len(text) > 40 and '<think>' not in text and sum('а' <= c.lower() <= 'я' or c in 'ёЁ' for c in letters) / max(1, len(letters)) > 0.7
+
+    check('ответ по документу', lambda: iskra_ai.answer('Какой срок представления сведений о численности?', [doc]),
+          lambda a: '25.10' in a or '25 октября' in a)
+    check('составление текста', lambda: iskra_ai.write(
+        'Составь короткую телеграмму-доклад в штаб округа о том, что сведения о численности личного состава будут представлены в срок', [doc]),
+        russian)
+    check('исправление ошибок', lambda: iskra_ai.edit('Прошу в течении трех дней предоставить отчет о проверке.', 'Исправить ошибки'),
+          lambda e: 'течение' in e.lower())
+    check('формула Excel', lambda: iskra_ai.formula('сумма значений столбца C, где в столбце A написано Госпиталь'),
+          lambda f: f.startswith('='))
+    (ROOT / 'selftest_ai.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    return 0 if ok else 1
+
+
 if __name__ == '__main__':
     import sys
+    if '--selftest-ai' in sys.argv:
+        sys.exit(selftest_ai())
     if '--selftest' in sys.argv:
         sys.exit(selftest())
     root = tk.Tk()

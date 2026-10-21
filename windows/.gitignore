@@ -4,3 +4,8 @@ build/
 dist/
 *.spec
 data/
+model-cache/
+dist-ai/
+*.gguf
+engine/
+Iskra-Windows-AI.zip

@@ -18,6 +18,7 @@ concurrency:
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 90
     defaults:
       run:
         working-directory: windows
@@ -62,6 +63,57 @@ jobs:
           name: Iskra-Windows
           path: windows/Iskra-Windows.zip
 
+      - name: Cache model
+        uses: actions/cache@v4
+        with:
+          path: windows/model-cache
+          key: model-qwen3.5-2b-q6k-v1
+
+      - name: Bundle neural network
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force dist-ai | Out-Null
+          Copy-Item dist/Iskra dist-ai/Iskra -Recurse
+          ./get_engine.ps1 -Target dist-ai/Iskra/engine
+          ./get_model.ps1 -Target model-cache
+          New-Item -ItemType Directory -Force dist-ai/Iskra/models | Out-Null
+          Copy-Item model-cache/*.gguf, model-cache/README.txt dist-ai/Iskra/models/
+          Get-ChildItem dist-ai/Iskra/engine, dist-ai/Iskra/models | Select-Object Name, Length | Format-Table
+
+      - name: Neural network works without internet
+        shell: pwsh
+        run: |
+          # Сеть закрыта брандмауэром Windows для Искры и движка нейросети; проверяем, что запрет действует.
+          Get-NetFirewallProfile | Select-Object Name, Enabled | Format-Table
+          Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled True
+          $iskra = (Resolve-Path dist-ai/Iskra/Iskra.exe).Path
+          $engine = Get-ChildItem dist-ai/Iskra/engine -Include llama-completion.exe, llama-cli.exe -Recurse | Select-Object -First 1
+          $curl = (Get-Command curl.exe).Source
+          foreach ($prog in @($iskra, $engine.FullName, $curl)) {
+            New-NetFirewallRule -DisplayName "Iskra offline $prog" -Direction Outbound -Program $prog -Action Block | Out-Null
+          }
+          & $curl -s -m 15 -o NUL https://huggingface.co
+          if ($LASTEXITCODE -eq 0) { throw 'Запрет сети не действует — проверка была бы нечестной' }
+          Write-Host "Запрет сети действует (curl: код $LASTEXITCODE)"
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          $t = Start-Process $iskra -ArgumentList '--selftest-ai' -PassThru -Wait
+          Write-Host "Секунд всего: $([int]$sw.Elapsed.TotalSeconds)"
+          Get-Content dist-ai/Iskra/data/selftest_ai.txt -Encoding utf8
+          if ($t.ExitCode -ne 0) { throw "Самопроверка нейросети не пройдена: $($t.ExitCode)" }
+          Remove-Item dist-ai/Iskra/data -Recurse -Force
+
+      - name: Zip with neural network
+        shell: pwsh
+        run: |
+          Push-Location dist-ai
+          7z a -tzip -mx=1 ../Iskra-Windows-AI.zip Iskra | Out-Null
+          Pop-Location
+          $size = (Get-Item Iskra-Windows-AI.zip).Length
+          Write-Host "Iskra-Windows-AI.zip: $([math]::Round($size / 1GB, 2)) ГБ"
+          if ($size -ge 2GB) { throw 'Архив больше 2 ГБ — GitHub не примет' }
+
       - name: Publish release
         if: github.ref == 'refs/heads/main'
         shell: bash
@@ -69,8 +121,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete iskra-windows-latest --yes --cleanup-tag || true
-          gh release create iskra-windows-latest Iskra-Windows.zip \
+          gh release create iskra-windows-latest Iskra-Windows.zip Iskra-Windows-AI.zip \
             --prerelease \
             --target "$GITHUB_SHA" \
             --title "Искра для Windows — последняя сборка" \
-            --notes "Сборка ${GITHUB_RUN_NUMBER}. Распакуйте архив целиком и запустите Iskra.exe. Python и интернет не нужны."
+            --notes "Сборка ${GITHUB_RUN_NUMBER}. Iskra-Windows-AI.zip — с нейросетью (1,8 ГБ), Iskra-Windows.zip — без неё (35 МБ). Распакуйте архив целиком и запустите Iskra.exe. Python и интернет не нужны."

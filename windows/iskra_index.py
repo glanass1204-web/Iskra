@@ -162,11 +162,12 @@ def stem(word):
     return word
 
 
-def search_docs(q, limit=100):
+def search_docs(q, limit=100, any_word=False):
+    """any_word=True — достаточно любого из слов (для нейросети: вопрос обычной фразой)."""
     tokens = re.findall(r'[^\W_]+', fold(q.lower()), re.UNICODE)
     if not tokens:
         return []
-    expression = ' AND '.join('"' + stem(x).replace('"', '') + '"*' for x in tokens[:12])
+    expression = (' OR ' if any_word else ' AND ').join('"' + stem(x).replace('"', '') + '"*' for x in tokens[:12])
     c = connect()
     try:
         return c.execute(
@@ -186,11 +187,13 @@ def stats():
         c.close()
 
 
-def iter_documents():
-    """(path, indexed text) for every document — for checks across all files, e.g. deadlines."""
+def iter_documents(max_chars=None):
+    """(path, indexed text) for every document — for checks across all files, e.g. deadlines.
+    max_chars: only the beginning of each text (folder overview over thousands of files)."""
     c = connect()
     try:
-        for path, content in c.execute('SELECT path, content FROM search'):
+        query = 'SELECT path, substr(content, 1, ?) FROM search' if max_chars else 'SELECT path, content FROM search'
+        for path, content in c.execute(query, (max_chars,) if max_chars else ()):
             yield path, content
     finally:
         c.close()
