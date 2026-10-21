@@ -80,6 +80,14 @@ class Commands(unittest.TestCase):
             'формула сумма столбца C где в A "Москва"': ('formula', 'сумма столбца C где в A "Москва"'),
             '=ВПР(E2;A:B;2;ЛОЖЬ)': ('explain', '=ВПР(E2;A:B;2;ЛОЖЬ)'),
             'объясни =СУММ(A1:A5)': ('explain', '=СУММ(A1:A5)'),
+            'собери 5 таблиц в одну': ('svod', ''),
+            'свод таблиц excel': ('svod', ''),
+            'сводка по документу': ('summary', ''),
+            'собери таблицу excel из документов word': ('word2excel', ''),
+            'что пришло?': ('inbox', ''),
+            'входящие': ('inbox', ''),
+            'подготовь ответ на телеграмму': ('reply', ''),
+            'составь телеграмму': ('telegram', ''),
         }
         for text, expected in cases.items():
             self.assertEqual(a.intent(text), expected, text)

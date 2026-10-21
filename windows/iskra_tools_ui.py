@@ -271,18 +271,22 @@ class ToolsMixin:
         ttk.Button(row, text='Стандартное оформление', command=lambda: save('')).pack(side='left', padx=8)
         ttk.Button(row, text='Закрыть', command=win.destroy).pack(side='left')
 
-    def merge_telegrams_window(self):
-        files = filedialog.askopenfilenames(title='Выберите похожие телеграммы (2–10 штук, Ctrl+щелчок)', filetypes=DOC_TYPES)
+    def merge_telegrams_window(self, files=None):
+        files = files or filedialog.askopenfilenames(title='Выберите похожие телеграммы (2–10 штук, Ctrl+щелчок)', filetypes=DOC_TYPES)
         if not files:
             return
         if len(files) < 2:
             messagebox.showinfo('Объединение', 'Выберите хотя бы две телеграммы (Ctrl+щелчок).'); return
-        win = _window(self, 'объединение телеграмм', '620x330')
+        win = _window(self, 'объединение телеграмм', '620x360')
         ttk.Label(win, text=f'Телеграмм: {len(files)}. Как объединить?', font=('Segoe UI', 11, 'bold')).pack(anchor='w', padx=12, pady=(12, 6))
         main_only = tk.BooleanVar(value=True); dates = tk.BooleanVar(value=True); typos = tk.BooleanVar(value=True)
         ttk.Checkbutton(win, text='Оставить главное: убрать вводные фразы («Доводим до вашего сведения», приветствия)', variable=main_only).pack(anchor='w', padx=12, pady=2)
         ttk.Checkbutton(win, text='Даты к одному виду: «25 октября 2026 года» → 25.10.2026', variable=dates).pack(anchor='w', padx=12, pady=2)
         ttk.Checkbutton(win, text='Исправить типовые ошибки («в течении», «по приезду», двойные пробелы, «и и»)', variable=typos).pack(anchor='w', padx=12, pady=2)
+        me = self.telegram_settings().get('me', {})
+        mine = tk.BooleanVar(value=bool(me.get('signature')))
+        if me.get('signature'):
+            ttk.Checkbutton(win, text='Подпись и «От кого» — мои (из реквизитов), а не из исходных телеграмм', variable=mine).pack(anchor='w', padx=12, pady=2)
         ttk.Label(win, wraplength=590, style='Muted.TLabel', text=(
             'Одинаковые пункты остаются один раз, даже если написаны другими словами. '
             'Если сроки или числа в похожих пунктах различаются — пункт помечается [УТОЧНИТЬ]. '
@@ -294,6 +298,10 @@ class ToolsMixin:
                                          dates=dates.get(), fix=fix_typical if typos.get() else None)
             except Exception as exc:
                 messagebox.showerror('Ошибка', str(exc), parent=win); return
+            if mine.get():
+                m.signature = [x.strip() for x in me['signature'].splitlines() if x.strip()]
+                if me.get('from'):
+                    m.header['От кого'] = me['from']
             save_history(ROOT, 'Объединение телеграмм', ', '.join(Path(p).name for p in files)[:400])
             win.destroy()
             self.telegrams(m.text(), ' '.join(m.report[:3]) + ' Проверьте пометки [УТОЧНИТЬ], [ДАТА], [НОМЕР] и нажмите «Орфография».',

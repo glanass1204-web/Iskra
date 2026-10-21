@@ -103,8 +103,10 @@ def telegram_check(text):
         issues.append('Есть табуляция — проверьте оформление.')
     if '\n\n\n' in text:
         issues.append('Есть лишние пустые строки.')
-    if any(mark in text for mark in ('[УТОЧНИТЬ]', '[ФИО]', '[ДАТА]', '[НОМЕР]')):
-        issues.append('Остались незаполненные поля шаблона.')
+    from iskra_compose import unfilled
+    left = unfilled(text)
+    if left:
+        issues.append(f'Не заполнено мест: {len(left)} — ' + ', '.join(dict.fromkeys(left))[:300])
     if not text.rstrip().endswith(('.', '!', '?', '»', '"')):
         issues.append('Проверьте знак препинания в конце.')
     issues.append('Орфография и фактическая точность требуют отдельной проверки: локальный языковой модуль пока не подключён.')

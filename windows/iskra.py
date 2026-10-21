@@ -6,6 +6,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from iskra_services import AutoIndexer
 from iskra_tools_ui import ToolsMixin
+from iskra_work_ui import WorkMixin
 from iskra_formula import build_formula, explain_formula
 from iskra_macros import MACROS, export_macro
 from iskra_workflows import compare_texts, save_history, read_history
@@ -14,11 +15,11 @@ from iskra_index import ROOT, extract, index_folder, search_docs, forget_folder,
 import iskra_assistant as assistant
 
 ROOT.mkdir(parents=True, exist_ok=True)
-VERSION = '1.4'
+VERSION = '1.5'
 ACCENT = '#24518A'
 
 
-class App(ToolsMixin):
+class App(WorkMixin, ToolsMixin):
     def __init__(self, root):
         self.root = root
         root.title(f'Искра {VERSION} — помощник по документам')
@@ -28,6 +29,7 @@ class App(ToolsMixin):
         self.doc_cache = {}        # path -> text выбранных документов
         self.indexer = AutoIndexer(ROOT, index_folder, self.events.put)
         self.indexer.start()
+        self.start_inbox()
         root.protocol('WM_DELETE_WINDOW', self.close)
         self._style()
         self._menu()
@@ -63,6 +65,7 @@ class App(ToolsMixin):
         self._assistant_tab()
         self._document_tab()
         self._deadlines_tab()
+        self._inbox_tab()
 
         self.status = tk.StringVar(value='Готов к работе')
         ttk.Label(root, textvariable=self.status, style='Muted.TLabel', padding=(12, 2, 12, 8)).pack(fill='x')
@@ -86,6 +89,7 @@ class App(ToolsMixin):
         m = tk.Menu(self.root)
         f = tk.Menu(m, tearoff=False)
         f.add_command(label='Папки для поиска…', command=self.folders_window)
+        f.add_command(label='Папки входящих…', command=self.inbox_folders_window)
         f.add_command(label='Обновить индекс', command=self.indexer.scan_now)
         f.add_command(label='Открыть папку данных', command=lambda: os.startfile(str(ROOT)))
         f.add_separator(); f.add_command(label='Выход', command=self.close)
@@ -94,9 +98,12 @@ class App(ToolsMixin):
         t.add_command(label='Контроль сроков', command=lambda: (self.tabs.select(2), self.refresh_deadlines()))
         t.add_command(label='Word → Excel: собрать таблицу из документов…', command=self.word_to_excel)
         t.add_command(label='Excel → Word: документы по образцу…', command=self.excel_to_word)
-        t.add_command(label='Сводная Excel из нескольких Excel…', command=self.consolidation)
+        t.add_command(label='Свод таблиц Excel по организациям…', command=self.svod_window)
+        t.add_command(label='Сводная Excel по шаблону столбцов…', command=self.consolidation)
         t.add_separator()
+        t.add_command(label='Составить телеграмму…', command=self.compose_window)
         t.add_command(label='Редактор телеграмм', command=self.telegrams)
+        t.add_command(label='Мои реквизиты для телеграмм…', command=self.my_details_window)
         t.add_command(label='Объединить телеграммы…', command=self.merge_telegrams_window)
         t.add_command(label='Проверка орфографии', command=self.spell_window)
         t.add_command(label='Сравнить две редакции…', command=self.compare_files)
@@ -126,8 +133,9 @@ class App(ToolsMixin):
         sc = ttk.Scrollbar(tab, command=self.chat.yview); self.chat.config(yscrollcommand=sc.set)
         tasks = ttk.Frame(tab); tasks.pack(side='bottom', fill='x', pady=(6, 0))
         ttk.Label(tasks, text='Задачи:').pack(side='left', padx=(0, 6))
-        for label, cmd in (('Word → Excel', self.word_to_excel), ('Excel → Word', self.excel_to_word),
-                           ('Объединить телеграммы', self.merge_telegrams_window), ('Орфография', self.spell_window),
+        for label, cmd in (('Свод Excel', self.svod_window), ('Составить телеграмму', self.compose_window),
+                           ('Объединить телеграммы', self.merge_telegrams_window), ('Word → Excel', self.word_to_excel),
+                           ('Excel → Word', self.excel_to_word), ('Орфография', self.spell_window),
                            ('Формула Excel', self.formulas), ('Макрос', self.macro_builder)):
             ttk.Button(tasks, text=label, command=cmd).pack(side='left', padx=(0, 4))
         quick = ttk.Frame(tab); quick.pack(side='bottom', fill='x', pady=(6, 0))
@@ -186,7 +194,28 @@ class App(ToolsMixin):
         elif cmd == 'merge':
             self.merge_telegrams_window()
         elif cmd == 'telegram':
-            self.telegrams()
+            self.compose_window()
+        elif cmd == 'reply':
+            self.tabs.select(self.inbox_tab)
+            if self.inbox_tree.selection():
+                self.inbox_reply()
+            else:
+                self.compose_window('Ответ на входящую')
+        elif cmd == 'svod':
+            self.svod_window()
+        elif cmd == 'inbox':
+            items = [i for i in self.inbox.items() if i['status'] != 'выполнен']
+            if not self.inbox.folders():
+                self.say('Папка входящих не выбрана: «Файл» → «Папки входящих…». Я буду проверять её каждые 30 секунд.')
+            elif not items:
+                self.say('Новых и невыполненных входящих нет.')
+            else:
+                self.say(f'Входящих в работе: {len(items)}.')
+                for i in items[:15]:
+                    line = f'• {i["kind"]} «{i["name"]}» {i["number"]}'.rstrip()
+                    if i['deadline']:
+                        line += f' — срок {i["deadline"]}'
+                    self.say(line + f' ({i["status"]})')
         elif cmd == 'macro':
             self.macro_builder(arg)
         elif cmd == 'search':
@@ -411,6 +440,7 @@ class App(ToolsMixin):
 
     def close(self):
         self.indexer.stop()
+        self.inbox.stop()
         self.root.destroy()
 
     def folders_window(self):
@@ -564,6 +594,27 @@ def selftest():
         return f'{len(m.points)} п., Word {out.stat().st_size} байт'
 
     check('телеграммы', telegram)
+
+    def svod():
+        from openpyxl import Workbook
+        from iskra_svod import svod_files
+        d = Path(tempfile.mkdtemp())
+        for name, rows in (('a.xlsx', [['Наименование', 'По списку', 'На лицо'], ['Госпиталь', 10, 9]]),
+                           ('b.xlsx', [['Организация', 'по списку', 'на лицо'], ['Модуль №1', 5, 5]])):
+            wb = Workbook(); [wb.active.append(r) for r in rows]; wb.save(d / name)
+        r = svod_files([d / 'a.xlsx', d / 'b.xlsx'], d / 'свод.xlsx', ['Госпиталь', 'Модуль 1'])
+        return f'{r["orgs"]} орг., столбцы: {", ".join(r["columns"])}'
+
+    def inbox():
+        from iskra_inbox import Inbox
+        d = Path(tempfile.mkdtemp())
+        box = Inbox(d / 'data'); box.add_folder(d)
+        (d / 'тлг.txt').write_text('ТЕЛЕГРАММА\nПредставить сведения до 25.12.2099.', encoding='utf-8')
+        found = box.scan(settle=0)
+        return f'{found[0]["kind"]}, срок {found[0]["deadline"]}'
+
+    check('свод Excel', svod)
+    check('входящие', inbox)
     (ROOT / 'selftest.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
     return 0 if ok else 1
 
