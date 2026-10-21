@@ -25,6 +25,16 @@ FROM = re.compile(r'^\s*(от кого|отправитель|от)\s*:\s*(.+)$'
 STATUSES = ('новый', 'в работе', 'выполнен')
 
 
+def same(a, b):
+    """Один и тот же файл: на Windows путь может быть записан по-разному (регистр, короткие имена RUNNER~1)."""
+    if a == b:
+        return True
+    try:
+        return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
+    except OSError:
+        return False
+
+
 def _now():
     return datetime.now().strftime('%d.%m.%Y %H:%M')
 
@@ -147,13 +157,13 @@ class Inbox:
     def set_status(self, path, status):
         with self._lock:
             for i in self.state['items']:
-                if i['path'] == path:
+                if same(i['path'], path):
                     i['status'] = status
             self._save()
 
     def forget(self, path):
         with self._lock:
-            self.state['items'] = [i for i in self.state['items'] if i['path'] != path]
+            self.state['items'] = [i for i in self.state['items'] if not same(i['path'], path)]
             self._save()
 
     def counts(self):
