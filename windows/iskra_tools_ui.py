@@ -11,7 +11,9 @@ from iskra_formula import build_formula, explain_formula
 from iskra_index import ROOT, extract
 from iskra_services import telegram_check, telegram_template
 from iskra_spell import SpellChecker, summary as spell_summary
-from iskra_telegram import merge_telegrams
+from iskra_telegram import merge as merge_telegrams_full, save_docx as telegram_docx, TEMPLATE_HELP
+from iskra_spell import fix_typical
+import json
 from iskra_workflows import normalize_layout, draft_from_sources, save_history
 import iskra_vba
 
@@ -181,12 +183,17 @@ class ToolsMixin:
 
     # ---------- Телеграммы ----------
 
-    def telegrams(self, initial=None, note=None):
+    def telegrams(self, initial=None, note=None, report=None):
         win = _window(self, 'редактор телеграмм', '860x680')
         ttk.Label(win, text='Проект телеграммы · исходные документы не изменяются', font=('Segoe UI', 12, 'bold')).pack(anchor='w', padx=12, pady=8)
         buttons = ttk.Frame(win); buttons.pack(side='bottom', fill='x', padx=12, pady=8)
         status = tk.StringVar(value=note or 'Используйте утверждённый образец организации. Шаблон здесь — пример.')
         ttk.Label(win, textvariable=status, wraplength=820).pack(side='bottom', anchor='w', padx=12, pady=6)
+        if report:
+            box = tk.Text(win, height=min(8, len(report) + 1), wrap='word', font=('Segoe UI', 9), background='#FFF8E1', relief='flat')
+            box.insert('1.0', 'Что сделано при объединении:\n' + '\n'.join('• ' + r for r in report))
+            box.configure(state='disabled')
+            box.pack(side='bottom', fill='x', padx=12)
         t = tk.Text(win, wrap='word', font=('Segoe UI', 11), undo=True)
         t.pack(fill='both', expand=True, padx=12)
         t.insert('1.0', initial or telegram_template())
@@ -197,13 +204,16 @@ class ToolsMixin:
             messagebox.showinfo('Проверка перед отправкой', '\n'.join('• ' + x for x in issues) or 'Замечаний по оформлению нет.', parent=win)
 
         def save():
-            from docx import Document
             path = filedialog.asksaveasfilename(parent=win, defaultextension='.docx', filetypes=[('Word', '*.docx')], initialdir=str(ROOT))
             if path:
-                d = Document()
-                for line in t.get('1.0', 'end-1c').split('--- ИСТОЧНИКИ (НЕ ЧАСТЬ ТЕЛЕГРАММЫ) ---')[0].rstrip().splitlines():
-                    d.add_paragraph(line)
-                d.save(path); status.set('Проект сохранён: ' + path)
+                template = self.telegram_template_path()
+                try:
+                    telegram_docx(t.get('1.0', 'end-1c'), path, template)
+                except Exception as exc:
+                    messagebox.showerror('Ошибка', str(exc), parent=win); return
+                status.set('Сохранено: ' + path + (' (по вашему шаблону)' if template else ' (стандартное оформление: Times New Roman 14, отступ 1,25 см, поля по ГОСТ)'))
+                if messagebox.askyesno('Готово', 'Телеграмма сохранена. Открыть?', parent=win):
+                    _open_path(path)
 
         def tidy():
             t.replace('1.0', 'end', normalize_layout(t.get('1.0', 'end-1c')))
@@ -225,20 +235,70 @@ class ToolsMixin:
         ttk.Button(buttons, text='Проверить оформление', command=check).pack(side='left', padx=6)
         ttk.Button(buttons, text='Убрать лишние пробелы', command=tidy).pack(side='left')
         ttk.Button(buttons, text='Черновик по выбранному файлу', command=prepare).pack(side='left', padx=6)
-        ttk.Button(buttons, text='Сохранить в Word', command=save).pack(side='right')
+        ttk.Button(buttons, text='Сохранить в Word', style='Accent.TButton', command=save).pack(side='right')
+        ttk.Button(buttons, text='Шаблон оформления…', command=lambda: self.telegram_template_window(win)).pack(side='right', padx=6)
+
+    def telegram_settings(self):
+        try:
+            return json.loads((ROOT / 'telegram.json').read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return {}
+
+    def telegram_template_path(self):
+        p = self.telegram_settings().get('template')
+        return p if p and Path(p).is_file() else None
+
+    def telegram_template_window(self, parent=None):
+        win = _window(self, 'шаблон оформления телеграмм', '680x300')
+        current = self.telegram_template_path()
+        state = tk.StringVar(value=current or '')
+        ttk.Label(win, text=TEMPLATE_HELP, wraplength=640).pack(anchor='w', padx=12, pady=10)
+        ttk.Label(win, textvariable=state, style='Muted.TLabel', wraplength=640).pack(anchor='w', padx=12)
+
+        def save(value):
+            data = self.telegram_settings(); data['template'] = value
+            (ROOT / 'telegram.json').write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+            state.set(value or 'Стандартное оформление: Times New Roman 14, отступ первой строки 1,25 см, поля по ГОСТ Р 7.0.97.')
+
+        def choose():
+            p = filedialog.askopenfilename(parent=win, title='Шаблон телеграммы (.docx)', filetypes=[('Word', '*.docx')])
+            if p:
+                save(p)
+        if not current:
+            state.set('Стандартное оформление: Times New Roman 14, отступ первой строки 1,25 см, поля по ГОСТ Р 7.0.97.')
+        row = ttk.Frame(win); row.pack(pady=12)
+        ttk.Button(row, text='Выбрать свой шаблон…', style='Accent.TButton', command=choose).pack(side='left')
+        ttk.Button(row, text='Стандартное оформление', command=lambda: save('')).pack(side='left', padx=8)
+        ttk.Button(row, text='Закрыть', command=win.destroy).pack(side='left')
 
     def merge_telegrams_window(self):
-        files = filedialog.askopenfilenames(title='Выберите телеграммы для объединения (две и больше)', filetypes=DOC_TYPES)
+        files = filedialog.askopenfilenames(title='Выберите похожие телеграммы (2–10 штук, Ctrl+щелчок)', filetypes=DOC_TYPES)
         if not files:
             return
         if len(files) < 2:
             messagebox.showinfo('Объединение', 'Выберите хотя бы две телеграммы (Ctrl+щелчок).'); return
-        try:
-            text, report = merge_telegrams([(Path(p).name, extract(Path(p))) for p in files])
-        except Exception as exc:
-            messagebox.showerror('Ошибка', str(exc)); return
-        save_history(ROOT, 'Объединение телеграмм', ', '.join(Path(p).name for p in files)[:400])
-        self.telegrams(text, ' '.join(report) + ' Проверьте пометки [УТОЧНИТЬ], [ДАТА], [НОМЕР].')
+        win = _window(self, 'объединение телеграмм', '620x330')
+        ttk.Label(win, text=f'Телеграмм: {len(files)}. Как объединить?', font=('Segoe UI', 11, 'bold')).pack(anchor='w', padx=12, pady=(12, 6))
+        main_only = tk.BooleanVar(value=True); dates = tk.BooleanVar(value=True); typos = tk.BooleanVar(value=True)
+        ttk.Checkbutton(win, text='Оставить главное: убрать вводные фразы («Доводим до вашего сведения», приветствия)', variable=main_only).pack(anchor='w', padx=12, pady=2)
+        ttk.Checkbutton(win, text='Даты к одному виду: «25 октября 2026 года» → 25.10.2026', variable=dates).pack(anchor='w', padx=12, pady=2)
+        ttk.Checkbutton(win, text='Исправить типовые ошибки («в течении», «по приезду», двойные пробелы, «и и»)', variable=typos).pack(anchor='w', padx=12, pady=2)
+        ttk.Label(win, wraplength=590, style='Muted.TLabel', text=(
+            'Одинаковые пункты остаются один раз, даже если написаны другими словами. '
+            'Если сроки или числа в похожих пунктах различаются — пункт помечается [УТОЧНИТЬ]. '
+            'Основание — в начало, «О выполнении доложить» — один раз в конец. Подпись — общая или [УТОЧНИТЬ ПОДПИСЬ].')).pack(anchor='w', padx=12, pady=10)
+
+        def run():
+            try:
+                m = merge_telegrams_full([(Path(p).name, extract(Path(p))) for p in files], main_only=main_only.get(),
+                                         dates=dates.get(), fix=fix_typical if typos.get() else None)
+            except Exception as exc:
+                messagebox.showerror('Ошибка', str(exc), parent=win); return
+            save_history(ROOT, 'Объединение телеграмм', ', '.join(Path(p).name for p in files)[:400])
+            win.destroy()
+            self.telegrams(m.text(), ' '.join(m.report[:3]) + ' Проверьте пометки [УТОЧНИТЬ], [ДАТА], [НОМЕР] и нажмите «Орфография».',
+                           report=m.report)
+        ttk.Button(win, text='Объединить', style='Accent.TButton', command=run).pack(pady=(0, 12))
 
     # ---------- Орфография ----------
 

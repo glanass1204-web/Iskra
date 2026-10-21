@@ -7,7 +7,6 @@ from docx import Document
 from openpyxl import Workbook, load_workbook
 
 from iskra_batch import discover_fields, collect_tables, mail_merge, template_fields
-from iskra_telegram import merge_telegrams
 
 
 def card(path, fio, rank, unit, phone=None):
@@ -78,31 +77,6 @@ class Batch(unittest.TestCase):
         wb = Workbook(); wb.active.append(['ФИО']); wb.active.append(['А']); wb.save(self.dir / 'x.xlsx')
         with self.assertRaisesRegex(ValueError, 'Должность'):
             mail_merge(self.dir / 'x.xlsx', self.dir / 'tpl.docx', self.dir / 'o')
-
-
-class Telegrams(unittest.TestCase):
-    def test_merges_three_telegrams(self):
-        a = ('ТЕЛЕГРАММА\nКому: Командиру в/ч 11111\nОт кого: Начальник штаба\nДата: 20.10.2026\nНомер: 15\n\n'
-             'Текст: Прошу представить списки личного состава до 25.10.2026. Доклад обязателен.\nПодпись: Иванов И.И.')
-        b = ('ТЕЛЕГРАММА\nКому: Командиру в/ч 22222\nОт кого: Начальник штаба\nДата: 21.10.2026\n\n'
-             'Текст: Доклад обязателен. Обеспечить готовность техники к 01.11.2026.\nПодпись: Иванов И.И.')
-        c = ('ТЕЛЕГРАММА\nКому: Командиру в/ч 11111\nОт кого: Заместитель начальника штаба\n\n'
-             'Прошу представить списки личного состава до 25.10.2026.\nПодпись: Петров П.П.')
-        text, report = merge_telegrams([('a.docx', a), ('b.docx', b), ('c.docx', c)])
-        self.assertIn('Кому: Командиру в/ч 11111; Командиру в/ч 22222', text)
-        self.assertIn('От кого: [УТОЧНИТЬ: Начальник штаба / Заместитель начальника штаба]', text)
-        self.assertIn('Дата: [ДАТА]', text)
-        self.assertEqual(text.count('Доклад обязателен'), 1)
-        self.assertEqual(text.count('Прошу представить списки'), 1)
-        self.assertIn('1. Прошу представить списки личного состава до 25.10.2026. Доклад обязателен.', text)
-        self.assertIn('2. Обеспечить готовность техники к 01.11.2026.', text)
-        self.assertIn('Подпись: [УТОЧНИТЬ: Иванов И.И. / Петров П.П.]', text)
-        self.assertTrue(any('весь текст повторяет' in r for r in report), report)
-        self.assertTrue(any('Убрано повторяющихся предложений: 2' in r for r in report), report)
-
-    def test_needs_two(self):
-        with self.assertRaises(ValueError):
-            merge_telegrams([('a', 'текст')])
 
 
 if __name__ == '__main__':

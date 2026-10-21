@@ -14,7 +14,7 @@ from iskra_index import ROOT, extract, index_folder, search_docs, forget_folder,
 import iskra_assistant as assistant
 
 ROOT.mkdir(parents=True, exist_ok=True)
-VERSION = '1.3'
+VERSION = '1.4'
 ACCENT = '#24518A'
 
 
@@ -554,6 +554,16 @@ def selftest():
     check('помощник', lambda: assistant.intent('объедини телеграммы'))
     check('макрос', lambda: (lambda c: f'{len(c[1])} шага, замечаний {len(__import__("iskra_vba").lint(c[0]))}')(
         __import__('iskra_vba').generate('удалить пустые строки, выделить повторы в столбце B')))
+    def telegram():
+        from iskra_telegram import merge, save_docx
+        a = 'Прошу в течении трёх дней представить отчёт о проверке.\nНачальник отдела И.И. Иванов'
+        b = 'Прошу в течении 3 дней представить отчёт о проверке.\nНачальник отдела И.И. Иванов'
+        m = merge([('1.txt', a), ('2.txt', b)], fix=__import__('iskra_spell').fix_typical)
+        out = Path(tempfile.mkdtemp()) / 't.docx'
+        save_docx(m.text(), out)
+        return f'{len(m.points)} п., Word {out.stat().st_size} байт'
+
+    check('телеграммы', telegram)
     (ROOT / 'selftest.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
     return 0 if ok else 1
 

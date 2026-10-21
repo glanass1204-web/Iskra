@@ -1,7 +1,5 @@
 """Offline Excel workbook consolidation, preserving provenance and checking results."""
 from pathlib import Path
-from collections import Counter
-from datetime import datetime
 import re
 from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Font, PatternFill

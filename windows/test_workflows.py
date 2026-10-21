@@ -1,6 +1,5 @@
 import tempfile
 import unittest
-from pathlib import Path
 from iskra_workflows import compare_texts, normalize_layout, draft_from_sources, save_history, read_history
 
 class WorkflowTests(unittest.TestCase):

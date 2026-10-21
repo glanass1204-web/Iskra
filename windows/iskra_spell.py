@@ -38,7 +38,7 @@ STYLE_RULES = [
     (r'\bоплата за\b', 'оплата', '«оплата» без «за» (но «плата за»)'),
     (r'\bвследствии\b', 'вследствие', 'правильно: вследствие'),
     (r'\bввиду того что\b', None, 'в официальном тексте лучше «в связи с тем, что»'),
-    (r'\bсогласно с\b', 'согласно', '«согласно» без «с»'),
+    (r'\bсогласно с\b', None, '«согласно» без «с» и с дательным падежом: согласно приказу'),
     (r'\bнесмотря\s+на\s+то,?\s+что\b', None, 'перед «что» нужна запятая: «несмотря на то, что»'),
     (r'\bв виду\b(?=\s+(того|отсутствия|необходимости|изменения))', 'ввиду', 'в значении «из-за» — «ввиду»'),
     (r'\bна протяжение\b', 'на протяжении', 'правильно: на протяжении'),
@@ -147,3 +147,20 @@ def summary(issues):
     if not issues:
         return 'Ошибок не найдено.'
     return f'Орфография: {spelling}, стиль: {style}, опечатки и пробелы: {typo}.'
+
+
+def fix_typical(text):
+    """Applies only the safe, unambiguous fixes (style rules with a correct form, repeated words, spaces).
+    Spelling is not changed automatically: a word may be a term or a name. Returns (text, number of fixes)."""
+    issues = [i for i in _issue_style(text) if i.fix]
+    done, last = 0, len(text) + 1
+    for i in sorted(issues, key=lambda x: x.start, reverse=True):
+        if i.end > last:
+            continue  # пересекается с уже исправленным
+        fix = i.fix
+        if i.text[:1].isupper() and fix[:1].islower():
+            fix = fix[:1].upper() + fix[1:]
+        text = text[:i.start] + fix + text[i.end:]
+        last = i.start
+        done += 1
+    return text, done
