@@ -8,6 +8,7 @@ from iskra_services import AutoIndexer
 from iskra_tools_ui import ToolsMixin
 from iskra_work_ui import WorkMixin
 from iskra_ai_ui import AIMixin
+from iskra_plan_ui import PlanMixin
 import iskra_ai
 from iskra_formula import build_formula, explain_formula
 from iskra_macros import MACROS, export_macro
@@ -17,11 +18,11 @@ from iskra_index import ROOT, extract, index_folder, search_docs, forget_folder,
 import iskra_assistant as assistant
 
 ROOT.mkdir(parents=True, exist_ok=True)
-VERSION = '1.7'
+VERSION = '1.8'
 ACCENT = '#24518A'
 
 
-class App(AIMixin, WorkMixin, ToolsMixin):
+class App(PlanMixin, AIMixin, WorkMixin, ToolsMixin):
     def __init__(self, root):
         self.root = root
         root.title(f'Искра {VERSION} — помощник по документам')
@@ -32,6 +33,7 @@ class App(AIMixin, WorkMixin, ToolsMixin):
         self.indexer = AutoIndexer(ROOT, index_folder, self.events.put)
         self.indexer.start()
         self.start_inbox()
+        self.start_planning()
         self.ai_ready = iskra_ai.available()
         root.bind('<Escape>', self.ai_stop)
         root.protocol('WM_DELETE_WINDOW', self.close)
@@ -70,6 +72,7 @@ class App(AIMixin, WorkMixin, ToolsMixin):
         self._document_tab()
         self._deadlines_tab()
         self._inbox_tab()
+        self._control_tab()
 
         self.status = tk.StringVar(value='Готов к работе')
         ttk.Label(root, textvariable=self.status, style='Muted.TLabel', padding=(12, 2, 12, 8)).pack(fill='x')
@@ -77,6 +80,7 @@ class App(AIMixin, WorkMixin, ToolsMixin):
         self.say(f'Сейчас в поиске документов: {stats()}. Папки для поиска добавляются кнопкой «Папки…».')
         self.say(self.ai_status_line(), 'proof')
         self.root.after(600, self.maybe_first_run)
+        self.root.after(4000, lambda: self._morning_enabled() and self.maybe_morning())
         self.root.after(100, self.poll)
 
     # ---------- оформление ----------
@@ -102,6 +106,9 @@ class App(AIMixin, WorkMixin, ToolsMixin):
         f.add_separator(); f.add_command(label='Выход', command=self.close)
         m.add_cascade(label='Файл', menu=f)
         t = tk.Menu(m, tearoff=False)
+        t.add_command(label='Утренняя сводка', command=self.morning_window)
+        t.add_command(label='Поручения (контроль исполнения)', command=lambda: self.tabs.select(self.control_tab))
+        t.add_command(label='Автосвод таблиц за день…', command=self.autosvod_window)
         t.add_command(label='Обзор папок', command=self.overview_window)
         t.add_command(label='Контроль сроков', command=lambda: (self.tabs.select(2), self.refresh_deadlines()))
         t.add_command(label='Word → Excel: собрать таблицу из документов…', command=self.word_to_excel)
@@ -141,7 +148,8 @@ class App(AIMixin, WorkMixin, ToolsMixin):
         sc = ttk.Scrollbar(tab, command=self.chat.yview); self.chat.config(yscrollcommand=sc.set)
         tasks = ttk.Frame(tab); tasks.pack(side='bottom', fill='x', pady=(6, 0))
         ttk.Label(tasks, text='Задачи:').pack(side='left', padx=(0, 6))
-        for label, cmd in (('Обзор папок', self.overview_window), ('Свод Excel', self.svod_window), ('Составить телеграмму', self.compose_window),
+        for label, cmd in (('Сводка', self.morning_window), ('Автосвод', self.autosvod_window),
+                           ('Обзор папок', self.overview_window), ('Свод Excel', self.svod_window), ('Составить телеграмму', self.compose_window),
                            ('Объединить телеграммы', self.merge_telegrams_window), ('Word → Excel', self.word_to_excel),
                            ('Excel → Word', self.excel_to_word), ('Орфография', self.spell_window),
                            ('Формула Excel', self.formulas), ('Макрос', self.macro_builder)):
@@ -215,6 +223,16 @@ class App(AIMixin, WorkMixin, ToolsMixin):
                 self.query.set(arg); self.find(report=True)
         elif cmd == 'overview':
             self.chat_overview()
+        elif cmd == 'morning':
+            self.morning_window()
+        elif cmd == 'control':
+            self.tabs.select(self.control_tab)
+            late, soon = self.control.overdue(), self.control.due(3)
+            self.say(f'На контроле: {len(self.control.open_items())}, просрочено: {len(late)}, срок в ближайшие 3 дня: {len(soon)}.')
+            for t in (late + soon)[:10]:
+                self.say(f'• {t["deadline"]} — {t["text"]}' + (f' [{t["responsible"]}]' if t['responsible'] else ''), 'proof')
+        elif cmd == 'autosvod':
+            self.autosvod_window()
         elif cmd == 'explain':
             self.say('Что делает формула:\n' + explain_formula(arg))
         elif cmd == 'spell':
@@ -650,6 +668,23 @@ def selftest():
         found = box.scan(settle=0)
         return f'{found[0]["kind"]}, срок {found[0]["deadline"]}'
 
+    def control():
+        from iskra_control import Control
+        c = Control(Path(tempfile.mkdtemp()))
+        added = c.add_from_document('ТЕЛЕГРАММА\n1. Представить сведения до 25.12.2099. Ответственный — майор С.С. Сидоров.', 'т.txt')
+        return f'{len(added)} поруч., ответственный: {added[0]["responsible"]}'
+
+    def autosvod():
+        from openpyxl import Workbook
+        from iskra_autosvod import AutoSvod
+        d = Path(tempfile.mkdtemp())
+        wb = Workbook(); [wb.active.append(r) for r in (['Наименование', 'По списку'], ['Госпиталь', 10])]; wb.save(d / 'г.xlsx')
+        a = AutoSvod(d / 'data'); a.configure(d, d / 'out', True, ['Госпиталь', 'Полигон'])
+        r = a.build()
+        return f'не прислали: {", ".join(r["missing"])}'
+
+    check('поручения', control)
+    check('автосвод', autosvod)
     check('свод Excel', svod)
     check('входящие', inbox)
     (ROOT / 'selftest.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')

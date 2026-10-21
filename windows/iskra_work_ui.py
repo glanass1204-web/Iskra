@@ -341,7 +341,7 @@ class WorkMixin:
         self.inbox_detail = tk.Text(tab, height=5, wrap='word', font=('Segoe UI', 10), background='#FAFAFA', relief='flat', state='disabled')
         self.inbox_detail.pack(fill='x')
         b = ttk.Frame(tab); b.pack(fill='x', pady=(6, 0))
-        for label, cmd in (('Открыть', self.inbox_open), ('Ответ телеграммой', self.inbox_reply),
+        for label, cmd in (('Открыть', self.inbox_open), ('В поручения', self.inbox_to_control), ('Ответ телеграммой', self.inbox_reply),
                            ('Напоминание', self.inbox_reminder), ('Объединить телеграммы', self.inbox_merge),
                            ('В свод Excel', self.inbox_svod)):
             ttk.Button(b, text=label, command=cmd).pack(side='left', padx=(0, 4))
@@ -440,6 +440,12 @@ class WorkMixin:
             self.inbox.set_status(it['path'], 'в работе'); self.refresh_inbox()
         self.with_text(it['path'], make)
 
+    def inbox_to_control(self):
+        items = self.inbox_selected(many=True)
+        if items:
+            self.control_from_paths([i['path'] for i in items], announce=True)
+            self.tabs.select(self.control_tab)
+
     def inbox_reminder(self):
         it = self.inbox_selected()
         if it:
@@ -459,6 +465,10 @@ class WorkMixin:
 
     def on_new_files(self, items):
         self.refresh_inbox()
+        if getattr(self, 'control', None) is not None:
+            docs = [it['path'] for it in items if it['kind'] in ('Телеграмма', 'Приказ', 'Распоряжение', 'Указание', 'Письмо', 'Документ')]
+            if docs:
+                self.control_from_paths(docs)
         if getattr(self, 'ai_ready', False):
             self.inbox_briefs([it for it in items if it['kind'] != 'Таблица Excel'])
         for it in items:
