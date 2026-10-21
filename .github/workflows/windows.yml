@@ -81,7 +81,7 @@ jobs:
           New-Item -ItemType Directory -Force dist-ai/Iskra/models | Out-Null
           # Модель 2,8 ГБ, а GitHub принимает файлы до 2 ГБ: режем на части, llama.cpp сам читает их по порядку.
           $model = Get-ChildItem model-cache/*.gguf | Select-Object -First 1
-          & split-tool/llama-gguf-split.exe --split --split-max-size 1700M $model.FullName (Join-Path (Resolve-Path dist-ai/Iskra/models) $model.BaseName)
+          & split-tool/llama-gguf-split.exe --split --split-max-size 400M $model.FullName (Join-Path (Resolve-Path dist-ai/Iskra/models) $model.BaseName)
           if ($LASTEXITCODE -ne 0) { throw "Не удалось разрезать модель: $LASTEXITCODE" }
           Copy-Item model-cache/README.txt dist-ai/Iskra/models/
           Get-ChildItem dist-ai/Iskra/engine, dist-ai/Iskra/models | Select-Object Name, Length | Format-Table
@@ -112,20 +112,30 @@ jobs:
       - name: Zip with neural network
         shell: pwsh
         run: |
-          # Часть 1: программа, движок и первая часть модели. Часть 2: остальные части модели — в ту же папку Iskra/models.
-          New-Item -ItemType Directory -Force part2/Iskra/models | Out-Null
-          Get-ChildItem dist-ai/Iskra/models/*.gguf | Where-Object { $_.Name -notmatch '-00001-of-' } | Move-Item -Destination part2/Iskra/models/
+          # Маленькие части (до ~400 МБ), чтобы скачивание не обрывалось: часть 1 — программа и движок,
+          # остальные — по одной части модели. Все распаковываются в одну папку.
+          New-Item -ItemType Directory -Force parts | Out-Null
+          $models = Get-ChildItem dist-ai/Iskra/models/*.gguf | Sort-Object Name
+          New-Item -ItemType Directory -Force stage-models | Out-Null
+          $models | Move-Item -Destination stage-models/
           Push-Location dist-ai
-          7z a -tzip -mx=1 ../Iskra-Windows-AI-chast-1.zip Iskra | Out-Null
+          7z a -tzip -mx=1 ../parts/Iskra-AI-chast-01.zip Iskra | Out-Null
           Pop-Location
-          Push-Location part2
-          7z a -tzip -mx=1 ../Iskra-Windows-AI-chast-2.zip Iskra | Out-Null
-          Pop-Location
-          foreach ($zip in 'Iskra-Windows-AI-chast-1.zip', 'Iskra-Windows-AI-chast-2.zip') {
-            $size = (Get-Item $zip).Length
-            Write-Host "$zip : $([math]::Round($size / 1GB, 2)) ГБ"
-            if ($size -ge 2GB) { throw "$zip больше 2 ГБ — GitHub не примет" }
+          $i = 2
+          foreach ($m in (Get-ChildItem stage-models/*.gguf | Sort-Object Name)) {
+            $dir = "stage-$i/Iskra/models"
+            New-Item -ItemType Directory -Force $dir | Out-Null
+            Move-Item $m.FullName $dir
+            Push-Location "stage-$i"
+            7z a -tzip -mx=1 ("../parts/Iskra-AI-chast-{0:D2}.zip" -f $i) Iskra | Out-Null
+            Pop-Location
+            $i++
           }
+          Get-ChildItem parts | ForEach-Object {
+            Write-Host "$($_.Name): $([math]::Round($_.Length / 1MB)) МБ"
+            if ($_.Length -ge 2GB) { throw "$($_.Name) больше 2 ГБ" }
+          }
+          "Всего частей: $((Get-ChildItem parts).Count)" | Write-Host
 
       - name: Publish release
         if: github.ref == 'refs/heads/main'
@@ -134,8 +144,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete iskra-windows-latest --yes --cleanup-tag || true
-          gh release create iskra-windows-latest Iskra-Windows-AI-chast-1.zip Iskra-Windows-AI-chast-2.zip Iskra-Windows.zip \
+          gh release create iskra-windows-latest parts/*.zip Iskra-Windows.zip \
             --prerelease \
             --target "$GITHUB_SHA" \
             --title "Искра для Windows — последняя сборка" \
-            --notes "Сборка ${GITHUB_RUN_NUMBER}. С нейросетью: скачайте Iskra-Windows-AI-chast-1.zip и Iskra-Windows-AI-chast-2.zip и распакуйте ОБА в одну и ту же папку, затем запустите Iskra\Iskra.exe. Без нейросети: Iskra-Windows.zip (35 МБ). Python и интернет не нужны."
+            --notes "Сборка ${GITHUB_RUN_NUMBER}. С нейросетью: скачайте ВСЕ файлы Iskra-AI-chast-01 … chast-NN (каждый до 400 МБ) и распакуйте их в одну и ту же папку, затем запустите Iskra\\Iskra.exe. Если какой-то файл не докачался — скачайте заново только его. Без нейросети: Iskra-Windows.zip (35 МБ). Интернет для работы не нужен."

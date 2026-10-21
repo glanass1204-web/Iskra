@@ -120,8 +120,8 @@ def run(prompt, max_tokens=700, on_text=None, cancel=None, timeout=600, base=Non
     if model is None:
         raise AIError('Нейросеть не установлена: в папке models нет файла модели .gguf.')
     if missing_parts(model):
-        raise AIError('Не хватает второй части модели (' + ', '.join(missing_parts(model)) + '). '
-                      'Распакуйте архив «часть 2» в ту же папку, что и «часть 1».')
+        raise AIError('Не хватает частей модели (' + ', '.join(missing_parts(model)) + '). '
+                      'Распакуйте все архивы Iskra-AI-chast-… (часть 2 и дальше) в ту же папку, что и часть 1.')
     # Модель одна, процессор один: задачи (чат, входящие в фоне) идут по очереди.
     waited = False
     while not _LOCK.acquire(timeout=0.5):

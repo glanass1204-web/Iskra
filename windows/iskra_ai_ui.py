@@ -185,8 +185,8 @@ class AIMixin:
             return f'Нейросеть: {ai.model_name()} — работает на этом компьютере, без интернета.'
         _, model = ai.local_files()
         if model is not None and ai.missing_parts(model):
-            return ('Нейросеть: не хватает второй части модели — распакуйте Iskra-Windows-AI-chast-2.zip '
-                    'в ту же папку, что и первую часть, и перезапустите Искру.')
+            return ('Нейросеть: не хватает частей модели (' + ', '.join(ai.missing_parts(model)) + '). Распакуйте все архивы '
+                    'Iskra-AI-chast-… в одну папку и перезапустите Искру.')
         return 'Нейросеть не установлена (версия без модели): работают поиск, сроки, свод, шаблоны телеграмм и формулы.'
 
     def ai_background(self, job, done=None):
