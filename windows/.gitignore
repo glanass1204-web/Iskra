@@ -9,3 +9,4 @@ dist-ai/
 *.gguf
 engine/
 Iskra-Windows-AI.zip
+eval/

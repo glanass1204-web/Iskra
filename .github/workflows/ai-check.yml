@@ -1,0 +1,48 @@
+name: AI quality
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "windows/iskra_ai.py"
+      - "windows/ai_eval.py"
+      - ".github/workflows/ai-check.yml"
+
+jobs:
+  eval:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        model:
+          - https://huggingface.co/bartowski/Qwen_Qwen3.5-2B-GGUF/resolve/main/Qwen_Qwen3.5-2B-Q6_K.gguf
+          - https://huggingface.co/bartowski/Qwen_Qwen3.5-4B-GGUF/resolve/main/Qwen_Qwen3.5-4B-Q4_K_M.gguf
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache model
+        uses: actions/cache@v4
+        with:
+          path: windows/eval/models
+          key: eval-${{ matrix.model }}
+      - name: Engine and model
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          ./get_engine.ps1 -Target eval/engine
+          ./get_model.ps1 -Target eval/models -Url '${{ matrix.model }}'
+      - name: Evaluate (network blocked for the engine)
+        shell: pwsh
+        run: |
+          $engine = Get-ChildItem eval/engine -Include llama-completion.exe, llama-cli.exe -Recurse | Select-Object -First 1
+          New-NetFirewallRule -DisplayName 'engine offline' -Direction Outbound -Program $engine.FullName -Action Block | Out-Null
+          $env:PYTHONIOENCODING = 'utf-8'
+          python ai_eval.py eval

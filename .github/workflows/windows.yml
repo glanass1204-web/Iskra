@@ -97,6 +97,7 @@ jobs:
           & $curl -s -m 15 -o NUL https://huggingface.co
           if ($LASTEXITCODE -eq 0) { throw 'Запрет сети не действует — проверка была бы нечестной' }
           Write-Host "Запрет сети действует (curl: код $LASTEXITCODE)"
+          $global:LASTEXITCODE = 0
           $sw = [Diagnostics.Stopwatch]::StartNew()
           $t = Start-Process $iskra -ArgumentList '--selftest-ai' -PassThru -Wait
           Write-Host "Секунд всего: $([int]$sw.Elapsed.TotalSeconds)"
