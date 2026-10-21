@@ -122,5 +122,8 @@ def export_macro(macro, destination):
     p = Path(destination)
     if p.suffix.lower() != '.bas':
         raise ValueError('Для VBA требуется файл .bas')
-    p.write_text(macro.code, encoding='utf-8-sig')
+    # The VBA editor imports .bas files in the ANSI code page (Windows-1251 on Russian Windows):
+    # UTF-8 turned every Russian letter into «РЎ…».
+    from iskra_vba import bas_bytes
+    p.write_bytes(bas_bytes(macro.code, 'Iskra_' + macro.key))
     return p

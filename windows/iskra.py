@@ -14,7 +14,7 @@ from iskra_index import ROOT, extract, index_folder, search_docs, forget_folder,
 import iskra_assistant as assistant
 
 ROOT.mkdir(parents=True, exist_ok=True)
-VERSION = '1.2'
+VERSION = '1.3'
 ACCENT = '#24518A'
 
 
@@ -102,6 +102,7 @@ class App(ToolsMixin):
         t.add_command(label='Сравнить две редакции…', command=self.compare_files)
         t.add_separator()
         t.add_command(label='Формулы Excel', command=self.formulas)
+        t.add_command(label='Конструктор макросов VBA', command=self.macro_builder)
         t.add_command(label='Библиотека макросов VBA', command=self.macros)
         t.add_separator(); t.add_command(label='История действий', command=self.history)
         m.add_cascade(label='Инструменты', menu=t)
@@ -127,7 +128,7 @@ class App(ToolsMixin):
         ttk.Label(tasks, text='Задачи:').pack(side='left', padx=(0, 6))
         for label, cmd in (('Word → Excel', self.word_to_excel), ('Excel → Word', self.excel_to_word),
                            ('Объединить телеграммы', self.merge_telegrams_window), ('Орфография', self.spell_window),
-                           ('Формула Excel', self.formulas)):
+                           ('Формула Excel', self.formulas), ('Макрос', self.macro_builder)):
             ttk.Button(tasks, text=label, command=cmd).pack(side='left', padx=(0, 4))
         quick = ttk.Frame(tab); quick.pack(side='bottom', fill='x', pady=(6, 0))
         ttk.Label(quick, text='По документу:').pack(side='left', padx=(0, 6))
@@ -186,6 +187,8 @@ class App(ToolsMixin):
             self.merge_telegrams_window()
         elif cmd == 'telegram':
             self.telegrams()
+        elif cmd == 'macro':
+            self.macro_builder(arg)
         elif cmd == 'search':
             self.query.set(arg); self.find(report=True)
         elif cmd == 'upcoming':
@@ -549,6 +552,8 @@ def selftest():
     check('Word', docx)
     check('формула', lambda: build_formula('сумма столбца C где в столбце A "Москва"')[0])
     check('помощник', lambda: assistant.intent('объедини телеграммы'))
+    check('макрос', lambda: (lambda c: f'{len(c[1])} шага, замечаний {len(__import__("iskra_vba").lint(c[0]))}')(
+        __import__('iskra_vba').generate('удалить пустые строки, выделить повторы в столбце B')))
     (ROOT / 'selftest.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
     return 0 if ok else 1
 

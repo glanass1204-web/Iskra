@@ -13,6 +13,7 @@ from iskra_services import telegram_check, telegram_template
 from iskra_spell import SpellChecker, summary as spell_summary
 from iskra_telegram import merge_telegrams
 from iskra_workflows import normalize_layout, draft_from_sources, save_history
+import iskra_vba
 
 DOC_TYPES = [('Word и текст', '*.docx *.txt'), ('Все документы', '*.docx *.xlsx *.pptx *.pdf *.txt *.md *.csv')]
 
@@ -386,3 +387,150 @@ class ToolsMixin:
         if request:
             go()
         entry.focus_set()
+
+    # ---------- Конструктор макросов ----------
+
+    def macro_builder(self, task=''):
+        win = _window(self, 'конструктор макросов', '1100x720')
+        top = ttk.Frame(win); top.pack(fill='x', padx=12, pady=(10, 4))
+        ttk.Label(top, text='Что должен сделать макрос? Пишите по шагам через запятую:', font=('Segoe UI', 11, 'bold')).pack(anchor='w')
+        task_box = tk.Text(top, height=3, wrap='word', font=('Segoe UI', 11)); task_box.pack(fill='x', pady=4)
+        task_box.insert('1.0', task or 'удалить пустые строки, выделить повторы в столбце B красным, отсортировать по столбцу A')
+        row = ttk.Frame(top); row.pack(fill='x')
+        app = tk.StringVar(value='auto')
+        for text, value in (('Определить само', 'auto'), ('Excel', 'excel'), ('Word', 'word')):
+            ttk.Radiobutton(row, text=text, variable=app, value=value).pack(side='left', padx=(0, 10))
+        ttk.Button(row, text='Написать макрос', style='Accent.TButton', command=lambda: build()).pack(side='left', padx=(10, 6))
+        ttk.Button(row, text='Что я умею / примеры', command=lambda: show_help()).pack(side='left')
+        ttk.Button(row, text='Готовые макросы', command=self.macros).pack(side='right')
+
+        pane = ttk.Panedwindow(win, orient='horizontal'); pane.pack(fill='both', expand=True, padx=12, pady=6)
+        left = ttk.Frame(pane); pane.add(left, weight=1)
+        ttk.Label(left, text='Как я поняла задачу:').pack(anchor='w')
+        steps_box = tk.Text(left, wrap='word', font=('Segoe UI', 10), width=40, state='disabled', background='#FAFAFA', relief='flat')
+        steps_box.tag_configure('ok', foreground='#1B5E20'); steps_box.tag_configure('warn', foreground='#8A5300')
+        steps_box.tag_configure('bad', foreground='#B3261E'); steps_box.tag_configure('head', font=('Segoe UI', 10, 'bold'))
+        steps_box.pack(fill='both', expand=True)
+        right = ttk.Frame(pane); pane.add(right, weight=2)
+        ttk.Label(right, text='Код макроса (можно править вручную):').pack(anchor='w')
+        code = tk.Text(right, wrap='none', font=('Consolas', 10), undo=True)
+        sx = ttk.Scrollbar(right, orient='horizontal', command=code.xview); code.configure(xscrollcommand=sx.set)
+        code.tag_configure('problem', background='#FFCDD2')
+        code.pack(fill='both', expand=True); sx.pack(fill='x')
+
+        status = tk.StringVar(value='Опишите задачу и нажмите «Написать макрос».')
+        ttk.Label(win, textvariable=status, wraplength=1060).pack(anchor='w', padx=12)
+        buttons = ttk.Frame(win); buttons.pack(fill='x', padx=12, pady=8)
+
+        def steps_text(parts):
+            steps_box.configure(state='normal'); steps_box.delete('1.0', 'end')
+            for text, tag in parts:
+                steps_box.insert('end', text + '\n', tag)
+            steps_box.configure(state='disabled')
+
+        def build():
+            text = task_box.get('1.0', 'end').strip()
+            try:
+                vba, steps, unknown = iskra_vba.generate(text, None if app.get() == 'auto' else app.get())
+            except ValueError as exc:
+                steps_text([(str(exc), 'bad')]); status.set(str(exc)); return
+            code.delete('1.0', 'end'); code.insert('1.0', vba)
+            kind = 'Excel' if steps[0].op.app == 'excel' else 'Word'
+            parts = [(f'Макрос для {kind}:', 'head')]
+            for i, s in enumerate(steps, 1):
+                parts.append((f'{i}. {s.title}', 'ok'))
+                if s.warning:
+                    parts.append(('   ⚠ ' + s.warning, 'warn'))
+            if unknown:
+                parts.append(('', 'ok'))
+                parts.append(('Не поняла (в макрос не вошло):', 'head'))
+                parts += [('• ' + u, 'bad') for u in unknown]
+                parts.append(('Перефразируйте словами из списка «Что я умею».', 'bad'))
+            steps_text(parts)
+            problems = iskra_vba.lint(vba)
+            status.set(f'Готово: шагов {len(steps)}.' + (f' Не понято частей: {len(unknown)}.' if unknown else '') +
+                       (' Проверка кода: замечаний нет.' if not problems else f' Замечаний в коде: {len(problems)}.') +
+                       f' Запускать в {kind}: Alt+F11 → Insert → Module → вставить → F5.')
+            save_history(ROOT, 'Макрос', text[:300])
+
+        def show_help():
+            excel, word = iskra_vba.capabilities()
+            parts = [('Excel умеет:', 'head')] + [('• ' + x, 'ok') for x in excel]
+            parts += [('', 'ok'), ('Word умеет:', 'head')] + [('• ' + x, 'ok') for x in word]
+            parts += [('Для Word можно добавить «во всех документах папки» — обработаются все файлы, копии сохранятся отдельно.', 'warn')]
+            parts += [('', 'ok'), ('Примеры (скопируйте в поле задачи):', 'head')] + [('• ' + e.split(': ', 1)[1], 'ok') for e in iskra_vba.EXAMPLES]
+            steps_text(parts)
+
+        def mark(problems):
+            code.tag_remove('problem', '1.0', 'end')
+            for line, _ in problems:
+                if line:
+                    code.tag_add('problem', f'{line}.0', f'{line}.end')
+
+        def check():
+            problems = iskra_vba.lint(code.get('1.0', 'end-1c'))
+            mark(problems)
+            if not problems:
+                status.set('Проверка кода: типичных ошибок нет. (Полную проверку делает только сам Excel/Word при запуске.)')
+            else:
+                status.set(f'Найдено замечаний: {len(problems)} — строки подсвечены.')
+                messagebox.showinfo('Проверка кода', '\n'.join((f'Строка {n}: ' if n else '') + m for n, m in problems[:20]), parent=win)
+
+        def fix():
+            fixed, changes = iskra_vba.auto_fix(code.get('1.0', 'end-1c'))
+            code.delete('1.0', 'end'); code.insert('1.0', fixed)
+            left_over = iskra_vba.lint(fixed); mark(left_over)
+            msg = ('Исправлено:\n' + '\n'.join('• ' + c for c in changes)) if changes else 'Автоматически исправлять нечего.'
+            if left_over:
+                msg += '\n\nОсталось исправить вручную:\n' + '\n'.join((f'Строка {n}: ' if n else '') + m for n, m in left_over[:10])
+            messagebox.showinfo('Исправление', msg, parent=win)
+
+        def error_help():
+            dlg = _window(self, 'ошибка при запуске макроса', '700x460')
+            ttk.Label(dlg, text='Вставьте текст ошибки из окна Excel/Word (Ctrl+C в окне ошибки копирует текст):').pack(anchor='w', padx=12, pady=8)
+            err = tk.Text(dlg, height=4, wrap='word', font=('Segoe UI', 10)); err.pack(fill='x', padx=12)
+            out = tk.Text(dlg, wrap='word', font=('Segoe UI', 10), state='disabled', background='#FAFAFA', relief='flat')
+            out.pack(fill='both', expand=True, padx=12, pady=8)
+
+            def explain():
+                title, cause, what = iskra_vba.explain_error(err.get('1.0', 'end'))
+                out.configure(state='normal'); out.delete('1.0', 'end')
+                out.insert('end', title + '\n\nПочему: ' + cause + '\n\nЧто сделать: ' + what)
+                fixed, changes = iskra_vba.auto_fix(code.get('1.0', 'end-1c'))
+                if changes:
+                    out.insert('end', '\n\nВ коде можно исправить автоматически:\n' + '\n'.join('• ' + c for c in changes) +
+                               '\nНажмите «Исправить код» и вставьте макрос заново.')
+                out.configure(state='disabled')
+            row2 = ttk.Frame(dlg); row2.pack(pady=(0, 10))
+            ttk.Button(row2, text='Объяснить', style='Accent.TButton', command=explain).pack(side='left')
+            ttk.Button(row2, text='Исправить код', command=lambda: (fix(), dlg.destroy())).pack(side='left', padx=8)
+
+        def copy():
+            win.clipboard_clear(); win.clipboard_append(code.get('1.0', 'end-1c'))
+            status.set('Код скопирован. В Excel/Word: Alt+F11 → Insert → Module → Ctrl+V → F5.')
+
+        def save():
+            path = filedialog.asksaveasfilename(parent=win, defaultextension='.bas', initialfile='Iskra_Macro.bas',
+                                                initialdir=str(ROOT), filetypes=[('Модуль VBA', '*.bas')])
+            if path:
+                Path(path).write_bytes(iskra_vba.bas_bytes(code.get('1.0', 'end-1c')))
+                status.set('Сохранено: ' + path + '. Подключение: Alt+F11 → File → Import File.')
+
+        def how():
+            messagebox.showinfo('Как запустить макрос', (
+                '1. Сохраните копию файла — действия макроса нельзя отменить.\n'
+                '2. В Excel или Word нажмите Alt+F11.\n'
+                '3. Insert → Module (Вставка → Модуль), вставьте код (Ctrl+V).\n'
+                '4. Встаньте внутрь Sub Iskra_Macro и нажмите F5.\n'
+                '5. Если появилась ошибка — скопируйте её текст и нажмите здесь «Была ошибка».\n\n'
+                'Чтобы макрос сохранился в файле, сохраните его как .xlsm / .docm.\n'
+                'Макросы могут быть запрещены политиками организации.'), parent=win)
+
+        ttk.Button(buttons, text='Копировать код', style='Accent.TButton', command=copy).pack(side='left')
+        ttk.Button(buttons, text='Сохранить .bas', command=save).pack(side='left', padx=6)
+        ttk.Button(buttons, text='Проверить код', command=check).pack(side='left')
+        ttk.Button(buttons, text='Исправить автоматически', command=fix).pack(side='left', padx=6)
+        ttk.Button(buttons, text='Была ошибка при запуске…', command=error_help).pack(side='left')
+        ttk.Button(buttons, text='Как запустить', command=how).pack(side='right')
+        if task:
+            build()
