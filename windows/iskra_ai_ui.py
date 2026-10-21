@@ -181,6 +181,10 @@ class AIMixin:
     def ai_status_line(self):
         if self.ai_ready:
             return f'Нейросеть: {ai.model_name()} — работает на этом компьютере, без интернета.'
+        _, model = ai.local_files()
+        if model is not None and ai.missing_parts(model):
+            return ('Нейросеть: не хватает второй части модели — распакуйте Iskra-Windows-AI-chast-2.zip '
+                    'в ту же папку, что и первую часть, и перезапустите Искру.')
         return 'Нейросеть не установлена (версия без модели): работают поиск, сроки, свод, шаблоны телеграмм и формулы.'
 
     def ai_background(self, job, done=None):
@@ -260,6 +264,7 @@ class AIMixin:
             self.compose_window(); return
 
         extra = self._chosen_doc(task)
+        me = self.my_details()
 
         def job(cancel):
             sources, paths = self._sources_for(task, extra)
@@ -268,7 +273,7 @@ class AIMixin:
                 'Подходящих документов не нашла — пишу по задаче, факты помечу [УТОЧНИТЬ].', 'proof')))
             self.events.put(('call', lambda: self.tabs.select(0)))
             update = self._stream_to_chat('Черновик (нейросеть):')
-            text, _ = ai.write(task, sources, on_text=update, cancel=cancel)
+            text, _ = ai.write(task, sources, me=me, on_text=update, cancel=cancel)
             return text, paths
 
         def done(result):

@@ -54,6 +54,20 @@ class AITest(unittest.TestCase):
         self.assertTrue(ai.available(self.base))
         self.assertFalse(ai.available(Path(tempfile.mkdtemp())))
 
+    def test_split_model(self):
+        models = self.base / 'models'
+        (models / 'Qwen3.5-2B-Q6_K.gguf').unlink()
+        (models / 'Qwen3.5-4B-Q4_K_M-00001-of-00002.gguf').write_bytes(b'GGUF')
+        binary, model = ai.local_files(self.base)
+        self.assertEqual(model.name, 'Qwen3.5-4B-Q4_K_M-00001-of-00002.gguf')
+        self.assertFalse(ai.available(self.base))                     # вторая часть не распакована
+        with self.assertRaises(ai.AIError) as e:
+            ai.run('x', base=self.base)
+        self.assertIn('часть 2', str(e.exception))
+        (models / 'Qwen3.5-4B-Q4_K_M-00002-of-00002.gguf').write_bytes(b'GGUF')
+        self.assertTrue(ai.available(self.base))
+        self.assertEqual(ai.local_files(self.base)[1].name, 'Qwen3.5-4B-Q4_K_M-00001-of-00002.gguf')
+
     def test_stops_after_answer_and_streams(self):
         seen = []
         t = time.monotonic()

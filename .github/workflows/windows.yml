@@ -67,7 +67,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: windows/model-cache
-          key: model-qwen3.5-2b-q6k-v1
+          key: model-qwen3.5-4b-q4km-v1
 
       - name: Bundle neural network
         shell: pwsh
@@ -76,10 +76,14 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist-ai | Out-Null
           Copy-Item dist/Iskra dist-ai/Iskra -Recurse
-          ./get_engine.ps1 -Target dist-ai/Iskra/engine
+          ./get_engine.ps1 -Target dist-ai/Iskra/engine -Tools split-tool
           ./get_model.ps1 -Target model-cache
           New-Item -ItemType Directory -Force dist-ai/Iskra/models | Out-Null
-          Copy-Item model-cache/*.gguf, model-cache/README.txt dist-ai/Iskra/models/
+          # Модель 2,8 ГБ, а GitHub принимает файлы до 2 ГБ: режем на части, llama.cpp сам читает их по порядку.
+          $model = Get-ChildItem model-cache/*.gguf | Select-Object -First 1
+          & split-tool/llama-gguf-split.exe --split --split-max-size 1700M $model.FullName (Join-Path (Resolve-Path dist-ai/Iskra/models) $model.BaseName)
+          if ($LASTEXITCODE -ne 0) { throw "Не удалось разрезать модель: $LASTEXITCODE" }
+          Copy-Item model-cache/README.txt dist-ai/Iskra/models/
           Get-ChildItem dist-ai/Iskra/engine, dist-ai/Iskra/models | Select-Object Name, Length | Format-Table
 
       - name: Neural network works without internet
@@ -108,12 +112,20 @@ jobs:
       - name: Zip with neural network
         shell: pwsh
         run: |
+          # Часть 1: программа, движок и первая часть модели. Часть 2: остальные части модели — в ту же папку Iskra/models.
+          New-Item -ItemType Directory -Force part2/Iskra/models | Out-Null
+          Get-ChildItem dist-ai/Iskra/models/*.gguf | Where-Object { $_.Name -notmatch '-00001-of-' } | Move-Item -Destination part2/Iskra/models/
           Push-Location dist-ai
-          7z a -tzip -mx=1 ../Iskra-Windows-AI.zip Iskra | Out-Null
+          7z a -tzip -mx=1 ../Iskra-Windows-AI-chast-1.zip Iskra | Out-Null
           Pop-Location
-          $size = (Get-Item Iskra-Windows-AI.zip).Length
-          Write-Host "Iskra-Windows-AI.zip: $([math]::Round($size / 1GB, 2)) ГБ"
-          if ($size -ge 2GB) { throw 'Архив больше 2 ГБ — GitHub не примет' }
+          Push-Location part2
+          7z a -tzip -mx=1 ../Iskra-Windows-AI-chast-2.zip Iskra | Out-Null
+          Pop-Location
+          foreach ($zip in 'Iskra-Windows-AI-chast-1.zip', 'Iskra-Windows-AI-chast-2.zip') {
+            $size = (Get-Item $zip).Length
+            Write-Host "$zip : $([math]::Round($size / 1GB, 2)) ГБ"
+            if ($size -ge 2GB) { throw "$zip больше 2 ГБ — GitHub не примет" }
+          }
 
       - name: Publish release
         if: github.ref == 'refs/heads/main'
@@ -122,8 +134,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete iskra-windows-latest --yes --cleanup-tag || true
-          gh release create iskra-windows-latest Iskra-Windows.zip Iskra-Windows-AI.zip \
+          gh release create iskra-windows-latest Iskra-Windows-AI-chast-1.zip Iskra-Windows-AI-chast-2.zip Iskra-Windows.zip \
             --prerelease \
             --target "$GITHUB_SHA" \
             --title "Искра для Windows — последняя сборка" \
-            --notes "Сборка ${GITHUB_RUN_NUMBER}. Iskra-Windows-AI.zip — с нейросетью (1,8 ГБ), Iskra-Windows.zip — без неё (35 МБ). Распакуйте архив целиком и запустите Iskra.exe. Python и интернет не нужны."
+            --notes "Сборка ${GITHUB_RUN_NUMBER}. С нейросетью: скачайте Iskra-Windows-AI-chast-1.zip и Iskra-Windows-AI-chast-2.zip и распакуйте ОБА в одну и ту же папку, затем запустите Iskra\Iskra.exe. Без нейросети: Iskra-Windows.zip (35 МБ). Python и интернет не нужны."

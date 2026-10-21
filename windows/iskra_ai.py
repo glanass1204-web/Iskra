@@ -47,14 +47,30 @@ def local_files(base=None):
     if not binary.is_file():
         binary = engine / _exe('llama-cli')
     model_dir = base / 'models'
-    models = sorted(model_dir.glob('*.gguf'), key=lambda p: ('mmproj' in p.name.lower(), p.name)) if model_dir.is_dir() else []
-    models = [m for m in models if 'mmproj' not in m.name.lower()]
+    models = sorted(model_dir.glob('*.gguf')) if model_dir.is_dir() else []
+    # Не модель: проектор картинок (mmproj) и вторые части разрезанной модели (…-00002-of-00002.gguf).
+    models = [m for m in models if 'mmproj' not in m.name.lower() and not SPLIT.search(m.name) or SPLIT_FIRST.search(m.name)]
     return binary, (models[0] if models else None)
+
+
+SPLIT = re.compile(r'-(\d{5})-of-(\d{5})\.gguf$', re.IGNORECASE)
+SPLIT_FIRST = re.compile(r'-00001-of-\d{5}\.gguf$', re.IGNORECASE)
+
+
+def missing_parts(model):
+    """Части разрезанной модели, которых нет рядом с первой (архив «часть 2» не распакован)."""
+    m = SPLIT.search(model.name) if model else None
+    if not m:
+        return []
+    total = int(m.group(2))
+    stem = model.name[:m.start()]
+    return [f'{stem}-{i:05d}-of-{total:05d}.gguf' for i in range(1, total + 1)
+            if not (model.parent / f'{stem}-{i:05d}-of-{total:05d}.gguf').is_file()]
 
 
 def available(base=None):
     binary, model = local_files(base)
-    return binary.is_file() and model is not None
+    return binary.is_file() and model is not None and not missing_parts(model)
 
 
 def model_name(base=None):
@@ -92,7 +108,8 @@ def clean(text):
     text = text.split('<think>')[0] if text.count('<think>') and '</think>' not in text else text
     for marker in ('<|im_end|>', '<|im_start|>', '[end of text]', '<|endoftext|>'):
         text = text.split(marker)[0]
-    return text.strip()
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    return re.sub(r'\n\s*\n(\s*\n)+', '\n\n', text).strip()
 
 
 def run(prompt, max_tokens=700, on_text=None, cancel=None, timeout=600, base=None, temperature=0.3):
@@ -102,6 +119,9 @@ def run(prompt, max_tokens=700, on_text=None, cancel=None, timeout=600, base=Non
         raise AIError('Нейросеть не установлена: нет папки engine с llama-completion.exe. Нужна версия Искры «с нейросетью».')
     if model is None:
         raise AIError('Нейросеть не установлена: в папке models нет файла модели .gguf.')
+    if missing_parts(model):
+        raise AIError('Не хватает второй части модели (' + ', '.join(missing_parts(model)) + '). '
+                      'Распакуйте архив «часть 2» в ту же папку, что и «часть 1».')
     tmp = Path(tempfile.mkdtemp(prefix='iskra_ai_'))
     prompt_file = tmp / 'prompt.txt'
     # Через файл, а не командной строкой: командные строки видны всем в диспетчере задач.
@@ -177,11 +197,14 @@ def _cleanup(tmp):
 
 # ---------- задачи ----------
 
-TELEGRAM_FORMAT = ('Оформи как телеграмму:\nТЕЛЕГРАММА\n\nКому: …\nОт кого: …\n\nТекст:\n…\n\nПодпись:\n'
-                   '[ДОЛЖНОСТЬ]\n[звание] [И.О. Фамилия]')
+def telegram_format(me=None):
+    me = me or {}
+    sign = me.get('signature', '').strip() or '[ДОЛЖНОСТЬ]\n[звание] [И.О. Фамилия]'
+    return ('Оформи как телеграмму строго по образцу:\nТЕЛЕГРАММА\n\nКому: <адресат из материалов>\n'
+            f'От кого: {me.get("from") or "[УТОЧНИТЬ: от кого]"}\n\nТекст:\n<текст>\n\nПодпись:\n{sign}')
 
 
-def write(task, sources=(), **kw):
+def write(task, sources=(), me=None, **kw):
     """Составить новый текст по задаче, опираясь на найденные документы."""
     block, truncated = materials(list(sources))
     user = (f'Задача: {task.strip()}\n\n'
@@ -190,7 +213,7 @@ def write(task, sources=(), **kw):
             'который требуется в задаче. Если это ответ или доклад на входящий документ — начни со ссылки на него '
             '(«На № … от …») и изложи по существу: что сделано или будет сделано и в какой срок.\n')
     if 'телеграм' in task.lower():
-        user += TELEGRAM_FORMAT + '\n'
+        user += telegram_format(me) + '\n'
     if block:
         user += '\nМатериалы (справка; используй только факты из них):\n\n' + block + '\n'
     user += ('\nВерни только готовый текст документа, без вступлений вроде «Вот текст» и без пояснений после. '
@@ -219,8 +242,9 @@ EDITS = {
 
 def edit(text, how, **kw):
     instruction = EDITS.get(how, how)
-    user = (f'{instruction}\nСтруктуру (строки «Кому:», «Дата:», «Текст:», «Подпись:» и т. п.) сохрани. '
-            f'Верни только готовый текст.\n\nТекст:\n{text.strip()}')
+    user = (f'{instruction}\nЕсли в тексте есть строки «Кому:», «Дата:», «Текст:», «Подпись:» — сохрани их; '
+            'если их нет — не добавляй. Ничего не подписывай от себя. Верни только готовый текст.\n\n'
+            f'Текст:\n{text.strip()}')
     return run(chat_prompt(user), max_tokens=min(1500, len(text) // 2 + 300), temperature=0.2, **kw)
 
 
@@ -292,7 +316,7 @@ def formula(task, **kw):
 def summarize(title, text, **kw):
     user = (f'{title}\n\n{text[:MAX_SOURCE_CHARS]}\n\n'
             'Обобщи в 5–8 пунктах: о чём эти документы, основные темы, кто пишет, что срочно и на что обратить внимание. '
-            'Только то, что следует из данных.')
+            'Только то, что прямо следует из данных: не делай выводов и не толкуй числа, которых нет в документах.')
     return run(chat_prompt(user), max_tokens=500, temperature=0.2, **kw)
 
 

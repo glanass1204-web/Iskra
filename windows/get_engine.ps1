@@ -1,5 +1,5 @@
 ﻿# Скачивает свежий llama.cpp для Windows x64 (CPU) в папку engine. Нужен интернет — только при сборке.
-param([string]$Target = (Join-Path $PSScriptRoot 'engine'))
+param([string]$Target = (Join-Path $PSScriptRoot 'engine'), [string]$Tools = '')
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $headers = @{ 'User-Agent' = 'Iskra' }
@@ -22,5 +22,10 @@ Expand-Archive $zip $unpacked
 New-Item -ItemType Directory -Force $Target | Out-Null
 # Нужны только программа для одиночных ответов и её библиотеки (без сервера и сетевых утилит).
 Get-ChildItem $unpacked -Recurse -Include 'llama-completion.exe','llama-cli.exe','*.dll' | Copy-Item -Destination $Target -Force
+if ($Tools) {
+  # Для сборки: программа, которая режет модель на части меньше 2 ГБ (ограничение GitHub на файл).
+  New-Item -ItemType Directory -Force $Tools | Out-Null
+  Get-ChildItem $unpacked -Recurse -Include 'llama-gguf-split.exe','*.dll' | Copy-Item -Destination $Tools -Force
+}
 Set-Content (Join-Path $Target 'VERSION.txt') "llama.cpp $($release.tag_name) — https://github.com/ggml-org/llama.cpp (MIT)"
 Write-Host "Готово: $Target"
