@@ -4,20 +4,21 @@ from datetime import date
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-from iskra_services import AutoIndexer, telegram_check, telegram_template, excel_formula
+from iskra_services import AutoIndexer
+from iskra_tools_ui import ToolsMixin
+from iskra_formula import build_formula, explain_formula
 from iskra_macros import MACROS, export_macro
-from iskra_workflows import compare_texts, normalize_layout, draft_from_sources, save_history, read_history
+from iskra_workflows import compare_texts, save_history, read_history
 from iskra_consolidate import consolidate
-from iskra_crossformat import merge_crossformat
 from iskra_index import ROOT, extract, index_folder, search_docs, forget_folder, stats, iter_documents
 import iskra_assistant as assistant
 
 ROOT.mkdir(parents=True, exist_ok=True)
-VERSION = '1.1'
+VERSION = '1.2'
 ACCENT = '#24518A'
 
 
-class App:
+class App(ToolsMixin):
     def __init__(self, root):
         self.root = root
         root.title(f'Искра {VERSION} — помощник по документам')
@@ -91,10 +92,15 @@ class App:
         m.add_cascade(label='Файл', menu=f)
         t = tk.Menu(m, tearoff=False)
         t.add_command(label='Контроль сроков', command=lambda: (self.tabs.select(2), self.refresh_deadlines()))
-        t.add_command(label='Сравнить две редакции…', command=self.compare_files)
-        t.add_command(label='Сводная Excel по шаблону…', command=self.consolidation)
-        t.add_command(label='Собрать поля Word ↔ Excel…', command=self.crossformat)
+        t.add_command(label='Word → Excel: собрать таблицу из документов…', command=self.word_to_excel)
+        t.add_command(label='Excel → Word: документы по образцу…', command=self.excel_to_word)
+        t.add_command(label='Сводная Excel из нескольких Excel…', command=self.consolidation)
+        t.add_separator()
         t.add_command(label='Редактор телеграмм', command=self.telegrams)
+        t.add_command(label='Объединить телеграммы…', command=self.merge_telegrams_window)
+        t.add_command(label='Проверка орфографии', command=self.spell_window)
+        t.add_command(label='Сравнить две редакции…', command=self.compare_files)
+        t.add_separator()
         t.add_command(label='Формулы Excel', command=self.formulas)
         t.add_command(label='Библиотека макросов VBA', command=self.macros)
         t.add_separator(); t.add_command(label='История действий', command=self.history)
@@ -117,7 +123,14 @@ class App:
         self.chat.tag_configure('value', foreground='#1A1A1A', font=('Segoe UI', 10, 'bold'))
         self.chat.tag_configure('proof', foreground='#666666', lmargin1=18, lmargin2=18)
         sc = ttk.Scrollbar(tab, command=self.chat.yview); self.chat.config(yscrollcommand=sc.set)
+        tasks = ttk.Frame(tab); tasks.pack(side='bottom', fill='x', pady=(6, 0))
+        ttk.Label(tasks, text='Задачи:').pack(side='left', padx=(0, 6))
+        for label, cmd in (('Word → Excel', self.word_to_excel), ('Excel → Word', self.excel_to_word),
+                           ('Объединить телеграммы', self.merge_telegrams_window), ('Орфография', self.spell_window),
+                           ('Формула Excel', self.formulas)):
+            ttk.Button(tasks, text=label, command=cmd).pack(side='left', padx=(0, 4))
         quick = ttk.Frame(tab); quick.pack(side='bottom', fill='x', pady=(6, 0))
+        ttk.Label(quick, text='По документу:').pack(side='left', padx=(0, 6))
         for label, cmd in (('Кратко', 'кратко'), ('Сроки', 'сроки'), ('Кто', 'кто'), ('Номера', 'номера'),
                            ('Суммы', 'суммы'), ('Все даты', 'даты'), ('Ближайшие сроки', 'ближайшие сроки')):
             ttk.Button(quick, text=label, command=lambda c=cmd: self.ask(c)).pack(side='left', padx=(0, 4))
@@ -157,8 +170,22 @@ class App:
         elif cmd == 'stats':
             self.say(f'В поиске документов: {stats()}. Папки: ' + ('; '.join(self.indexer.folders()) or 'не добавлены'))
         elif cmd == 'formula':
-            formula, note = excel_formula(arg or text)
+            formula, note = build_formula(arg or text)
             self.say((formula + '\n' if formula else '') + note)
+            if formula:
+                self.say('Из чего состоит:\n' + explain_formula(formula))
+        elif cmd == 'explain':
+            self.say('Что делает формула:\n' + explain_formula(arg))
+        elif cmd == 'spell':
+            self.spell_window()
+        elif cmd == 'word2excel':
+            self.word_to_excel()
+        elif cmd == 'excel2word':
+            self.excel_to_word()
+        elif cmd == 'merge':
+            self.merge_telegrams_window()
+        elif cmd == 'telegram':
+            self.telegrams()
         elif cmd == 'search':
             self.query.set(arg); self.find(report=True)
         elif cmd == 'upcoming':
@@ -414,29 +441,6 @@ class App:
         ttk.Button(buttons, text='Закрыть', command=win.destroy).pack(side='right')
         refresh()
 
-    def crossformat(self):
-        files=filedialog.askopenfilenames(title='Выберите Word и Excel документы',filetypes=[('Word и Excel','*.docx *.xlsx *.xlsm')])
-        if not files:return
-        win=tk.Toplevel(self.root);win.title('Word ↔ Excel · сбор данных');win.geometry('640x350')
-        ttk.Label(win,text='Названия нужных полей (по одному в строке). Точные подписи в исходниках:',wraplength=600).pack(anchor='w',padx=12,pady=8)
-        fields=tk.Text(win,height=7);fields.pack(fill='both',expand=True,padx=12)
-        fields.insert('1.0','Организация\nДата\nНомер\nКоличество')
-        fmt=tk.StringVar(value='xlsx')
-        ttk.Radiobutton(win,text='Результат: Excel',variable=fmt,value='xlsx').pack(anchor='w',padx=12)
-        ttk.Radiobutton(win,text='Результат: Word',variable=fmt,value='docx').pack(anchor='w',padx=12)
-        ttk.Label(win,text='Если поле отсутствует или противоречиво — НЕ НАЙДЕНО. Никаких догадок.',wraplength=600).pack(anchor='w',padx=12,pady=6)
-        def run():
-            ext=fmt.get()
-            output=filedialog.asksaveasfilename(parent=win,title='Сохранить новый сводный файл',defaultextension='.'+ext,filetypes=[('Результат','*.'+ext)])
-            if not output:return
-            try:
-                result=merge_crossformat(files,fields.get('1.0','end').splitlines(),output,ext)
-                save_history(ROOT,'Сводная Word/Excel',f"{len(files)} файлов, {result['rows']} записей, {result['issues']} замечаний")
-                messagebox.showinfo('Сбор завершён',f"Записей: {result['rows']}\nЗамечаний: {result['issues']}\nНе прочитано файлов: {len(result['failed'])}\n\n{output}\n\nПроверьте раздел источников и замечаний.",parent=win)
-                win.destroy()
-            except Exception as exc:messagebox.showerror('Ошибка',str(exc),parent=win)
-        ttk.Button(win,text='Собрать и проверить',command=run).pack(pady=8)
-
     def consolidation(self):
         template=filedialog.askopenfilename(title='Общий Excel-файл: заголовки в первой строке',filetypes=[('Excel','*.xlsx')])
         if not template:return
@@ -456,43 +460,6 @@ class App:
                 win.destroy()
             except Exception as exc:messagebox.showerror('Ошибка объединения',str(exc),parent=win)
         ttk.Button(win,text='Собрать и проверить',command=run).pack(pady=8)
-
-    def telegrams(self):
-        win=tk.Toplevel(self.root);win.title('Искра · редактор телеграмм');win.geometry('800x650')
-        ttk.Label(win,text='Проект телеграммы · исходные документы не изменяются',font=('Segoe UI',12,'bold')).pack(anchor='w',padx=12,pady=8)
-        t=tk.Text(win,wrap='word',font=('Segoe UI',11));t.pack(fill='both',expand=True,padx=12)
-        t.insert('1.0',telegram_template())
-        status=tk.StringVar(value='Используйте утверждённый образец организации. Шаблон здесь — пример.')
-        ttk.Label(win,textvariable=status,wraplength=750).pack(anchor='w',padx=12,pady=6)
-        buttons=ttk.Frame(win);buttons.pack(fill='x',padx=12,pady=8)
-        def check():
-            issues=telegram_check(t.get('1.0','end-1c'))
-            messagebox.showinfo('Проверка перед отправкой','\n'.join('• '+x for x in issues),parent=win)
-        def save():
-            from docx import Document
-            path=filedialog.asksaveasfilename(parent=win,defaultextension='.docx',filetypes=[('Word','*.docx')],initialdir=str(ROOT))
-            if path:
-                d=Document()
-                for line in t.get('1.0','end-1c').splitlines():d.add_paragraph(line)
-                d.save(path);status.set('Проект сохранён: '+path)
-        ttk.Button(buttons,text='Проверить текст',command=check).pack(side='left')
-        ttk.Button(buttons,text='Сохранить проект Word',command=save).pack(side='left',padx=8)
-        def tidy():
-            t.replace('1.0','end',normalize_layout(t.get('1.0','end-1c')))
-            status.set('Пробелы и пустые строки приведены к единому виду. Проверьте текст.')
-        def prepare():
-            ix=self.selected()
-            if ix is None:
-                messagebox.showinfo('Источник','Сначала найдите и выберите документ в главном окне.',parent=win);return
-            path=self.results[ix][0]
-            try:
-                text=draft_from_sources('По выбранному документу',[(path,extract(Path(path)))])
-                t.replace('1.0','end',text)
-                save_history(ROOT,'Проект телеграммы',Path(path).name)
-                status.set('Создан черновик с выдержками из источника. Это НЕ готовый ИИ-ответ.')
-            except Exception as exc:messagebox.showerror('Ошибка',str(exc),parent=win)
-        ttk.Button(buttons,text='Убрать лишние пробелы',command=tidy).pack(side='left',padx=8)
-        ttk.Button(buttons,text='Черновик по выбранному файлу',command=prepare).pack(side='left',padx=8)
 
     def compare_files(self):
         first=filedialog.askopenfilename(title='Старая редакция',filetypes=[('Документы','*.docx *.xlsx *.pptx *.pdf *.txt *.md *.csv')])
@@ -557,22 +524,39 @@ class App:
         names.bind('<<ListboxSelect>>',show)
         names.selection_set(0);show()
 
-    def formulas(self):
-        win=tk.Toplevel(self.root);win.title('Искра · формулы Excel');win.geometry('740x480')
-        ttk.Label(win,text='Опишите задачу обычными словами',font=('Segoe UI',12,'bold')).pack(anchor='w',padx=12,pady=8)
-        request=tk.StringVar()
-        ttk.Entry(win,textvariable=request,font=('Segoe UI',11)).pack(fill='x',padx=12)
-        result=tk.Text(win,wrap='word',font=('Segoe UI',11));result.pack(fill='both',expand=True,padx=12,pady=12)
-        result.insert('1.0','Примеры: «сумма», «среднее», «количество по условию», «разница дат», «если», «впр».\n\nФормулы приведены для русской локализации Excel. Проверьте диапазоны перед вставкой.')
-        def suggest():
-            formula, note=excel_formula(request.get())
-            result.delete('1.0','end')
-            result.insert('1.0',(formula+'\n\n' if formula else '')+note)
-        ttk.Button(win,text='Подобрать формулу',command=suggest).pack(pady=(0,10))
 
+def selftest():
+    """Iskra.exe --selftest: checks the bundled parts of a built program, writes data/selftest.txt."""
+    import tempfile
+    from docx import Document
+    from iskra_spell import SpellChecker
+    lines, ok = [], True
+
+    def check(name, fn):
+        nonlocal ok
+        try:
+            lines.append(f'OK   {name}: {fn()}')
+        except Exception as exc:
+            ok = False
+            lines.append(f'FAIL {name}: {exc!r}')
+
+    def docx():
+        p = Path(tempfile.mkdtemp()) / 'a.docx'
+        d = Document(); d.add_paragraph('ФИО: Иванов И.И.'); d.save(p)
+        return extract(p).strip()
+
+    check('словарь', lambda: [i.text for i in SpellChecker().check('Отчот направить в течении недели.')])
+    check('Word', docx)
+    check('формула', lambda: build_formula('сумма столбца C где в столбце A "Москва"')[0])
+    check('помощник', lambda: assistant.intent('объедини телеграммы'))
+    (ROOT / 'selftest.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    return 0 if ok else 1
 
 
 if __name__ == '__main__':
+    import sys
+    if '--selftest' in sys.argv:
+        sys.exit(selftest())
     root = tk.Tk()
     App(root)
     root.mainloop()

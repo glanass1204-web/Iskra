@@ -42,6 +42,11 @@ jobs:
       - name: Check EXE starts
         shell: pwsh
         run: |
+          if (-not (Test-Path dist/Iskra/_internal/dict/ru_RU.dic)) { throw 'В сборке нет словаря' }
+          $t = Start-Process dist/Iskra/Iskra.exe -ArgumentList '--selftest' -PassThru -Wait
+          Get-Content dist/Iskra/data/selftest.txt
+          if ($t.ExitCode -ne 0) { throw "Самопроверка не пройдена: $($t.ExitCode)" }
+          Remove-Item dist/Iskra/data -Recurse -Force
           $p = Start-Process dist/Iskra/Iskra.exe -PassThru
           Start-Sleep -Seconds 8
           if ($p.HasExited) { throw "Iskra.exe закрылась сразу, код $($p.ExitCode)" }

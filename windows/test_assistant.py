@@ -71,6 +71,13 @@ class Commands(unittest.TestCase):
             'найди приказ о премировании': ('search', 'приказ о премировании'),
             'отпуск Иванова': ('search', 'отпуск иванова'),
             'сколько документов': ('stats', ''),
+            'проверь орфографию': ('spell', ''),
+            'объедини три телеграммы': ('merge', ''),
+            'собери из word в excel': ('word2excel', ''),
+            'из excel в word по образцу': ('excel2word', ''),
+            'формула сумма столбца C где в A "Москва"': ('formula', 'сумма столбца C где в A "Москва"'),
+            '=ВПР(E2;A:B;2;ЛОЖЬ)': ('explain', '=ВПР(E2;A:B;2;ЛОЖЬ)'),
+            'объясни =СУММ(A1:A5)': ('explain', '=СУММ(A1:A5)'),
         }
         for text, expected in cases.items():
             self.assertEqual(a.intent(text), expected, text)

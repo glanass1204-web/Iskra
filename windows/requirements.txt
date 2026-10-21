@@ -3,3 +3,4 @@ openpyxl>=3.1,<4
 python-pptx>=1.0,<2
 pypdf>=5,<7
 pyinstaller>=6,<7
+spylls>=0.1.7,<0.2

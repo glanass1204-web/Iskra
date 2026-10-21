@@ -1,0 +1,2 @@
+Русский орфографический словарь Hunspell (ru_RU) из проекта LibreOffice dictionaries,
+автор Alexander I. Lebedev, лицензия BSD — см. README_ru_RU.txt. Файлы не изменялись.
