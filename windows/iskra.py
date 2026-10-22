@@ -11,6 +11,7 @@ from iskra_ai_ui import AIMixin
 from iskra_plan_ui import PlanMixin
 from iskra_hotkey_ui import HotkeyMixin
 from iskra_people_ui import PeopleMixin
+from iskra_journal_ui import JournalMixin
 import iskra_ai
 from iskra_formula import build_formula, explain_formula
 from iskra_macros import MACROS, export_macro
@@ -24,7 +25,7 @@ VERSION = '1.8.1'
 ACCENT = '#24518A'
 
 
-class App(PeopleMixin, HotkeyMixin, PlanMixin, AIMixin, WorkMixin, ToolsMixin):
+class App(JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin, WorkMixin, ToolsMixin):
     def __init__(self, root):
         self.root = root
         root.title(f'Искра {VERSION} — помощник по документам')
@@ -37,6 +38,7 @@ class App(PeopleMixin, HotkeyMixin, PlanMixin, AIMixin, WorkMixin, ToolsMixin):
         self.start_inbox()
         self.start_planning()
         self.start_people()
+        self.start_journal()
         self.ai_ready = iskra_ai.available()
         root.bind('<Escape>', self.ai_stop)
         root.protocol('WM_DELETE_WINDOW', self.close)
@@ -114,6 +116,7 @@ class App(PeopleMixin, HotkeyMixin, PlanMixin, AIMixin, WorkMixin, ToolsMixin):
         f.add_command(label='Открыть папку данных', command=lambda: os.startfile(str(ROOT)))
         f.add_command(label='Проверить нейросеть', command=self.ai_check)
         f.add_command(label='Справочник людей…', command=self.people_window)
+        f.add_command(label='Журнал исходящих…', command=self.journal_window)
         f.add_command(label='Образцы документов отдела (папка)', command=self.samples_folder)
         f.add_separator(); f.add_command(label='Выход', command=self.close)
         m.add_cascade(label='Файл', menu=f)
@@ -449,17 +452,28 @@ class App(PeopleMixin, HotkeyMixin, PlanMixin, AIMixin, WorkMixin, ToolsMixin):
             return
         self.status.set('Ищу…')
 
+        def expand(text):
+            # Нейросеть подсказывает слова, только если ни обычный, ни смысловой поиск ничего не нашли.
+            if not self.ai_ready:
+                return []
+            self.events.put(('call', lambda: self.status.set('По словам не нашла — спрашиваю нейросеть, как это обычно пишут…')))
+            try:
+                return iskra_ai.search_words(text, timeout=120)
+            except iskra_ai.AIError:
+                return []
+
         def work():
-            rows = search_docs(q)
-            self.events.put(('call', lambda: self.show_results(q, rows, report)))
+            import iskra_smartsearch
+            rows, how = iskra_smartsearch.search(q, root=ROOT, ai_expand=expand)
+            self.events.put(('call', lambda: self.show_results(q, rows, report, how)))
         threading.Thread(target=work, daemon=True).start()
 
-    def show_results(self, q, rows, report):
+    def show_results(self, q, rows, report, how=''):
         self.results = rows; self.listbox.delete(0, 'end')
         for path, _ in rows:
             self.listbox.insert('end', f'{Path(path).name}   —   {Path(path).parent}')
         more = ' (показаны первые 100)' if len(rows) >= 100 else ''
-        self.found_label.set(f'Найдено по «{q}»: {len(rows)}{more}')
+        self.found_label.set(f'Найдено по «{q}»: {len(rows)}{more}' + (f' ({how})' if how else ''))
         self.status.set('Выберите документ: справа — фрагмент, помощник отвечает по нему.')
         save_history(ROOT, 'Поиск', q)
         if rows:

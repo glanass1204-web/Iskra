@@ -212,7 +212,7 @@ class ToolsMixin:
     # ---------- Телеграммы ----------
 
     def telegrams(self, initial=None, note=None, report=None, source_paths=()):
-        win = _window(self, 'редактор телеграмм', '960x680')
+        win = _window(self, 'редактор телеграмм', '1180x700')
         ttk.Label(win, text='Проект телеграммы · исходные документы не изменяются', font=('Segoe UI', 12, 'bold')).pack(anchor='w', padx=12, pady=8)
         buttons = ttk.Frame(win); buttons.pack(side='bottom', fill='x', padx=12, pady=8)
         status = tk.StringVar(value=note or 'Используйте утверждённый образец организации. Шаблон здесь — пример.')
@@ -260,8 +260,9 @@ class ToolsMixin:
         ttk.Button(buttons, text='Орфография', style='Accent.TButton', command=lambda: self.spell_window(target=t)).pack(side='left')
         ttk.Button(buttons, text='Проверить перед отправкой', command=check).pack(side='left', padx=6)
         self.people_menu(buttons, t).pack(side='left', padx=(0, 6))
-        ttk.Button(buttons, text='Убрать лишние пробелы', command=tidy).pack(side='left')
-        ttk.Button(buttons, text='Черновик по выбранному файлу', command=prepare).pack(side='left', padx=6)
+        self.journal_button(buttons, t, status).pack(side='left', padx=(0, 6))
+        ttk.Button(buttons, text='Пробелы', command=tidy).pack(side='left')
+        ttk.Button(buttons, text='Черновик по файлу', command=prepare).pack(side='left', padx=6)
         if hasattr(self, 'editor_ai'):
             self.editor_ai(buttons, t, status).pack(side='left', padx=(0, 6))
         ttk.Button(buttons, text='Сохранить в Word', style='Accent.TButton', command=save).pack(side='right')

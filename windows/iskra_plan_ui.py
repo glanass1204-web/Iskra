@@ -309,6 +309,10 @@ class PlanMixin:
                 doc_deadlines = []
             lines = self.autosvod.summary_lines() if self.autosvod.last else []
             sections = morning.build(self.inbox.items(), self.control, doc_deadlines, lines)
+            waiting = self.journal.lines_for_morning() if getattr(self, 'journal', None) else []
+            if waiting:
+                sections.append(('ЖДЁМ ОТВЕТА НА ИСХОДЯЩИЕ', waiting))
+            state['sections'], state['waiting'] = sections, waiting
             self.events.put(('call', lambda: show(sections)))
         threading.Thread(target=work, daemon=True).start()
 
@@ -317,6 +321,7 @@ class PlanMixin:
                 return
 
             def done(result):
+                state['main'] = result
                 if win.winfo_exists():
                     text.configure(state='normal')
                     text.insert('1.0', 'ГЛАВНОЕ (нейросеть):\n' + result + '\n\n', 'ai')
@@ -338,6 +343,30 @@ class PlanMixin:
         ttk.Button(buttons, text='Поручения', command=lambda: (win.destroy(), self.tabs.select(self.control_tab))).pack(side='left')
         ttk.Button(buttons, text='Входящие', command=lambda: (win.destroy(), self.tabs.select(self.inbox_tab))).pack(side='left', padx=6)
         ttk.Button(buttons, text='Сохранить в Word', command=to_word).pack(side='left')
+
+        def report():
+            if 'sections' not in state:
+                return
+            import iskra_report
+            try:
+                out = iskra_report.build(ROOT, state['sections'], state.get('waiting', []), state.get('main', ''))
+            except Exception as exc:
+                messagebox.showerror('Доклад', f'Не удалось собрать доклад: {exc}\nПроверьте образец: data\\doklad_obrazec.docx', parent=win)
+                return
+            self.say(f'Доклад по образцу готов: {out}', 'proof')
+            _open_path(str(out))
+
+        def template():
+            import iskra_report
+            path = ROOT / 'doklad_obrazec.docx'
+            if not path.is_file():
+                iskra_report.make_template(path)
+            messagebox.showinfo('Образец доклада', 'Откроется образец в Word. Оформите его как принято у вас (шапка, шрифт, '
+                                'подпись) и оставьте метки в фигурных скобках: ' + ', '.join('{{' + k + '}}' for k in iskra_report.KEYS) +
+                                '. Сохраните и закройте — следующий доклад будет по нему.', parent=win)
+            _open_path(str(path))
+        ttk.Button(buttons, text='Доклад по образцу', style='Accent.TButton', command=report).pack(side='left', padx=6)
+        ttk.Button(buttons, text='Образец доклада…', command=template).pack(side='left')
         ai_btn = ttk.Button(buttons, text='Главное — нейросеть', command=ai_main)
         ai_btn.pack(side='left', padx=6)
         if not self.ai_ready:

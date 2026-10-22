@@ -469,6 +469,8 @@ class WorkMixin:
             docs = [it['path'] for it in items if it['kind'] in ('Телеграмма', 'Приказ', 'Распоряжение', 'Указание', 'Письмо', 'Документ')]
             if docs:
                 self.control_from_paths(docs)
+        if getattr(self, 'journal', None) is not None and self.journal.items:
+            threading.Thread(target=self.journal_replies, args=(items,), daemon=True).start()
         if getattr(self, 'ai_ready', False):
             self.inbox_briefs([it for it in items if it['kind'] != 'Таблица Excel'])
         for it in items:

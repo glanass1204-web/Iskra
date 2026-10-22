@@ -869,3 +869,20 @@ def morning(facts, **kw):
     user = (f'Сводка на утро:\n{facts[:6000]}\n\nНапиши в 3–5 коротких строках, что сегодня главное и что сделать в первую '
             'очередь. Только по этой сводке, без новых фактов.')
     return run(chat_prompt(user), max_tokens=250, temperature=0.2, **kw)
+
+
+def search_words(query, **kw):
+    """Слова, которыми такое обычно пишут в служебных документах (для поиска, когда по словам запроса пусто)."""
+    user = (f'Запрос для поиска по служебным документам: «{query.strip()}».\n'
+            'Назови до 8 слов или коротких выражений, которыми это обычно написано в документах '
+            '(синонимы, официальные термины, сокращения). Ответь только JSON-списком строк.')
+    import json
+    text = run(chat_prompt(user), max_tokens=120, temperature=0.1, **kw)
+    m = re.search(r'\[.*?\]', text, re.DOTALL)
+    try:
+        data = json.loads(m.group(0)) if m else []
+    except ValueError:
+        data = re.findall(r'"([^"]{2,40})"', m.group(0)) if m else []
+    if not isinstance(data, list):
+        return []
+    return [str(w).strip() for w in data if str(w).strip()][:8]
