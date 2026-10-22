@@ -54,9 +54,10 @@ def extract(p):
         # Cached values: people search for numbers and names, not for formula text.
         w = load_workbook(p, read_only=True, data_only=True)
         try:
+            # Номер строки — по счёту, а не из ячейки: пустая первая ячейка в режиме чтения не знает своей строки.
             return '\n'.join(
-                f'{s.title}!{row[0].row}: ' + ' | '.join(str(c.value) for c in row if c.value is not None)
-                for s in w for row in s.iter_rows() if any(c.value is not None for c in row))
+                f'{s.title}!{n}: ' + ' | '.join(str(v) for v in row if v is not None)
+                for s in w for n, row in enumerate(s.iter_rows(values_only=True), 1) if any(v is not None for v in row))
         finally:
             w.close()
     if ext == '.pptx':

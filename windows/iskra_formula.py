@@ -130,6 +130,8 @@ def build_formula(request):
         # COND — в запросе есть условие: «где», «если», «у которых»…
         if not all((SPLIT.search(q) is not None) if w == 'COND' else (w in q) for w in words):
             continue
+        if 'сумм' in q and words in (('дней',), ('дней', 'осталось'), ('лет',)):
+            continue                                   # «сумма продаж за 7 дней» — не разница дат
         parts = SPLIT.split(request, maxsplit=1)
         left = parts[0]
         right = ''.join(parts[2:]) if len(parts) > 2 else ''
@@ -137,8 +139,18 @@ def build_formula(request):
         cond_cols = _columns(right) or (value_cols[1:2] if len(value_cols) > 1 else [])
         crit, compare = _criterion(right or request)
         assumed = []
+        if not _columns(left) and cond_cols and '{c1}' in template:
+            value_cols = cond_cols                     # «если в столбце C больше 100» — проверяется C
         v = value_cols[0]
         c = cond_cols[0] if cond_cols else ('A' if v != 'A' else 'B')
+        segments = [x for x in re.split(r'\s+и\s+', right) if _columns(x)]
+        if len(segments) >= 2 and template.startswith(('=СУММЕСЛИ(', '=СЧЁТЕСЛИ(', '=СРЗНАЧЕСЛИ(')):
+            # Два условия и больше — СУММЕСЛИМН / СЧЁТЕСЛИМН / СРЗНАЧЕСЛИМН, ни одно не теряется.
+            pairs = [(_columns(x)[0], _criterion(x)[0] or '"значение"') for x in segments]
+            conds = ';'.join(f'{col}:{col};{crit}' for col, crit in pairs)
+            name = template[1:template.index('(')] + 'МН'
+            filled = f'={name}({v}:{v};{conds})' if name != 'СЧЁТЕСЛИМН' else f'={name}({conds})'
+            return filled, note + ' Условий: ' + str(len(pairs)) + '. Разделитель — точка с запятой (русский Excel).'
         if '{c}' in template and not cond_cols:
             assumed.append(f'условие проверяется в столбце {c}')
         k = crit or '"значение"'

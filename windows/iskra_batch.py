@@ -104,7 +104,7 @@ def collect_tables(paths, output):
         ws = wb.create_sheet(name)
         ws.append(g['header'] + ['Источник: файл', 'Источник: таблица'])
         for r in g['rows']:
-            append_as_values(ws, r)
+            append_as_values(ws, r, numbers=True)          # из таблиц Word: числа — числами (СУММ работает)
         _style_header(ws)
         ws.auto_filter.ref = ws.dimensions
     if failed:

@@ -9,9 +9,24 @@ MISSING='НЕ НАЙДЕНО'
 def norm(v):
     return re.sub(r'\s+', ' ', str(v or '').strip()).casefold().replace('ё','е')
 
-def append_as_values(ws, row):
-    """Text starting with '=' stays text instead of becoming a formula; everything else is written as is."""
-    ws.append(row)
+NUMBER = re.compile(r'^-?(?:\d{1,3}(?:[ \u00a0]\d{3})+|\d+)(?:[.,]\d+)?$')
+
+
+def as_number(v):
+    """«12», «1 234», «12,5» из Word — числом, чтобы СУММ в Excel их считала. Коды с ведущим нулём («007») — текстом."""
+    if isinstance(v, str):
+        t = v.strip()
+        if NUMBER.match(t) and not (len(t) > 1 and t[0] == '0' and t[1].isdigit()):
+            t = t.replace(' ', '').replace('\u00a0', '').replace(',', '.')
+            f = float(t)
+            return int(f) if f.is_integer() and '.' not in t else f
+    return v
+
+
+def append_as_values(ws, row, numbers=False):
+    """Text starting with '=' stays text instead of becoming a formula. numbers=True — для данных из Word:
+    «12» становится числом (в Excel из Excel значения уже со своим типом и не трогаются)."""
+    ws.append([as_number(v) for v in row] if numbers else row)
     for cell in ws[ws.max_row]:
         if cell.data_type == 'f':
             cell.data_type = 's'
@@ -26,12 +41,15 @@ def word_fields(path, headings):
         if ':' not in line: continue
         k,v=line.split(':',1); h=labels.get(norm(k))
         if h and v.strip():
-            found.setdefault(h,[]).append((v.strip(),f'абзац {idx}'))
+            found.setdefault(h,[]).append((as_number(v.strip()),f'абзац {idx}'))
     for ti,table in enumerate(doc.tables,1):
         for ri,row in enumerate(table.rows,1):
             cells=[c.text.strip() for c in row.cells]
-            if len(cells)==2 and norm(cells[0]) in labels and cells[1]:
-                h=labels[norm(cells[0])];found.setdefault(h,[]).append((cells[1],f'таблица {ti}, строка {ri}'))
+            cells=[c for i,c in enumerate(cells) if i==0 or c!=cells[i-1]]   # объединённые ячейки Word повторяются
+            if len(cells)==2:
+                key=norm(cells[0]).rstrip(':').strip()                      # «Дата:» — то же поле, что «Дата»
+                if key in labels and cells[1]:
+                    h=labels[key];found.setdefault(h,[]).append((as_number(cells[1]),f'таблица {ti}, строка {ri}'))
     values={}; locations={}
     for h in headings:
         matches=found.get(h,[])

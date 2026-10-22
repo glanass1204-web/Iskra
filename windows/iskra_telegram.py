@@ -12,7 +12,10 @@ CANON = {'кому': 'Кому', 'адресат': 'Кому', 'от кого': 
 ORDER = ['Гриф', 'Срочность', 'Кому', 'От кого', 'Дата', 'Номер', 'Тема']
 TITLE = re.compile(r'^\s*(ТЕЛЕГРАММА|ТЕЛЕФОНОГРАММА|ШИФРТЕЛЕГРАММА|РАСПОРЯЖЕНИЕ)\s*$', re.IGNORECASE)
 TEXT_LABEL = re.compile(r'^\s*Текст\s*:\s*', re.IGNORECASE)
-SPLIT = re.compile(r'(?<=[.!?])(?<![А-ЯЁ]\.)(?<!\bг\.)(?<!\bст\.)(?<!\bп\.)(?<!№)\s+(?=[А-ЯЁA-Z0-9«"])')
+# Конец предложения — но не после сокращений адресов и званий («г. Москва, ул. Ленина, д. 5», «тел. 8…»).
+SPLIT = re.compile(r'(?<=[.!?])(?<![А-ЯЁ]\.)(?<!\bг\.)(?<!\bст\.)(?<!\bп\.)(?<!№)(?<!\bул\.)(?<!\bд\.)(?<!тел\.)'
+                   r'(?<!\bим\.)(?<!\bкв\.)(?<!корп\.)(?<!\bпр\.)(?<!обл\.)(?<!тов\.)(?<!\bт\.е\.)(?<!\bр-н\.)(?<!\bпос\.)'
+                   r'\s+(?=[А-ЯЁA-Z0-9«"])')
 NAME = re.compile(r'([А-ЯЁ]\.\s?[А-ЯЁ]\.\s?[А-ЯЁ][а-яё]+|[А-ЯЁ][а-яё]+\s+[А-ЯЁ]\.\s?[А-ЯЁ]\.)\s*$')
 LIST_MARK = re.compile(r'^\s*(\d{1,2}[.)]|[-–—•])\s+')
 MONTHS = {'января': 1, 'февраля': 2, 'марта': 3, 'апреля': 4, 'мая': 5, 'июня': 6, 'июля': 7, 'августа': 8,
@@ -86,8 +89,9 @@ def parse(name, text):
 
 def _words(sentence):
     out = set()
-    for w in re.findall(r'[а-яёa-z]+|\d+', sentence.lower().replace('ё', 'е')):
-        if w in STOP or (len(w) < 3 and not w.isdigit()):
+    # Числа и даты не считаем общими словами: одинаковый срок у разных организаций не делает пункты одинаковыми.
+    for w in re.findall(r'[а-яёa-z]+', sentence.lower().replace('ё', 'е')):
+        if w in STOP or len(w) < 3:
             continue
         out.add(w[:5] if len(w) > 5 else w)
     return out
@@ -97,8 +101,19 @@ def _facts(sentence):
     return set(re.findall(r'\d{1,2}\.\d{1,2}\.\d{2,4}|\d+(?:[.,]\d+)?', sentence))
 
 
+def _lead(sentence):
+    """Кому адресован пункт: первое слово, если это не глагол поручения («Госпиталю представить…» → «госпиталю»)."""
+    m = re.match(r'\s*([А-ЯЁ][а-яё]+(?:\s+[№\d][\w/-]*)?)', sentence)
+    if not m or INSTRUCTION.match(m.group(1)) or m.group(1).lower() in ('срочно', 'прошу', 'необходимо', 'всем', 'немедленно'):
+        return ''
+    return m.group(1).lower()
+
+
 def similar(a, b):
-    """Same point worded differently: share most meaningful words."""
+    """Same point worded differently: share most meaningful words. Разным адресатам — разные пункты."""
+    la, lb = _lead(a), _lead(b)
+    if la and lb and la != lb:
+        return False
     A, B = _words(a), _words(b)
     if not A or not B:
         return False
@@ -218,6 +233,13 @@ def merge(sources, main_only=True, dates=True, fix=None):
                         if fb - fa and fa - fb:
                             conflicts.append(f'«{existing}» — в «{t.name}» другие сроки/числа: {", ".join(sorted(fb - fa))}.')
                             new = existing + f' [УТОЧНИТЬ: в «{t.name}»: {", ".join(sorted(fb - fa))}]'
+                        elif fb - fa:
+                            # Во второй телеграмме есть срок/число, которого не было, — не теряем его.
+                            if len(s) >= len(existing) * 0.6:
+                                new = s
+                            else:
+                                new = existing + f' [в «{t.name}»: {", ".join(sorted(fb - fa))}]'
+                            conflicts.append(f'«{existing[:80]}» — из «{t.name}» добавлено: {", ".join(sorted(fb - fa))}.')
                         elif len(s) > len(existing) and fb >= fa:
                             new = s  # более полная формулировка того же пункта
                         else:

@@ -39,14 +39,36 @@ def reference(text):
     t = parse('', text)
     number = (t.fields.get('Номер') or [''])[0]
     when = (t.fields.get('Дата') or [''])[0]
-    head = text[:1500]
-    if not number:
-        nums = assistant.numbers(head)
-        number = nums[0].value.replace('№ ', '') if nums else ''
-    if not when:
-        dates = assistant.all_dates(head)
-        when = dates[0].value if dates else ''
+    head = text[:2500]
+    if not (number and when):
+        n2, w2 = _own_reference(head)
+        number, when = number or n2, when or w2
     return number.lstrip('№ ').strip(), when
+
+
+BASIS_REF = re.compile(r'(приказ|распоряжени|директив|постановлени|указани|телеграмм|письм|во исполнение|согласно|на основании|'
+                       r'в соответствии|на ваш|на № )\w*[^.\n]{0,60}$', re.IGNORECASE)
+PAIR = re.compile(r'(?:(исх|вх)\w*\.?\s*)?№\s*([0-9][\w/.-]*)\s*(?:от|,)?\s*(\d{1,2}\.\d{1,2}\.\d{2,4})?'
+                  r'|от\s*(\d{1,2}\.\d{1,2}\.\d{2,4})\s*(?:г\.?|года)?\s*№\s*([0-9][\w/.-]*)', re.IGNORECASE)
+
+
+def _own_reference(text):
+    """Номер и дата САМОГО документа: «Исх. № 12/345 от 20.10.2026» важнее ссылок на основание
+    («во исполнение приказа от 01.09.2026 № 345»)."""
+    best = None
+    for m in PAIR.finditer(text):
+        number = m.group(2) or m.group(5)
+        when = m.group(3) or m.group(4) or ''
+        before = text[max(0, m.start() - 80):m.start()]
+        score = (3 if m.group(1) and m.group(1).lower().startswith('исх') else 0) + (1 if when else 0)
+        if BASIS_REF.search(before):
+            score -= 5                                # ссылка на чужой документ, а не номер этого
+        if best is None or score > best[0]:
+            best = (score, number.rstrip('.'), when)
+    if best and best[0] > -5:
+        return best[1], best[2]
+    dates = [d for d in assistant.all_dates(text[:800])]
+    return '', dates[0].value if dates else ''
 
 
 def instructions(text):

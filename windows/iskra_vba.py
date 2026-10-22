@@ -577,8 +577,8 @@ OPS = [
     # Excel
     Op('x_split', 'excel', 'Разнести по листам', r'(разнес|раздел|разбит|распредел)\w*.*(лист|по значени)', 'sheet', x_split_by_column),
     Op('x_sheets_files', 'excel', 'Листы в файлы', r'(кажд\w* лист|все листы|листы).*(отдельн|файл)|(сохран|разбит).*(лист\w*) .*(файл)', 'book', x_sheets_to_files),
-    Op('x_combine_files', 'excel', 'Файлы папки в один лист', r'(собер|объедин|свест|склей)\w*.*(файл\w*|книг\w*).*(папк|в один)|(из|все) (файл|книг)\w* (из )?папк', 'book', x_combine_files),
-    Op('x_combine_sheets', 'excel', 'Листы в один', r'(собер|объедин|свест|склей)\w*.*(лист)', 'book', x_combine_sheets),
+    Op('x_combine_files', 'excel', 'Файлы папки в один лист', r'(собр|собер|объедин|свест|склей)\w*.*(файл\w*|книг\w*).*(папк|в один)|(из|все) (файл|книг)\w* (из )?папк', 'book', x_combine_files),
+    Op('x_combine_sheets', 'excel', 'Листы в один', r'(собр|собер|объедин|свест|склей)\w*.*(лист)', 'book', x_combine_sheets),
     Op('x_toc', 'excel', 'Оглавление', r'оглавлен|содержан\w* (лист|книг)|ссылк\w* на (все )?лист', 'book', x_toc),
     Op('x_protect', 'excel', 'Защита листов', r'(защит|пароль)', 'book', x_protect),
     Op('x_remove_dups', 'excel', 'Удалить повторы', r'(удал|убр)\w*.*(повтор|дубл)', 'sheet', x_remove_dups),
@@ -628,7 +628,10 @@ def detect_app(task):
 
 
 def split_task(task):
-    parts = re.split(r'[\n;]+|\.\s+|,\s*(?=(?:потом|затем|и|а также)?\s*[а-яё]+(?:ть|ти|чь|й|и)\b)|\s+(?:потом|затем|после этого|а также)\s+|\s+и\s+(?=[а-яё]+(?:ть|ти|й|и)\b)',
+    # Шаги разделяются и перед словами-действиями («интервал 1,5, номера страниц»), но не после «сут.», «шт.», «г.».
+    parts = re.split(r'[\n;]+|(?<!сут)(?<!шт)(?<!\bг)(?<!\bч)(?<!мин)\.\s+|,\s*(?=(?:потом|затем|и|а также)?\s*[а-яё]+(?:ть|ти|чь|й|и)\b)'
+                     r'|,\s*(?=(?:интервал|междустроч|номер\w* страниц|нумерац|шрифт|поля|отступ|выравнив|колонтитул|абзац|заголов|переносы)\w*)'
+                     r'|\s+(?:потом|затем|после этого|а также)\s+|\s+и\s+(?=[а-яё]+(?:ть|ти|й|и)\b)',
                      task.strip(), flags=re.IGNORECASE)
     return [p.strip(' ,.') for p in parts if p and p.strip(' ,.')]
 
@@ -726,6 +729,7 @@ def generate(task, app=None, name='Iskra_Macro'):
         out += ['    Application.ScreenUpdating = True',
                 f'    MsgBox "Готово. Выполнено шагов: {len(steps)}.", vbInformation, "Искра"']
     out += ['    Exit Sub', 'Failed:', '    Application.ScreenUpdating = True',
+            '    Application.DisplayAlerts = True',          # шаг мог выключить предупреждения — вернуть
             '    MsgBox "Ошибка на шаге «" & stepName & "»:" & vbCrLf & Err.Number & " — " & Err.Description & vbCrLf & vbCrLf & _',
             '        "Скопируйте этот текст в Искру: «Исправить ошибку».", vbExclamation, "Искра"',
             'End Sub']

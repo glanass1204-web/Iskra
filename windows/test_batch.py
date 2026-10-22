@@ -52,7 +52,7 @@ class Batch(unittest.TestCase):
         self.assertEqual((result['sheets'], result['rows']), (1, 3))
         ws = load_workbook(self.dir / 'out.xlsx')['Таблица']
         self.assertEqual([c.value for c in ws[1]], ['№', 'Фамилия', 'Количество', 'Источник: файл', 'Источник: таблица'])
-        self.assertEqual([c.value for c in ws[4]], ['3', 'Орлов', '2', 't1.docx', 1])
+        self.assertEqual([c.value for c in ws[4]], [3, 'Орлов', 2, 't1.docx', 1])   # числа — числами (СУММ работает)
 
     def test_mail_merge_one_document_per_row(self):
         tpl = Document()

@@ -23,6 +23,7 @@ KINDS = [
 ]
 FROM = re.compile(r'^\s*(от кого|отправитель|от)\s*:\s*(.+)$', re.IGNORECASE | re.MULTILINE)
 STATUSES = ('новый', 'в работе', 'выполнен')
+OLD_FORMATS = ('.doc', '.rtf', '.xls')            # не читаются, но во входящих показываются — чтобы не пропустить
 
 
 def same(a, b):
@@ -44,6 +45,8 @@ def kind_of(path, text):
     if ext in ('.xlsx', '.xlsm', '.csv'):
         return 'Таблица Excel'
     head = '\n'.join(text.strip().splitlines()[:12])
+    # «П Р И К А З», «Т Е Л Е Г Р А М М А» — буквы через пробел
+    head = re.sub(r'(?m)^((?:\s*[А-ЯЁ]\s){3,}[А-ЯЁ])\b', lambda m: m.group(1).replace(' ', ''), head)
     for pattern, name in KINDS:
         if pattern.search(head):
             return name
@@ -55,7 +58,11 @@ def sender_of(text):
     if m:
         return m.group(2).strip()[:120]
     from iskra_telegram import parse
-    t = parse('', text)
+    # Строка «Исх. № … от …» после подписи — не подпись
+    lines = text.rstrip().splitlines()
+    while lines and re.match(r'\s*((исх|вх)\w*\.?\s*№|№\s*\d)', lines[-1], re.IGNORECASE):
+        lines.pop()
+    t = parse('', '\n'.join(lines))
     return ' '.join(t.signature)[:120] if t.signature else ''
 
 
@@ -64,8 +71,15 @@ def analyze(path, today=None):
     path = Path(path)
     item = {'path': str(path), 'name': path.name, 'added': _now(), 'status': 'новый', 'kind': 'Документ',
             'number': '', 'date': '', 'sender': '', 'deadline': '', 'deadline_text': '', 'summary': '', 'note': ''}
+    if path.suffix.lower() in OLD_FORMATS:
+        item['note'] = 'старый формат — откройте в Word/Excel и сохраните как .docx/.xlsx, тогда Искра его прочитает'
+        item['kind'] = 'Документ (формат не читается)'
+        return item
     try:
         text = extract(path) or ''
+    except PermissionError:
+        item['note'] = 'не удалось прочитать: файл открыт в другой программе — прочитаю, когда его закроют'
+        return item
     except Exception as exc:
         item['note'] = f'не удалось прочитать: {exc}'[:200]
         return item
@@ -108,6 +122,7 @@ class Inbox:
         self._wake = threading.Event()
         self._thread = None
         self._pending = {}                 # путь -> (размер, время) — файл ещё копируется
+        self._retries = {}                 # путь -> сколько раз не удалось прочитать (файл открыт в Word/Excel)
         try:
             self.state = json.loads(self.path.read_text(encoding='utf-8'))
         except (OSError, ValueError):
@@ -192,7 +207,7 @@ class Inbox:
                 dirnames[:] = []
             for name in filenames:
                 p = Path(dirpath) / name
-                if supported(p) and not name.startswith(('~$', '.')):
+                if (supported(p) or p.suffix.lower() in OLD_FORMATS) and not name.startswith(('~$', '.')):
                     yield p
 
     @staticmethod
@@ -224,8 +239,18 @@ class Inbox:
                 self._pending.pop(key, None)
                 item = analyze(p, today)
                 item['changed'] = known is not None
-                found.append(item)
+                failed = item['note'].startswith('не удалось прочитать')
+                tries = self._retries.get(key, 0)
+                if not failed or tries == 0:
+                    found.append(item)                 # о занятом файле — один раз, а когда прочитается — ещё раз
                 with self._lock:
+                    if failed and tries + 1 < 10:
+                        # Файл занят или ещё пишется — попробуем снова (до 10 раз), а не забудем навсегда.
+                        self._retries[key] = tries + 1
+                        self.state['items'] = [i for i in self.state['items'] if i['path'] != key]
+                        self.state['items'].insert(0, item)
+                        continue
+                    self._retries.pop(key, None)
                     self.state['seen'][key] = sign
                     self.state['items'] = [i for i in self.state['items'] if i['path'] != key]
                     self.state['items'].insert(0, item)

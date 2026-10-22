@@ -68,12 +68,16 @@ class Table:
     rows: list = field(default_factory=list)       # [(название, {столбец: значение}, номер строки)]
     totals: dict = field(default_factory=dict)     # строка «Итого» из файла: {столбец: число}
     skipped: int = 0                               # строки без данных
+    notes: list = field(default_factory=list)      # что не учтено и почему (скрытые строки, строки после «Итого»…)
 
 
-def _grid(ws, limit=3000):
+def _grid(ws, limit=3000, data_from=None, name_col=None):
     rows = [list(r) for r in ws.iter_rows(min_row=1, max_row=min(ws.max_row, limit), values_only=True)]
-    # Объединённые ячейки: значение верхней левой — во все ячейки диапазона.
+    # Объединённые ячейки: значение верхней левой — во все ячейки диапазона (в шапке).
+    # В строках данных — только в столбце наименований: число, растянутое на две строки, не должно считаться дважды.
     for rng in ws.merged_cells.ranges:
+        if data_from is not None and rng.min_row - 1 >= data_from and not (rng.min_col - 1 <= name_col <= rng.max_col - 1):
+            continue
         top = rng.min_row - 1
         if top >= len(rows):
             continue
@@ -97,8 +101,14 @@ def _find_header(grid):
         if len(distinct) < 2:
             continue                                   # заголовок документа, растянутый на всю ширину
         best = None
+        # Шапка — короткие подписи; строка-заголовок документа («Сведения о численности по организациям … на 01.10»)
+        # не шапка, даже если в ней есть второе слово.
+        others = [v for v in row if isinstance(v, str) and v.strip() and not re.search(r'\d{1,2}\.\d{1,2}\.\d{2,4}', v)]
+        if len(others) < 2:
+            continue
         for j, v in enumerate(row):
-            if isinstance(v, str) and len(v) <= 80 and NAME_HEADER.search(v) and num(v) is None:
+            if (isinstance(v, str) and len(v) <= 60 and len(v.split()) <= 6 and NAME_HEADER.search(v)
+                    and num(v) is None):
                 if best is None or 'наименован' in v.lower():
                     best = j
                 if 'наименован' in v.lower():
@@ -114,6 +124,10 @@ def read_tables(path):
     if path.suffix.lower() not in ('.xlsx', '.xlsm'):
         raise ValueError(f'{path.name}: нужен формат .xlsx (старый .xls откройте в Excel и сохраните как .xlsx)')
     wb = load_workbook(path, data_only=True)
+    try:
+        formulas = load_workbook(path, data_only=False)        # чтобы заметить формулы без сохранённого результата
+    except Exception:
+        formulas = None
     out = []
     try:
         for ws in wb.worksheets:
@@ -124,6 +138,7 @@ def read_tables(path):
             if not found:
                 continue
             h, c = found
+            grid = _grid(ws, data_from=h + 1, name_col=c)
             width = max(len(r) for r in grid)
             grid = [r + [None] * (width - len(r)) for r in grid]
             label_rows, last = [h], h
@@ -155,11 +170,26 @@ def read_tables(path):
                 index[j] = label
             table = Table(path.name, ws.title, _text(grid[h][c]), [])
             used = set()
+            hidden, after_total, no_value = 0, 0, 0
+            fws = formulas[ws.title] if formulas is not None and ws.title in formulas.sheetnames else None
+            total_seen = False
             for r in range(last + 1, len(grid)):
                 row = grid[r]
                 name = row[c]
                 if _empty(name):
                     continue
+                if ws.row_dimensions[r + 1].hidden:
+                    hidden += 1                        # скрытая строка — не берём, но говорим об этом
+                    continue
+                if total_seen and not TOTAL_ROW.match(_text(name)):
+                    after_total += 1                   # строки под «Итого» — старые данные, примечания
+                    continue
+                if fws is not None:
+                    for j in index:
+                        if row[j] is None:
+                            f = fws.cell(r + 1, j + 1).value
+                            if isinstance(f, str) and f.startswith('='):
+                                no_value += 1
                 name = _text(name)
                 values = {}
                 for j, label in index.items():
@@ -174,6 +204,7 @@ def read_tables(path):
                     used.add(j)
                 if TOTAL_ROW.match(name):
                     table.totals = {k: v for k, v in values.items() if isinstance(v, (int, float))}
+                    total_seen = True
                     continue
                 if not values:
                     table.skipped += 1
@@ -181,10 +212,24 @@ def read_tables(path):
                     continue
                 table.rows.append((name, values, r + 1))
             table.columns = [index[j] for j in sorted(index) if j in used and index[j]]
+            if hidden:
+                table.notes.append(f'лист «{ws.title}»: скрытых строк не учтено — {hidden}')
+            if after_total:
+                table.notes.append(f'лист «{ws.title}»: строк ниже «Итого» не учтено — {after_total}')
+            if no_value:
+                table.notes.append(f'лист «{ws.title}»: ячеек с формулами без сохранённого результата — {no_value} '
+                                   '(откройте файл в Excel, сохраните и соберите свод заново)')
+            merged_data = [rng for rng in ws.merged_cells.ranges if rng.min_row - 1 > last and rng.min_row != rng.max_row
+                           and not (rng.min_col - 1 <= c <= rng.max_col - 1)]
+            if merged_data:
+                table.notes.append(f'лист «{ws.title}»: объединённые ячейки с числами ({len(merged_data)}) — '
+                                   'число взято один раз, для верхней строки')
             if table.rows:
                 out.append(table)
     finally:
         wb.close()
+        if formulas is not None:
+            formulas.close()
     return out
 
 
@@ -254,20 +299,23 @@ def combine(tables, order=None, mode='sum'):
         if k and k not in orgs:
             orgs[k] = Org(n)
             keys.append(k)
-    nospace = {k.replace(' ', ''): k for k in orgs}
+    def squeeze(k):
+        return re.sub(r'[\s№.]', '', k)                 # «Модуль 1», «модуль №1», «Модуль1» — одна организация
+    nospace = {squeeze(k): k for k in orgs}
 
     for t in tables:
         lasts = [_last_part(c) for c in t.columns]
         mapping = {c: column_for(c, lasts) for c in t.columns}
         for name, values, rownum in t.rows:
             k = fold(name)
-            if k not in orgs and k.replace(' ', '') in nospace:
-                k = nospace[k.replace(' ', '')]
+            if k not in orgs and squeeze(k) in nospace:
+                k = nospace[squeeze(k)]
             if k not in orgs:
                 if listed and not values:
                     continue                           # пустая строка не из перечня (подпись, примечание)
                 orgs[k] = Org(name, in_list=not listed)
                 keys.append(k)
+                nospace.setdefault(squeeze(k), k)
             org = orgs[k]
             if values and t.file not in org.files:
                 org.files.append(t.file)
@@ -275,6 +323,8 @@ def combine(tables, order=None, mode='sum'):
                 org.values.setdefault(mapping[col], []).append((v, t.file, rownum))
         if t.skipped:
             report.append(('Сведения', '', t.file, f'лист «{t.sheet}»: строк без данных — {t.skipped}'))
+        for note in t.notes:
+            report.append(('Не учтено', '', t.file, note))
 
     svod = Svod(tables[0].name_header or 'Наименование', columns, [], report, tables, mode)
     in_list = [orgs[k] for k in keys if orgs[k].in_list]
@@ -309,6 +359,16 @@ def combine(tables, order=None, mode='sum'):
             s = sum(v.get(col, 0) for _, v, _ in t.rows if isinstance(v.get(col), (int, float)))
             if abs(s - total) > 1e-6:
                 report.append(('Итог не сходится', '', t.file, f'«{col}»: в файле {_text(total)}, по строкам {_text(s)}'))
+
+    # Текст в числовом столбце: итог по такому столбцу не считается — говорим, где именно.
+    for col in columns:
+        vals = [(o, svod.value(o, col)[0]) for o in svod.orgs]
+        nums = [v for _, v in vals if isinstance(v, (int, float))]
+        texts = [(o, v) for o, v in vals if v is not None and not isinstance(v, (int, float))]
+        if nums and texts and len(nums) >= len(texts):
+            for o, v in texts[:10]:
+                report.append(('Текст вместо числа', o.name, ', '.join(o.files),
+                               f'«{col}»: «{_text(v)}» — исправьте на число, иначе итог по столбцу не считается'))
 
     # «На лицо» не может быть больше «по списку».
     for col_present in columns:
