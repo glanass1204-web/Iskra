@@ -129,6 +129,58 @@ class Merge(unittest.TestCase):
         self.assertEqual(t.cell(2, 3).text, '17')                      # из файла с другой шапкой
         self.assertEqual(rep.unplaced, [])
 
+    def test_screenshot_case_green_font_and_coloured_rows(self):
+        """Как на снимке: шапка, строка-раздел, строки «77 км»/«105 км» с заливкой образца, изменения — зелёным шрифтом."""
+        from docx.shared import RGBColor
+        heads = ['Наименование ПУ', 'Подчиненные в/ч', 'Удаление от линии фронта', 'Старший на ПУ', 'Телефоны',
+                 'Количество ОС/ВВСТ', 'Положение', 'Характер ПУ, количество запасных районов', 'Время нахождения в районе']
+
+        def build(name, kp, green=(), extra=None):
+            d = Document()
+            t = d.add_table(rows=6 + (1 if extra else 0) + 3, cols=9)
+            for k, h in enumerate(heads):
+                t.cell(0, k).text = h
+            sec = t.cell(1, 0).merge(t.cell(1, 8)); sec.text = 'СЕВЕРОДОНЕЦКОЕ НАПРАВЛЕНИЕ'
+            for r, km in ((2, '77 км'), (3, '105 км')):
+                t.cell(r, 0).merge(t.cell(r, 1))
+                t.cell(r, 2).text = km
+                for k in range(9):
+                    shade(t.cell(r, k), 'C2D69B' if k % 2 else '9BBB59')   # «оливковая» раскраска образца
+            for k, v in enumerate(kp):
+                cell = t.cell(4, k)
+                for i, line in enumerate(v.split('\n')):
+                    par = cell.paragraphs[0] if i == 0 else cell.add_paragraph()
+                    run = par.add_run(line)
+                    if (k, i) in green or (k, -1) in green:
+                        run.font.color.rgb = RGBColor(0x00, 0xB0, 0x50)
+            if extra:
+                for k, v in enumerate(extra):
+                    run = t.cell(5, k).paragraphs[0].add_run(v)
+                    run.font.color.rgb = RGBColor(0x00, 0xB0, 0x50)
+            d.save(TMP / name)
+            return TMP / name
+        was = ['КП 5447 обр СпН', '', '56 км', 'НШ гв п/п-к Залупа В.А.', '12188 4444\n18197 4400\n11741 4444', '27/2',
+               'с-в окраина ЗАЛУПИНСК', 'Заброшенное помещение в промышленной зоне, 1 запасной район', '4 сут. с 19.10.2026']
+        now = was[:]; now[2] = '43 км'; now[5] = '27/4'; now[6] = 'с-в окраина ЗАЛУПИНСК\nПЕЧОРИНСК'
+        template = build('ПУ_образец.docx', was)
+        new_kp = ['КП 101 мсп', '', '30 км', 'НШ м-р Иванов И.И.', '11111 2222', '12/3', 'южнее ЛИСИЧАНСК', 'палатки', '2 сут.']
+        sent = build('ПУ_рота.docx', now, green={(0, -1), (2, -1), (5, -1), (6, 1)}, extra=new_kp)
+        out = TMP / 'ПУ_итог.docx'
+        rep = H.merge(template, [sent], out)
+        t = Document(str(out)).tables[0]
+        self.assertEqual(t.cell(4, 2).text, '43 км')
+        self.assertEqual(t.cell(4, 5).text, '27/4')
+        self.assertEqual(t.cell(4, 6).text, 'с-в окраина ЗАЛУПИНСК\nПЕЧОРИНСК')
+        self.assertEqual(t.cell(4, 0).text, 'КП 5447 обр СпН')            # отмечено, но не менялось — без изменений
+        self.assertEqual(t.cell(2, 2).text, '77 км')                      # заливка образца — не изменение
+        self.assertEqual(len(t.rows), 9)                                   # новые строки не добавлены лишние
+        self.assertEqual(t.cell(5, 0).text, 'КП 101 мсп')                 # новая — в первую пустую строку раздела
+        self.assertEqual(t.cell(5, 3).text, 'НШ м-р Иванов И.И.')
+        self.assertEqual(rep.unplaced, [])
+        self.assertEqual(len(rep.placed), 3)
+        self.assertEqual(len(rep.added_rows), 1)
+        self.assertIn('СЕВЕРОДОНЕЦКОЕ', rep.added_rows[0])
+
     def test_colors(self):
         self.assertTrue(H._green_hex('92D050'))
         self.assertTrue(H._green_hex('00FF00'))

@@ -1,6 +1,7 @@
 """Перенос подсвеченных изменений в один документ по образцу.
 Исполнители присылают свои варианты документа (таблица Word: города, километраж, фамилии, численность) и
-выделяют изменения зелёным или салатовым (выделение цветом или заливка ячейки). Искра берёт образец, находит в
+отмечают изменения зелёным или салатовым: цветом шрифта, маркером выделения или заливкой ячейки. Заливка, которая
+есть и в образце (раскраска строк таблицы), изменением не считается. Искра берёт образец, находит в
 каждом присланном файле подсвеченное и ставит в образец на то же место:
 - таблица — по заголовкам столбцов (порядок столбцов в присланном может быть другим) и по строке: строка ищется
   по неподсвеченным ячейкам (город, фамилия, № п/п), а не по номеру;
@@ -65,12 +66,24 @@ def _shd_green(parent):
     return shd is not None and _green_hex(shd.get(qn('w:fill')))
 
 
+def _green_font(value):
+    """Зелёный цвет шрифта: 00B050 (стандартный зелёный Word), 008000, 00FF00, 92D050, тёмно-зелёный 006100."""
+    if not value or not re.fullmatch(r'[0-9A-Fa-f]{6}', value):
+        return False
+    r, g, b = (int(value[i:i + 2], 16) for i in (0, 2, 4))
+    return g >= 90 and g >= max(r, b) + 40
+
+
 def run_green(r):
+    """Фрагмент отмечен как изменение: зелёный/салатовый маркер, зелёная заливка текста или зелёный цвет шрифта."""
     rpr = r.find(qn('w:rPr'))
     if rpr is None:
         return False
     hl = rpr.find(qn('w:highlight'))
     if hl is not None and (hl.get(qn('w:val')) or '').lower() in GREEN_NAMES:
+        return True
+    color = rpr.find(qn('w:color'))
+    if color is not None and _green_font(color.get(qn('w:val'))):
         return True
     return _shd_green(rpr)
 
@@ -112,16 +125,47 @@ def norm(text):
 
 # ---------- таблицы ----------
 
+def _fill(parent):
+    shd = parent.find(qn('w:shd')) if parent is not None else None
+    return (shd.get(qn('w:fill')) or '').upper() if shd is not None else ''
+
+
 class Cell:
     def __init__(self, cell):
         self.cell = cell
-        tc_pr = cell._tc.find(qn('w:tcPr'))
-        shaded = _shd_green(tc_pr)
-        self.paragraphs = [segments(p._p, shaded) for p in cell.paragraphs]
+        self.fill = _fill(cell._tc.find(qn('w:tcPr')))
+        self.marked = [segments(p._p) for p in cell.paragraphs]          # отметки самого текста
+        self.resolve()
+
+    def resolve(self, template_fills=()):
+        """Заливка ячейки — изменение, только если она зелёная и такой заливки нет в образце."""
+        shaded = _green_hex(self.fill) and self.fill not in template_fills
+        self.paragraphs = [[(t, g or shaded) for t, g in segs] for segs in self.marked]
         self.text = '\n'.join(''.join(t for t, _ in segs) for segs in self.paragraphs).strip()
         marked = ''.join(t for segs in self.paragraphs for t, g in segs if g)
         self.green = bool(marked.strip()) or (shaded and not self.text)
         self.all_green = self.green and not ''.join(t for segs in self.paragraphs for t, g in segs if not g).strip()
+
+
+def fills(table):
+    """Все заливки ячеек таблицы образца (раскраска строк — не изменение)."""
+    return {f for f in (_fill(tc.find(qn('w:tcPr'))) for tc in table._tbl.iter(qn('w:tc'))) if f}
+
+
+def is_section(row):
+    """Строка-раздел: одна ячейка на всю ширину («СЕВЕРОДОНЕЦКОЕ НАПРАВЛЕНИЕ»)."""
+    return len(row) > 1 and all(c is row[0] for c in row) and bool(norm(row[0].text))
+
+
+def is_empty(row):
+    return all(not norm(c.text) for c in row)
+
+
+def section_of(g, i):
+    for j in range(i, g.head - 1, -1):
+        if is_section(g[j]):
+            return norm(g[j][0].text)
+    return ''
 
 
 class Grid(list):
@@ -208,12 +252,12 @@ def _is_numbering(row):
     return len(texts) > 1 and texts == [str(i) for i in range(1, len(texts) + 1)]
 
 
-def match_row(src_row, mapping, dst_rows, start=None):
+def match_row(src_row, mapping, dst_rows, start=None, include_green=False):
     """Строка образца для строки присланной таблицы — по неподсвеченным ячейкам. (индекс, как нашли) или (None, '')."""
     start = getattr(dst_rows, 'head', 1) if start is None else start
     keys, seen = [], set()
     for j, c in enumerate(src_row):
-        if j in mapping and not c.all_green and norm(c.text) and id(c) not in seen:
+        if j in mapping and (include_green or not c.all_green) and norm(c.text) and id(c) not in seen:
             seen.add(id(c))                                # объединённая ячейка — один ключ, не несколько
             keys.append((j, c))
     if not keys:
@@ -306,6 +350,7 @@ def merge(template, sources, output, mark=True):
     report = Report()
     doc = Document(str(template))
     dst_tables = [grid(t) for t in doc.tables]
+    dst_fills = [fills(t) for t in doc.tables]
     totals_before = [_totals(g) for g in dst_tables]
     # цель → {значение: [файлы]} и сами значения ячеек
     cell_values, cell_where = {}, {}
@@ -319,10 +364,16 @@ def merge(template, sources, output, mark=True):
         found_marks = False
         for t_index, table in enumerate(src.tables):
             g = grid(table)
-            if not g or not any(c.green for row in g for c in row):
+            if not g:
+                continue
+            best = max(range(len(dst_tables)), key=lambda i: table_score(g, dst_tables[i]), default=None)
+            if best is not None:
+                for row in g:
+                    for c in row:
+                        c.resolve(dst_fills[best])            # раскраска строк, как в образце, — не изменение
+            if not any(c.green for row in g for c in row):
                 continue
             found_marks = True
-            best = max(range(len(dst_tables)), key=lambda i: table_score(g, dst_tables[i]), default=None)
             if best is None or table_score(g, dst_tables[best]) < 0.3:
                 for row in g:
                     if any(c.green for c in row):
@@ -331,16 +382,21 @@ def merge(template, sources, output, mark=True):
             dst = dst_tables[best]
             mapping = column_map(g.headers, dst.headers)
             for r_index, row in enumerate(g[g.head:], g.head):
-                if not any(c.green for c in row):
+                if not any(c.green for c in row) or is_section(row):
                     continue
                 target, why = match_row(row, mapping, dst)
                 if target is None and all(c.all_green or not norm(c.text) for c in row):
-                    cells = {}
-                    for j, c in enumerate(row):
-                        if j in mapping and c not in cells.values():
-                            cells[mapping[j]] = c
-                    new_rows.setdefault(best, []).append((cells, name))
-                    continue
+                    # Вся строка зелёная: это либо новая строка, либо старая, целиком отмеченная, — сверяем по всем ячейкам.
+                    target, why = match_row(row, mapping, dst, include_green=True)
+                    if target is None:
+                        cells = {}
+                        for j, c in enumerate(row):
+                            if j in mapping and c not in cells.values():
+                                cells[mapping[j]] = c
+                        signature = tuple(norm(c.text) for c in cells.values())
+                        if signature not in {tuple(norm(c.text) for c in x[0].values()) for x in new_rows.get(best, [])}:
+                            new_rows.setdefault(best, []).append((cells, name, section_of(g, r_index)))
+                        continue
                 if target is None:
                     report.unplaced.append(f'{name}: строка «{" | ".join(c.text for c in row)}» — '
                                            + ('подходит к нескольким строкам образца' if why else 'нет такой строки в образце'))
@@ -354,6 +410,8 @@ def merge(template, sources, output, mark=True):
                         report.unplaced.append(f'{name}: «{c.text}» — нет столбца «{g.headers[j]}» в образце')
                         continue
                     goal = dst[target][mapping[j]]
+                    if norm(c.text) == norm(goal.text):
+                        continue                               # отмечено, но значение как в образце — менять нечего
                     col = next(k for k, x in enumerate(dst[target]) if x is goal)   # объединённая ячейка — один адрес
                     key = (best, target, col)
                     cell_values.setdefault(key, {}).setdefault(norm(c.text), [c, []])[1].append(name)
@@ -373,6 +431,8 @@ def merge(template, sources, output, mark=True):
             if best is None or score < 0.5:
                 report.unplaced.append(f'{name}: абзац «{text[:120]}» — нет похожего абзаца в образце')
                 continue
+            if norm(text) == norm(dst_pars[best].text):
+                continue                                   # отмечено, но текст как в образце
             par_values.setdefault(best, {}).setdefault(norm(text), [segs, []])[1].append(name)
         if not found_marks:
             report.files_without_marks.append(name)
@@ -409,30 +469,44 @@ def merge(template, sources, output, mark=True):
 
 
 def _add_rows(table, dst, rows, mark, report):
-    """Новые строки — копия последней строки данных (то же оформление), перед «Итого»."""
-    last = None
-    for i in range(len(dst) - 1, dst.head - 1, -1):
-        if dst[i] and not TOTAL.match(_label(dst[i])):
-            last = i
-            break
-    if last is None:
-        for cells, name in rows:
-            report.unplaced.append(f'{name}: новая строка «{" | ".join(c.text for c in cells.values())}» — в таблице образца нет строк-образцов')
-        return
+    """Новые строки: в первую пустую строку своего раздела («СЕВЕРОДОНЕЦКОЕ НАПРАВЛЕНИЕ»); пустой нет — копия
+    последней строки данных раздела (то же оформление), перед «Итого»."""
     from docx.table import _Row
-    anchor = table.rows[last]._tr
-    for cells, name in rows:
-        tr = copy.deepcopy(anchor)
-        anchor.addnext(tr)
-        anchor = tr
-        done = set()
-        for k, cell in enumerate(_Row(tr, table).cells):
-            if id(cell._tc) in done:
+    used = set()
+    for cells, name, section in rows:
+        start, stop = dst.head, len(dst)
+        if section:
+            at = next((i for i in range(dst.head, len(dst)) if is_section(dst[i]) and norm(dst[i][0].text) == section), None)
+            if at is not None:
+                start = at + 1
+                stop = next((i for i in range(start, len(dst)) if is_section(dst[i])), len(dst))
+        empty = next((i for i in range(start, stop) if is_empty(dst[i]) and i not in used), None)
+        if empty is not None:
+            used.add(empty)
+            target_cells, seen = [], set()
+            for k, c in enumerate(dst[empty]):
+                if id(c) not in seen:
+                    seen.add(id(c))
+                    target_cells.append((k, c.cell))
+        else:
+            last = next((i for i in range(stop - 1, start - 1, -1) if dst[i] and not is_empty(dst[i])
+                         and not TOTAL.match(_label(dst[i])) and not is_section(dst[i])), None)
+            if last is None:
+                report.unplaced.append(f'{name}: новая строка «{" | ".join(c.text for c in cells.values())}» — '
+                                       'в таблице образца нет строк-образцов')
                 continue
-            done.add(id(cell._tc))
+            tr = copy.deepcopy(table.rows[last]._tr)
+            table.rows[last]._tr.addnext(tr)
+            target_cells, seen = [], set()
+            for k, cell in enumerate(_Row(tr, table).cells):
+                if id(cell._tc) not in seen:
+                    seen.add(id(cell._tc))
+                    target_cells.append((k, cell))
+        for k, cell in target_cells:
             src = cells.get(k)
             set_cell(cell, src.paragraphs if src else [[('', False)]], mark)
-        report.added_rows.append(f'{" | ".join(c.text for c in cells.values())} ({name})')
+        where = f' (раздел «{section.upper()}»)' if section else ''
+        report.added_rows.append(f'{" | ".join(c.text for c in cells.values() if c.text)}{where} ({name})')
 
 
 def _label(row):
