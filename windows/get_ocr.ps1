@@ -17,7 +17,7 @@ foreach ($lang in 'eng', 'osd') {
 }
 Invoke-WebRequest 'https://github.com/tesseract-ocr/tessdata/raw/main/rus.traineddata' -OutFile (Join-Path $Target 'tessdata\rus.traineddata')
 # Библиотеки Visual C++ — как у движка нейросети, на случай если сборка Tesseract их требует.
-foreach ($dll in 'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll') {
+foreach ($dll in 'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll', 'vcomp140.dll') {
   $src = Join-Path $env:SystemRoot "System32\$dll"
   if (Test-Path $src) { Copy-Item $src -Destination $Target -Force }
 }

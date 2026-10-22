@@ -29,7 +29,7 @@ if ($Tools) {
 }
 # Движку нужны библиотеки Microsoft Visual C++ (MSVCP140, VCRUNTIME140). На многих рабочих компьютерах их нет —
 # кладём рядом с движком (разрешённое Microsoft «локальное» распространение), Windows берёт их из папки программы.
-foreach ($dll in 'msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll', 'vcruntime140.dll', 'vcruntime140_1.dll', 'concrt140.dll') {
+foreach ($dll in 'msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll', 'vcruntime140.dll', 'vcruntime140_1.dll', 'concrt140.dll', 'vcomp140.dll') {
   $src = Join-Path $env:SystemRoot "System32\$dll"
   if (Test-Path $src) { Copy-Item $src -Destination $Target -Force }
 }

@@ -21,7 +21,7 @@ Expand-Archive $zip $unpacked
 New-Item -ItemType Directory -Force $Target | Out-Null
 Get-ChildItem $unpacked -Recurse -Include 'whisper-cli.exe', '*.dll' | Copy-Item -Destination $Target -Force
 if (-not (Test-Path (Join-Path $Target 'whisper-cli.exe'))) { throw 'В сборке whisper.cpp нет whisper-cli.exe' }
-foreach ($dll in 'msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll', 'vcruntime140.dll', 'vcruntime140_1.dll', 'concrt140.dll') {
+foreach ($dll in 'msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll', 'vcruntime140.dll', 'vcruntime140_1.dll', 'concrt140.dll', 'vcomp140.dll') {
   $src = Join-Path $env:SystemRoot "System32\$dll"
   if (Test-Path $src) { Copy-Item $src -Destination $Target -Force }
 }

@@ -35,8 +35,8 @@ def main(engine):
             if low.startswith(NOT_WINDOWS) or not (system32 / dll).is_file():
                 bad.append(f'{f.name} -> {dll}')
     for line in bad:
-        print('НЕТ В engine:', line)
-    print('Зависимости движка: ' + ('НЕ ХВАТАЕТ' if bad else 'всё на месте'))
+        print('НЕТ В ПАПКЕ:', line)
+    print(f'Зависимости ({engine.name}): ' + ('НЕ ХВАТАЕТ' if bad else 'всё на месте'))
     return 1 if bad else 0
 
 
