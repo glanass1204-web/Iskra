@@ -58,6 +58,28 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path dist/Iskra -DestinationPath Iskra-Windows.zip
 
+      - name: Scans add-on
+        shell: pwsh
+        run: |
+          # Дополнительный архив: распознавание сканов. Распаковывается поверх Искры, остальное не меняется.
+          ./get_ocr.ps1 -Target dist-ocr/Iskra/ocr
+          python check_engine_deps.py dist-ocr/Iskra/ocr
+          if ($LASTEXITCODE -ne 0) { throw 'Распознаванию не хватает библиотек в папке ocr' }
+          python -m pip install pillow
+          python make_scan_samples.py scans-test
+          $app = 'C:\Проверка сканов\Iskra'
+          Copy-Item dist/Iskra $app -Recurse
+          Copy-Item dist-ocr/Iskra/ocr (Join-Path $app 'ocr') -Recurse
+          $t = Start-Process (Join-Path $app 'Iskra.exe') -ArgumentList '--selftest-ocr', ('"' + (Resolve-Path scans-test).Path + '"') -PassThru -Wait
+          Get-Content (Join-Path $app 'data\selftest_ocr.txt') -Encoding utf8
+          if ($t.ExitCode -ne 0) { throw "Сканы не распознаются: $($t.ExitCode)" }
+          Remove-Item 'C:\Проверка сканов' -Recurse -Force
+          New-Item -ItemType Directory -Force extras | Out-Null
+          Push-Location dist-ocr
+          7z a -tzip -mx=5 ../extras/Iskra-dop-skany.zip Iskra | Out-Null
+          Pop-Location
+          Get-ChildItem extras | ForEach-Object { Write-Host "$($_.Name): $([math]::Round($_.Length / 1MB)) МБ" }
+
       - uses: actions/upload-artifact@v4
         with:
           name: Iskra-Windows
@@ -176,8 +198,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete iskra-windows-latest --yes --cleanup-tag || true
-          gh release create iskra-windows-latest parts/*.zip Iskra-Windows.zip \
+          gh release create iskra-windows-latest parts/*.zip extras/*.zip Iskra-Windows.zip \
             --prerelease \
             --target "$GITHUB_SHA" \
             --title "Искра для Windows — последняя сборка" \
-            --notes "Сборка ${GITHUB_RUN_NUMBER}. ОБНОВЛЕНИЕ: если Искра с нейросетью уже скачана — скачайте только Iskra-AI-chast-01 (программа и движок) и распакуйте поверх старой с заменой файлов; части модели 02 … NN не меняются, ваши данные сохраняются. С нейросетью: скачайте ВСЕ файлы Iskra-AI-chast-01 … chast-NN (каждый до 400 МБ) и распакуйте их в одну и ту же папку (если распаковали каждый в свою папку рядом — Искра соберёт части сама), затем запустите Iskra\\Iskra.exe. Проверка: меню Файл → Проверить нейросеть. Если какой-то файл не докачался — скачайте заново только его. Без нейросети: Iskra-Windows.zip (35 МБ). Интернет для работы не нужен."
+            --notes "Сборка ${GITHUB_RUN_NUMBER}. ОБНОВЛЕНИЕ: если Искра с нейросетью уже скачана — скачайте только Iskra-AI-chast-01 (программа и движок) и распакуйте поверх старой с заменой файлов; части модели 02 … NN не меняются, ваши данные сохраняются. С нейросетью: скачайте ВСЕ файлы Iskra-AI-chast-01 … chast-NN (каждый до 400 МБ) и распакуйте их в одну и ту же папку (если распаковали каждый в свою папку рядом — Искра соберёт части сама), затем запустите Iskra\\Iskra.exe. Проверка: меню Файл → Проверить нейросеть. Если какой-то файл не докачался — скачайте заново только его. Без нейросети: Iskra-Windows.zip (35 МБ). ДОПОЛНЕНИЯ (по желанию, распаковать поверх Искры): Iskra-dop-skany.zip — распознавание сканов и фото документов. Интернет для работы не нужен."

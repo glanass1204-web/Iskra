@@ -79,9 +79,9 @@ class App(PlanMixin, AIMixin, WorkMixin, ToolsMixin):
         self.say(assistant.HELP)
         self.say(f'Сейчас в поиске документов: {stats()}. Папки для поиска добавляются кнопкой «Папки…».')
         self.say(self.ai_status_line(), 'proof')
-        if not self.ai_ready:
-            self.ai_gather()
-        else:
+        self.say(self.addons_status_line(), 'proof')
+        self.ai_gather()
+        if self.ai_ready:
             # Модель грузится в память заранее, пока человек читает сводку: первый ответ — без ожидания загрузки.
             self.root.after(8000, lambda: threading.Thread(target=iskra_ai.warm, daemon=True).start())
         self.root.after(600, self.maybe_first_run)
@@ -751,8 +751,26 @@ def selftest_ai():
     return 0 if ok else 1
 
 
+def selftest_ocr(folder):
+    """Iskra.exe --selftest-ocr <папка>: распознавание тестовых сканов (картинка и PDF) → data/selftest_ocr.txt."""
+    import iskra_ocr
+    lines, ok = [f'Распознавание установлено: {iskra_ocr.available()}'], iskra_ocr.available()
+    for f in sorted(Path(folder).iterdir()):
+        try:
+            text = extract(f)
+        except Exception as exc:
+            text = f'ОШИБКА {exc!r}'
+        good = '217/4' in text and '28.10.2026' in text and 'численност' in text.lower()
+        ok = ok and good
+        lines.append(f'{"OK  " if good else "FAIL"} {f.name}:\n{text}\n')
+    (ROOT / 'selftest_ocr.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    return 0 if ok else 1
+
+
 if __name__ == '__main__':
     import sys
+    if '--selftest-ocr' in sys.argv:
+        sys.exit(selftest_ocr(sys.argv[sys.argv.index('--selftest-ocr') + 1]))
     if '--selftest-ai' in sys.argv:
         sys.exit(selftest_ai())
     if '--selftest' in sys.argv:

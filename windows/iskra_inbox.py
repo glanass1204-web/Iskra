@@ -10,7 +10,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 import iskra_assistant as assistant
-from iskra_index import EXT, extract
+from iskra_index import extract, supported
 
 KINDS = [
     (re.compile(r'^\s*(шифр)?телеграмм|^\s*телефонограмм', re.IGNORECASE | re.MULTILINE), 'Телеграмма'),
@@ -192,7 +192,7 @@ class Inbox:
                 dirnames[:] = []
             for name in filenames:
                 p = Path(dirpath) / name
-                if p.suffix.lower() in EXT and not name.startswith(('~$', '.')):
+                if supported(p) and not name.startswith(('~$', '.')):
                     yield p
 
     @staticmethod

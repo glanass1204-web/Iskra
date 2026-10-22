@@ -10,7 +10,15 @@ from pathlib import Path
 BASE = Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
 ROOT = Path(os.environ.get('ISKRA_DATA_DIR', str(BASE / 'data'))).resolve()
 DB = ROOT / 'index.sqlite3'
+import iskra_ocr
+
 EXT = {'.docx', '.xlsx', '.xlsm', '.pptx', '.pdf', '.txt', '.md', '.csv'}
+
+
+def supported(path):
+    """Читаемый файл; картинки — только когда установлено распознавание сканов (архив Iskra-dop-skany.zip)."""
+    ext = Path(path).suffix.lower()
+    return ext in EXT or (ext in iskra_ocr.IMAGES and iskra_ocr.available())
 MAX_CHARS = 2_000_000
 # Bump when the stored search text changes, so old indexes are rebuilt automatically.
 SCHEMA_VERSION = 2
@@ -56,7 +64,13 @@ def extract(p):
         return '\n'.join(sh.text for sl in Presentation(p).slides for sh in sl.shapes if sh.has_text_frame)
     if ext == '.pdf':
         from pypdf import PdfReader
-        return '\n'.join(page.extract_text() or '' for page in PdfReader(str(p)).pages)
+        pages = PdfReader(str(p)).pages
+        text = '\n'.join(page.extract_text() or '' for page in pages)
+        if iskra_ocr.looks_scanned(text, len(pages)) and iskra_ocr.available():
+            return iskra_ocr.recognize(p, 'pdf') or text
+        return text
+    if ext in iskra_ocr.IMAGES:
+        return iskra_ocr.recognize(p, 'image')
     return ''
 
 
@@ -84,6 +98,11 @@ def connect():
         c.execute("INSERT OR REPLACE INTO meta VALUES ('schema', ?)", (str(SCHEMA_VERSION),))
     c.execute('CREATE TABLE IF NOT EXISTS docs (path TEXT PRIMARY KEY, mtime INTEGER, size INTEGER)')
     c.execute('CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(path UNINDEXED, content, tokenize="unicode61")')
+    if iskra_ocr.available() and c.execute("SELECT value FROM meta WHERE key='ocr'").fetchone() is None:
+        # Распознавание только что установлено: PDF-сканы, прочитанные раньше как пустые, перечитываются.
+        c.execute("DELETE FROM docs WHERE lower(path) LIKE '%.pdf' AND path IN "
+                  "(SELECT path FROM search WHERE length(content) < 300)")
+        c.execute("INSERT OR REPLACE INTO meta VALUES ('ocr', '1')")
     c.commit()
     return c
 
@@ -102,7 +121,7 @@ def index_folder(folder, notify):
             dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('$RECYCLE.BIN', 'System Volume Information')]
             for name in files:
                 p = Path(base) / name
-                if p.suffix.lower() not in EXT or name.startswith('~$'):
+                if not supported(p) or name.startswith('~$'):
                     continue
                 path = str(p); found.add(path)
                 try:

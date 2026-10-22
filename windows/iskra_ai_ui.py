@@ -6,6 +6,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
+import iskra_addons
 import iskra_ai as ai
 from iskra_index import ROOT, extract, iter_documents, search_docs
 from iskra_overview import candidate_folders, folder_overview, folders_summary, render
@@ -200,11 +201,22 @@ class AIMixin:
                     'в ту же папку, что и часть 1, и перезапустите Искру.')
         return 'Нейросеть не установлена (версия без модели): работают поиск, сроки, свод, шаблоны телеграмм и формулы.'
 
+    def addons_status_line(self):
+        scans = ('Сканы и фото документов: распознаются (без интернета).' if iskra_addons.installed('ocr') else
+                 'Сканы не распознаются — нужен дополнительный архив Iskra-dop-skany.zip.')
+        voice = ('Голосовые команды: кнопка «Сказать».' if iskra_addons.installed('voice') else
+                 'Голосовые команды — дополнительный архив Iskra-dop-golos.zip.')
+        return scans + ' ' + voice
+
     def ai_gather(self):
         """Части модели, распакованные в отдельные папки, переносятся к программе (в фоне: с другого диска — копирование)."""
         def work():
             try:
-                moved = ai.gather_parts()
+                addons = iskra_addons.gather()
+            except Exception:
+                addons = []
+            try:
+                moved = 0 if self.ai_ready else ai.gather_parts()
             except Exception:
                 moved = 0
             if moved:
@@ -213,6 +225,9 @@ class AIMixin:
                     self.say(f'Нашла {moved} част(ей) модели в соседних папках и перенесла их к программе.', 'proof')
                     self.say(self.ai_status_line(), 'proof')
                 self.events.put(('call', done))
+            if addons:
+                self.events.put(('call', lambda: (self.say('Нашла дополнения в соседних папках и подключила их.', 'proof'),
+                                                  self.say(self.addons_status_line(), 'proof'))))
         threading.Thread(target=work, daemon=True).start()
 
     def ai_check(self):

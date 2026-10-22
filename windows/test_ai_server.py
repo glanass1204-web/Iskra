@@ -40,7 +40,7 @@ class H(BaseHTTPRequestHandler):
 ThreadingHTTPServer(('127.0.0.1', port), H).serve_forever()
 '''
 
-FAKE_COMPLETION = 'import sys; sys.stdout.write("обычный способ")'
+FAKE_COMPLETION = 'import sys; sys.stdout.buffer.write("обычный способ".encode("utf-8"))'
 
 
 class ServerTest(unittest.TestCase):
