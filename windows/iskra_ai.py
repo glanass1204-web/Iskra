@@ -2,7 +2,9 @@
 Работает только на этом компьютере: движок запускается как отдельная программа без сетевых параметров,
 текст передаётся через временный файл, ответ читается из её вывода. Интернет не нужен и не используется."""
 import codecs
+import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -66,6 +68,102 @@ def missing_parts(model):
     stem = model.name[:m.start()]
     return [f'{stem}-{i:05d}-of-{total:05d}.gguf' for i in range(1, total + 1)
             if not (model.parent / f'{stem}-{i:05d}-of-{total:05d}.gguf').is_file()]
+
+
+def gather_parts(base=None, extra_roots=None):
+    """Части модели, распакованные не туда, переносятся в models рядом с программой.
+    «Извлечь всё» в Проводнике кладёт каждый архив в свою папку (Загрузки\\Iskra-AI-chast-03\\Iskra\\models\\…),
+    и программа из части 1 их не видит. Возвращает число перенесённых файлов."""
+    base = Path(base).resolve() if base else base_dir()
+    target = base / 'models'
+    _, model = local_files(base)
+    if model is not None and not missing_parts(model):
+        return 0
+    if extra_roots is None:
+        extra_roots = [Path.home() / 'Downloads', Path.home() / 'Desktop', Path.home() / 'Загрузки']
+    roots = [base.parent, base.parent.parent] + [Path(r) for r in extra_roots]
+    moved = 0
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for pattern in ('*/Iskra/models/*.gguf', '*/*/Iskra/models/*.gguf', 'Iskra/models/*.gguf', '*/models/*.gguf', '*.gguf'):
+            try:
+                found = list(root.glob(pattern))
+            except OSError:
+                continue
+            for part in found:
+                if not SPLIT.search(part.name) or part.parent.resolve() == target.resolve():
+                    continue
+                dest = target / part.name
+                try:
+                    if dest.is_file() and dest.stat().st_size == part.stat().st_size:
+                        continue
+                    target.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(part), str(dest))
+                    moved += 1
+                except OSError:
+                    pass
+    return moved
+
+
+def ram_gb():
+    """Объём оперативной памяти компьютера в ГБ (0 — не удалось узнать)."""
+    if sys.platform != 'win32':
+        try:
+            return os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') / 2 ** 30
+        except (ValueError, OSError, AttributeError):
+            return 0
+    import ctypes
+
+    class MEMORYSTATUSEX(ctypes.Structure):
+        _fields_ = [('dwLength', ctypes.c_ulong), ('dwMemoryLoad', ctypes.c_ulong), ('ullTotalPhys', ctypes.c_ulonglong),
+                    ('ullAvailPhys', ctypes.c_ulonglong), ('ullTotalPageFile', ctypes.c_ulonglong),
+                    ('ullAvailPageFile', ctypes.c_ulonglong), ('ullTotalVirtual', ctypes.c_ulonglong),
+                    ('ullAvailVirtual', ctypes.c_ulonglong), ('ullAvailExtendedVirtual', ctypes.c_ulonglong)]
+    st = MEMORYSTATUSEX()
+    st.dwLength = ctypes.sizeof(st)
+    try:
+        return st.ullTotalPhys / 2 ** 30 if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)) else 0
+    except Exception:
+        return 0
+
+
+# Коды аварийного завершения Windows → понятная причина.
+CRASH = {
+    0xC0000135: 'не найдены библиотеки Microsoft Visual C++ (MSVCP140.dll, VCRUNTIME140.dll). '
+                'Они должны лежать в папке engine — распакуйте часть 1 заново целиком; '
+                'или установите «Microsoft Visual C++ Redistributable x64» (2015–2022).',
+    0xC000007B: 'библиотеки в папке engine не той разрядности или повреждены — распакуйте часть 1 заново.',
+    0xC000001D: 'процессор этого компьютера не поддерживает нужные команды.',
+    0xC0000005: 'движок аварийно завершился (часто — не хватает оперативной памяти или повреждён файл модели).',
+    0xC0000409: 'движок аварийно завершился (часто — повреждён файл модели: скачайте заново части модели).',
+    0xC0000017: 'не хватает оперативной памяти.',
+}
+
+
+def explain_failure(returncode, stderr):
+    code = (returncode or 0) & 0xFFFFFFFF
+    low = (stderr or '').lower()
+    if code in CRASH:
+        why = CRASH[code]
+    elif 'failed to load model' in low or 'failed to open' in low or 'gguf' in low and 'error' in low:
+        why = 'не удалось открыть модель — какая-то часть повреждена или не докачалась. Сверьте размеры файлов в папке models.'
+    elif 'alloc' in low or 'out of memory' in low:
+        why = 'не хватает оперативной памяти. Закройте лишние программы.'
+    else:
+        why = f'движок завершился с кодом {code:#x}.'
+    tail = (stderr or '').strip()[-400:]
+    return 'Ошибка нейросети: ' + why + (('\nПодробности: ' + tail) if tail else '')
+
+
+def write_log(text):
+    try:
+        log = base_dir() / 'data' / 'ai_log.txt'
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open('a', encoding='utf-8') as f:
+            f.write(time.strftime('%d.%m.%Y %H:%M:%S ') + text.rstrip() + '\n\n')
+    except OSError:
+        pass
 
 
 def available(base=None):
@@ -140,19 +238,34 @@ _LOCK = threading.Lock()
 
 
 def _run_locked(binary, model, prompt, max_tokens, on_text, cancel, timeout, temperature):
-    tmp = Path(tempfile.mkdtemp(prefix='iskra_ai_'))
+    # Папка программы — рабочая папка движка, пути к модели и тексту — относительные: так русские буквы
+    # в пути (C:\Users\Иванов\…) не попадают в командную строку движка.
+    home = model.parent.parent
+    try:
+        (home / 'data').mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.mkdtemp(prefix='ai_', dir=home / 'data'))
+    except OSError:
+        tmp = Path(tempfile.mkdtemp(prefix='iskra_ai_'))
     prompt_file = tmp / 'prompt.txt'
     # Через файл, а не командной строкой: командные строки видны всем в диспетчере задач.
     prompt_file.write_text(prompt, encoding='utf-8')
-    command = ENGINE_PREFIX + [str(binary), '-m', str(model), '-f', str(prompt_file), '-n', str(max_tokens), '-c', str(CONTEXT_TOKENS),
+
+    def rel(path):
+        try:
+            return os.path.relpath(path, home)
+        except ValueError:
+            return str(path)
+    command = ENGINE_PREFIX + [str(binary), '-m', rel(model), '-f', rel(prompt_file), '-n', str(max_tokens), '-c', str(CONTEXT_TOKENS),
                '--temp', str(temperature), '--top-p', '0.9', '--repeat-penalty', '1.05',
                '--no-display-prompt', '-ngl', '0', '-no-cnv', '--no-warmup']
     try:
         proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
-                                cwd=str(binary.parent), creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                                cwd=str(home), creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     except OSError as exc:
         _cleanup(tmp)
-        raise AIError('Не удалось запустить нейросеть: ' + str(exc)) from exc
+        write_log('Не удалось запустить движок: ' + repr(exc))
+        raise AIError('Не удалось запустить нейросеть: ' + str(exc) + '. Возможно, антивирус заблокировал '
+                      'engine\\llama-completion.exe — добавьте папку Искры в исключения.') from exc
     chunks, err = [], {}
 
     def read_out():
@@ -203,7 +316,9 @@ def _run_locked(binary, model, prompt, max_tokens, on_text, cancel, timeout, tem
         stream.close()
     answer = clean(''.join(chunks))
     if proc.returncode and not answer:
-        raise AIError('Ошибка нейросети: ' + err.get('text', '')[-600:])
+        message = explain_failure(proc.returncode, err.get('text', ''))
+        write_log(message + '\n' + err.get('text', '')[-3000:])
+        raise AIError(message)
     if not answer:
         raise AIError('Нейросеть вернула пустой ответ.')
     if on_text:

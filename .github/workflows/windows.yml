@@ -86,6 +86,14 @@ jobs:
           Copy-Item model-cache/README.txt dist-ai/Iskra/models/
           Get-ChildItem dist-ai/Iskra/engine, dist-ai/Iskra/models | Select-Object Name, Length | Format-Table
 
+      - name: Engine has everything it needs
+        shell: pwsh
+        run: |
+          # На сервере сборки Visual C++ установлен, на рабочих компьютерах — не всегда: всё нужное должно быть в engine.
+          python -m pip install pefile
+          python check_engine_deps.py dist-ai/Iskra/engine
+          if ($LASTEXITCODE -ne 0) { throw 'Движку не хватает библиотек в папке engine' }
+
       - name: Neural network works without internet
         shell: pwsh
         run: |
@@ -137,6 +145,26 @@ jobs:
           }
           "Всего частей: $((Get-ChildItem parts).Count)" | Write-Host
 
+      - name: Works as a user unpacks it
+        shell: pwsh
+        run: |
+          # Как у пользователя: русские буквы в пути и во временной папке, «Извлечь всё» — каждый архив в свою папку.
+          $root = 'C:\Проверка Искры\Загрузки'
+          New-Item -ItemType Directory -Force $root | Out-Null
+          foreach ($z in Get-ChildItem parts/*.zip) {
+            7z x $z.FullName ("-o" + (Join-Path $root $z.BaseName)) -y | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Не распаковался $($z.Name)" }
+          }
+          $global:LASTEXITCODE = 0
+          $tempDir = 'C:\Проверка Искры\Временные'
+          New-Item -ItemType Directory -Force $tempDir | Out-Null
+          $env:TEMP = $tempDir; $env:TMP = $tempDir
+          $app = Join-Path $root 'Iskra-AI-chast-01\Iskra'
+          $t = Start-Process (Join-Path $app 'Iskra.exe') -ArgumentList '--selftest-ai' -PassThru -Wait
+          Get-Content (Join-Path $app 'data\selftest_ai.txt') -Encoding utf8
+          if ($t.ExitCode -ne 0) { throw "Нейросеть не работает при распаковке по отдельным папкам: $($t.ExitCode)" }
+          Remove-Item 'C:\Проверка Искры' -Recurse -Force
+
       - name: Publish release
         if: github.ref == 'refs/heads/main'
         shell: bash
@@ -148,4 +176,4 @@ jobs:
             --prerelease \
             --target "$GITHUB_SHA" \
             --title "Искра для Windows — последняя сборка" \
-            --notes "Сборка ${GITHUB_RUN_NUMBER}. С нейросетью: скачайте ВСЕ файлы Iskra-AI-chast-01 … chast-NN (каждый до 400 МБ) и распакуйте их в одну и ту же папку, затем запустите Iskra\\Iskra.exe. Если какой-то файл не докачался — скачайте заново только его. Без нейросети: Iskra-Windows.zip (35 МБ). Интернет для работы не нужен."
+            --notes "Сборка ${GITHUB_RUN_NUMBER}. С нейросетью: скачайте ВСЕ файлы Iskra-AI-chast-01 … chast-NN (каждый до 400 МБ) и распакуйте их в одну и ту же папку (если распаковали каждый в свою папку рядом — Искра соберёт части сама), затем запустите Iskra\\Iskra.exe. Проверка: меню Файл → Проверить нейросеть. Если какой-то файл не докачался — скачайте заново только его. Без нейросети: Iskra-Windows.zip (35 МБ). Интернет для работы не нужен."

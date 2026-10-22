@@ -27,5 +27,11 @@ if ($Tools) {
   New-Item -ItemType Directory -Force $Tools | Out-Null
   Get-ChildItem $unpacked -Recurse -Include 'llama-gguf-split.exe','*.dll' | Copy-Item -Destination $Tools -Force
 }
+# Движку нужны библиотеки Microsoft Visual C++ (MSVCP140, VCRUNTIME140). На многих рабочих компьютерах их нет —
+# кладём рядом с движком (разрешённое Microsoft «локальное» распространение), Windows берёт их из папки программы.
+foreach ($dll in 'msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll', 'vcruntime140.dll', 'vcruntime140_1.dll', 'concrt140.dll') {
+  $src = Join-Path $env:SystemRoot "System32\$dll"
+  if (Test-Path $src) { Copy-Item $src -Destination $Target -Force }
+}
 Set-Content (Join-Path $Target 'VERSION.txt') "llama.cpp $($release.tag_name) — https://github.com/ggml-org/llama.cpp (MIT)"
 Write-Host "Готово: $Target"

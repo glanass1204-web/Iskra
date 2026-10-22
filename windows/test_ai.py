@@ -38,6 +38,8 @@ elif mode == 'merge':
     say('ТЕЛЕГРАММА\n\nТекст:\n1. Представить сведения до 25.10.2026.\n2. Выделить 15 человек.')
 elif mode == 'slow':
     say('Очень долгий ответ ' * 200, 0.05)
+elif mode == 'args':
+    say('пути латиницей' if all(a.isascii() for a in args[args.index('-m'):]) else 'русские буквы в пути')
 elif mode == 'fail':
     sys.stderr.write('error: model file is corrupted'); sys.exit(1)
 '''
@@ -63,6 +65,39 @@ class AITest(unittest.TestCase):
         self.assertEqual(model.name, 'Qwen3.5-2B-Q6_K.gguf')       # mmproj не модель
         self.assertTrue(ai.available(self.base))
         self.assertFalse(ai.available(Path(tempfile.mkdtemp())))
+
+    def test_gather_parts_from_explorer_folders(self):
+        # «Извлечь всё» в Проводнике: каждый архив в свою папку Загрузки\Iskra-AI-chast-NN\Iskra\…
+        downloads = Path(tempfile.mkdtemp()) / 'Загрузки'
+        app = downloads / 'Iskra-AI-chast-01' / 'Iskra'
+        (app / 'engine').mkdir(parents=True)
+        (app / 'models').mkdir()
+        for i in (1, 2, 3):
+            d = downloads / f'Iskra-AI-chast-{i + 1:02d}' / 'Iskra' / 'models'
+            d.mkdir(parents=True)
+            (d / f'Q-4B-{i:05d}-of-00003.gguf').write_bytes(b'GGUF' * i)
+        self.assertIsNone(ai.local_files(app)[1])
+        self.assertEqual(ai.gather_parts(app, extra_roots=[]), 3)
+        _, model = ai.local_files(app)
+        self.assertEqual(model.name, 'Q-4B-00001-of-00003.gguf')
+        self.assertEqual(ai.missing_parts(model), [])
+        self.assertEqual(ai.gather_parts(app, extra_roots=[]), 0)      # всё на месте — ничего не трогаем
+
+    def test_russian_letters_in_path(self):
+        base = Path(tempfile.mkdtemp()) / 'Рабочий стол Иванов' / 'Искра'
+        (base / 'engine').mkdir(parents=True)
+        (base / 'models').mkdir()
+        exe = 'llama-completion.exe' if sys.platform == 'win32' else 'llama-completion'
+        (base / 'engine' / exe).write_text(FAKE, encoding='utf-8')
+        (base / 'models' / 'Q.gguf').write_bytes(b'GGUF')
+        os.environ['FAKE_MODE'] = 'args'
+        self.assertEqual(ai.run('x', base=base), 'пути латиницей')
+        self.assertFalse(any((base / 'data').glob('ai_*')))           # временный текст удалён
+
+    def test_explain_failure(self):
+        self.assertIn('Visual C++', ai.explain_failure(-1073741515, ''))          # 0xC0000135
+        self.assertIn('процессор', ai.explain_failure(0xC000001D, ''))
+        self.assertIn('часть повреждена', ai.explain_failure(1, 'llama_model_load: error loading model: failed to load model'))
 
     def test_split_model(self):
         models = self.base / 'models'

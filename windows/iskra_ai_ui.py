@@ -182,17 +182,63 @@ class AIMixin:
 
     def ai_status_line(self):
         if self.ai_ready:
-            return f'Нейросеть: {ai.model_name()} — работает на этом компьютере, без интернета.'
-        _, model = ai.local_files()
+            line = f'Нейросеть: {ai.model_name()} — работает на этом компьютере, без интернета.'
+            ram = ai.ram_gb()
+            if 0 < ram < 7:
+                line += (f' Оперативной памяти {ram:.0f} ГБ — модели нужно около 4 ГБ свободной памяти: '
+                         'перед работой с нейросетью закройте лишние программы.')
+            return line
+        binary, model = ai.local_files()
+        if model is not None and not binary.is_file():
+            return ('Нейросеть: нет папки engine с llama-completion.exe — распакуйте часть 1 (Iskra-AI-chast-01) заново. '
+                    'Если файл пропадает сразу после распаковки — его удаляет антивирус: добавьте папку Искры в исключения.')
         if model is not None and ai.missing_parts(model):
             return ('Нейросеть: не хватает частей модели (' + ', '.join(ai.missing_parts(model)) + '). Распакуйте все архивы '
                     'Iskra-AI-chast-… в одну папку и перезапустите Искру.')
+        if binary.is_file():
+            return ('Нейросеть: программа есть, а модели нет — распакуйте архивы Iskra-AI-chast-02 … chast-10 '
+                    'в ту же папку, что и часть 1, и перезапустите Искру.')
         return 'Нейросеть не установлена (версия без модели): работают поиск, сроки, свод, шаблоны телеграмм и формулы.'
+
+    def ai_gather(self):
+        """Части модели, распакованные в отдельные папки, переносятся к программе (в фоне: с другого диска — копирование)."""
+        def work():
+            try:
+                moved = ai.gather_parts()
+            except Exception:
+                moved = 0
+            if moved:
+                def done():
+                    self.ai_ready = ai.available()
+                    self.say(f'Нашла {moved} част(ей) модели в соседних папках и перенесла их к программе.', 'proof')
+                    self.say(self.ai_status_line(), 'proof')
+                self.events.put(('call', done))
+        threading.Thread(target=work, daemon=True).start()
+
+    def ai_check(self):
+        """Меню «Файл → Проверить нейросеть»: короткий настоящий ответ модели или понятная причина сбоя."""
+        self.ai_ready = ai.available()
+        if not self.ai_ready:
+            messagebox.showwarning('Нейросеть', self.ai_status_line())
+            return
+        self.say('Проверяю нейросеть: короткий ответ, обычно 10–60 секунд…', 'proof')
+
+        def work():
+            import time
+            t = time.time()
+            try:
+                text = ai.run(ai.chat_prompt('Ответь одним словом по-русски: готово.'), max_tokens=16, timeout=300)
+                msg = f'Нейросеть работает: ответила «{text[:60]}» за {time.time() - t:.0f} с. Интернет не использовался.'
+                self.events.put(('call', lambda: (self.say(msg, 'proof'), messagebox.showinfo('Нейросеть', msg))))
+            except ai.AIError as exc:
+                msg = str(exc) + '\n\nЖурнал: папка данных → ai_log.txt'
+                self.events.put(('call', lambda: (self.say(msg), messagebox.showerror('Нейросеть', msg))))
+        threading.Thread(target=work, daemon=True).start()
 
     def ai_background(self, job, done=None):
         """Запуск модели в фоне: одна задача за раз, Esc или «Стоп» — остановить."""
         if not self.ai_ready:
-            messagebox.showinfo('Нейросеть', 'Нейросеть не установлена. Скачайте версию Искры «с нейросетью» (Iskra-Windows-AI.zip).')
+            messagebox.showinfo('Нейросеть', self.ai_status_line())
             return
         if self.ai_cancel is not None:
             messagebox.showinfo('Нейросеть', 'Нейросеть ещё пишет предыдущий ответ. Подождите или нажмите «Стоп».')

@@ -18,7 +18,7 @@ from iskra_index import ROOT, extract, index_folder, search_docs, forget_folder,
 import iskra_assistant as assistant
 
 ROOT.mkdir(parents=True, exist_ok=True)
-VERSION = '1.8'
+VERSION = '1.8.1'
 ACCENT = '#24518A'
 
 
@@ -79,6 +79,8 @@ class App(PlanMixin, AIMixin, WorkMixin, ToolsMixin):
         self.say(assistant.HELP)
         self.say(f'Сейчас в поиске документов: {stats()}. Папки для поиска добавляются кнопкой «Папки…».')
         self.say(self.ai_status_line(), 'proof')
+        if not self.ai_ready:
+            self.ai_gather()
         self.root.after(600, self.maybe_first_run)
         self.root.after(4000, lambda: self._morning_enabled() and self.maybe_morning())
         self.root.after(100, self.poll)
@@ -103,6 +105,7 @@ class App(PlanMixin, AIMixin, WorkMixin, ToolsMixin):
         f.add_command(label='Мастер первого запуска…', command=self.first_run_window)
         f.add_command(label='Обновить индекс', command=self.indexer.scan_now)
         f.add_command(label='Открыть папку данных', command=lambda: os.startfile(str(ROOT)))
+        f.add_command(label='Проверить нейросеть', command=self.ai_check)
         f.add_separator(); f.add_command(label='Выход', command=self.close)
         m.add_cascade(label='Файл', menu=f)
         t = tk.Menu(m, tearoff=False)
@@ -695,6 +698,9 @@ def selftest_ai():
     """Iskra.exe --selftest-ai: настоящая модель на этом компьютере; ответы и время пишутся в data/selftest_ai.txt."""
     import time
     lines, ok = [], True
+    moved = iskra_ai.gather_parts()
+    if moved:
+        lines.append(f'Части модели из соседних папок перенесены к программе: {moved}')
     if not iskra_ai.available():
         (ROOT / 'selftest_ai.txt').write_text('FAIL нейросеть не найдена (engine/models)\n', encoding='utf-8')
         return 1
