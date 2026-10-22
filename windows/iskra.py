@@ -24,7 +24,7 @@ from iskra_index import ROOT, extract, index_folder, search_docs, forget_folder,
 import iskra_assistant as assistant
 
 ROOT.mkdir(parents=True, exist_ok=True)
-VERSION = '1.9.5'
+VERSION = '1.9.6'
 ACCENT = '#24518A'
 
 
@@ -155,6 +155,7 @@ class App(LearnMixin, VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMi
         t.add_command(label='Черновики и версии…', command=self.drafts_window)
         t.add_command(label='Мои реквизиты для телеграмм…', command=self.my_details_window)
         t.add_command(label='Объединить телеграммы…', command=self.merge_telegrams_window)
+        t.add_command(label='Перенести изменения (зелёная подсветка) в образец…', command=self.highlight_window)
         t.add_command(label='Проверка орфографии', command=self.spell_window)
         t.add_command(label='Сравнить две редакции…', command=self.compare_files)
         t.add_separator()
@@ -320,6 +321,8 @@ class App(LearnMixin, VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMi
             self.say('Что делает формула:\n' + explain_formula(arg))
         elif cmd == 'spell':
             self.spell_window()
+        elif cmd == 'highlight':
+            self.highlight_window()
         elif cmd == 'word2excel':
             self.word_to_excel()
         elif cmd == 'excel2word':

@@ -1,6 +1,7 @@
 """Windows for batch Word ↔ Excel, telegram merging, spelling and the Excel formula helper."""
 import os
 import threading
+from datetime import date
 from pathlib import Path
 import tkinter as tk
 from iskra_errors import friendly_error
@@ -408,6 +409,111 @@ class ToolsMixin:
             tree.selection_set(kids[0] if kids else first[0])
         if not drafts:
             status.set('Черновиков пока нет: они появляются, когда вы работаете в редакторе телеграмм.')
+        return win
+
+    def highlight_window(self, files=()):
+        """Несколько присланных документов → изменения, выделенные зелёным/салатовым, — в один документ по образцу."""
+        import iskra_highlight
+        from iskra_clipboard import show_text
+        win = _window(self, 'перенос изменений по подсветке', '820x560')
+        settings_path = ROOT / 'highlight.json'
+        try:
+            settings = json.loads(settings_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            settings = {}
+        ttk.Label(win, text='Исполнители выделяют свои изменения зелёным или салатовым (цветом текста-выделения или заливкой '
+                            'ячейки). Искра перенесёт всё выделенное из присланных файлов в один документ по образцу: '
+                            'таблицы — по заголовкам столбцов и по строке (город, фамилия), а не по номеру; новые строки '
+                            'добавит, «Итого» пересчитает. Присланные файлы не меняются.', wraplength=790).pack(anchor='w', padx=12, pady=8)
+        row = ttk.Frame(win); row.pack(fill='x', padx=12)
+        ttk.Label(row, text='Образец:').pack(side='left')
+        template = tk.StringVar(value=settings.get('template', '') if Path(settings.get('template', '') or '.').is_file() else '')
+        ttk.Entry(row, textvariable=template).pack(side='left', fill='x', expand=True, padx=6)
+
+        def pick_template():
+            path = filedialog.askopenfilename(parent=win, title='Образец (документ, в который переносить)',
+                                              filetypes=[('Word', '*.docx')])
+            if path:
+                template.set(path)
+        ttk.Button(row, text='Выбрать…', command=pick_template).pack(side='left')
+        ttk.Label(win, text='Присланные документы (с подсветкой изменений):').pack(anchor='w', padx=12, pady=(10, 2))
+        box = tk.Listbox(win, height=10, font=('Segoe UI', 10), selectmode='extended')
+        box.pack(fill='both', expand=True, padx=12)
+        paths = []
+
+        def add_paths(new):
+            old_format = [p for p in new if Path(p).suffix.lower() == '.doc']
+            for p in new:
+                if Path(p).suffix.lower() == '.docx' and p not in paths:
+                    paths.append(p); box.insert('end', Path(p).name + '   —   ' + str(Path(p).parent))
+            if old_format:
+                messagebox.showinfo('Старый формат', 'Файлы .doc не читаются — откройте их в Word и сохраните как .docx:\n' +
+                                    '\n'.join(Path(p).name for p in old_format), parent=win)
+
+        def add():
+            add_paths(list(filedialog.askopenfilenames(parent=win, title='Присланные документы',
+                                                       filetypes=[('Word', '*.docx *.doc')])))
+
+        def remove():
+            for i in reversed(box.curselection()):
+                box.delete(i); paths.pop(i)
+        bar = ttk.Frame(win); bar.pack(fill='x', padx=12, pady=4)
+        ttk.Button(bar, text='Добавить файлы…', command=add).pack(side='left')
+        ttk.Button(bar, text='Убрать', command=remove).pack(side='left', padx=6)
+        mark = tk.BooleanVar(value=settings.get('mark', True))
+        ttk.Checkbutton(bar, text='Выделить перенесённое салатовым в итоговом документе', variable=mark).pack(side='left', padx=12)
+        status = tk.StringVar(value='')
+        ttk.Label(win, textvariable=status, style='Muted.TLabel', wraplength=790).pack(anchor='w', padx=12)
+        bottom = ttk.Frame(win, padding=(12, 6, 12, 10)); bottom.pack(fill='x')
+        add_paths(list(files))
+
+        def run():
+            base = template.get().strip()
+            if not base or not Path(base).is_file():
+                if paths and messagebox.askyesno('Образец', 'Образец не выбран. Взять за образец первый файл из списка?\n'
+                                                 + Path(paths[0]).name, parent=win):
+                    base = paths[0]; template.set(base)
+                else:
+                    status.set('Выберите образец — документ, в который переносить изменения.'); return
+            sources = [p for p in paths if p != base] or paths
+            if not sources:
+                status.set('Добавьте присланные документы.'); return
+            stem = Path(base).stem
+            out = filedialog.asksaveasfilename(parent=win, defaultextension='.docx', filetypes=[('Word', '*.docx')],
+                                               initialdir=str(Path(base).parent),
+                                               initialfile=f'{stem} — сводный {date.today():%d.%m.%Y}.docx')
+            if not out:
+                return
+            if Path(out).resolve() == Path(base).resolve():
+                status.set('Сохраните под другим именем — образец должен остаться как был.'); return
+            try:
+                settings_path.write_text(json.dumps({'template': base, 'mark': mark.get()}, ensure_ascii=False), encoding='utf-8')
+            except OSError:
+                pass
+            status.set('Переношу изменения…')
+            marked = mark.get()                            # окно читаем здесь: из фонового потока Tk трогать нельзя
+
+            def work():
+                try:
+                    rep = iskra_highlight.merge(base, sources, out, mark=marked)
+                    self.events.put(('call', lambda: done(rep)))
+                except Exception as exc:                   # noqa: BLE001 — показать понятную причину
+                    import iskra_bugreport
+                    iskra_bugreport.log_crash('Перенос подсветки', type(exc), exc, exc.__traceback__)
+                    msg = friendly_error(exc)
+                    self.events.put(('call', lambda: win.winfo_exists() and status.set('Не получилось: ' + msg)))
+            threading.Thread(target=work, daemon=True).start()
+
+            def done(rep):
+                save_history(ROOT, 'Перенос подсветки', f'{len(sources)} файлов → {Path(out).name}')
+                if win.winfo_exists():
+                    status.set(f'Готово: {out}')
+                show_text(win if win.winfo_exists() else self.root, 'что перенесено',
+                          f'Итоговый документ: {out}\n\n' + rep.text(), warn=bool(rep.conflicts or rep.unplaced))
+                if messagebox.askyesno('Готово', 'Документ собран. Открыть его?', parent=win if win.winfo_exists() else self.root):
+                    _open_path(out)
+        ttk.Button(bottom, text='Собрать в один документ', style='Accent.TButton', command=run).pack(side='left')
+        ttk.Button(bottom, text='Закрыть', command=win.destroy).pack(side='right')
         return win
 
     def offer_restore(self):

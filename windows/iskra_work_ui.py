@@ -358,7 +358,7 @@ class WorkMixin:
         b = ttk.Frame(tab); b.pack(fill='x', pady=(6, 0))
         for label, cmd in (('Открыть', self.inbox_open), ('В поручения', self.inbox_to_control), ('Ответ телеграммой', self.inbox_reply),
                            ('Напоминание', self.inbox_reminder), ('Объединить телеграммы', self.inbox_merge),
-                           ('В свод Excel', self.inbox_svod)):
+                           ('В свод Excel', self.inbox_svod), ('Подсветку → в образец', self.inbox_highlight)):
             ttk.Button(b, text=label, command=cmd).pack(side='left', padx=(0, 4))
         for label, status in (('Выполнено', 'выполнен'), ('В работу', 'в работе')):
             ttk.Button(b, text=label, command=lambda s=status: self.inbox_status(s)).pack(side='right', padx=(4, 0))
@@ -515,6 +515,12 @@ class WorkMixin:
         if len(items) < 2:
             messagebox.showinfo('Объединить', 'Выделите в списке 2–5 телеграмм (Ctrl + щелчок).'); return
         self.merge_telegrams_window(files=[i['path'] for i in items])
+
+    def inbox_highlight(self):
+        items = [i for i in self.inbox_selected(many=True) if Path(i['path']).suffix.lower() in ('.docx', '.doc')]
+        if not items:
+            messagebox.showinfo('Перенос подсветки', 'Выделите в списке присланные документы Word (Ctrl + щелчок).'); return
+        self.highlight_window(files=[i['path'] for i in items])
 
     def inbox_svod(self):
         items = [i for i in self.inbox_selected(many=True) if i['kind'] == 'Таблица Excel']
