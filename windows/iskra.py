@@ -34,6 +34,8 @@ FOLLOW_CMDS = {'search', 'write', 'ask', 'telegram'} | DOC_CMDS
 class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin, WorkMixin, ToolsMixin):
     def __init__(self, root):
         self.root = root
+        import iskra_clipboard
+        iskra_clipboard.install(root)                    # Ctrl+C/V и при русской раскладке, меню правой кнопкой
         root.title(f'Искра {VERSION} — помощник по документам')
         root.geometry('1180x740'); root.minsize(860, 540)
         self.events = queue.Queue()

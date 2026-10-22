@@ -5,6 +5,7 @@ import threading
 from datetime import date, datetime
 from pathlib import Path
 import tkinter as tk
+from iskra_errors import friendly_error
 from tkinter import ttk, filedialog, messagebox
 
 import iskra_assistant as assistant
@@ -144,7 +145,7 @@ class WorkMixin:
                     source_text = extract(Path(path))
                     text = compose.reply(source_text, me, Path(path).name)
                 except Exception as exc:
-                    messagebox.showerror('Ошибка', str(exc), parent=win); return
+                    messagebox.showerror('Ошибка', 'Не получилось: ' + friendly_error(exc), parent=win); return
                 ai_job = (lambda cancel, update: ai.reply(source_text, Path(path).name, me=me, on_text=update, cancel=cancel)[0],
                           [(Path(path).name, source_text)])
             else:
@@ -236,7 +237,7 @@ class WorkMixin:
             try:
                 names = [r[0] for t in read_tables(p) for r in t.rows]
             except Exception as exc:
-                messagebox.showerror('Ошибка', str(exc), parent=win); return
+                messagebox.showerror('Ошибка', 'Не получилось: ' + friendly_error(exc), parent=win); return
             order.delete('1.0', 'end'); order.insert('1.0', '\n'.join(dict.fromkeys(names)))
         ttk.Button(ob, text='Взять из таблицы…', command=order_from_file).pack(side='left')
         ttk.Button(ob, text='Очистить', command=lambda: order.delete('1.0', 'end')).pack(side='left', padx=4)

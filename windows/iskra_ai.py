@@ -436,6 +436,49 @@ def template_format(path, me=None):
             + '\n\nОБРАЗЕЦ:\n' + sample + '\n')
 
 
+NAME_LINE = re.compile(r'[А-ЯЁ]\.\s?[А-ЯЁ]\.\s?[А-ЯЁ][а-яё]+|[А-ЯЁ][а-яё]+\s[А-ЯЁ]\.\s?[А-ЯЁ]\.|\[(?:И\.О\. )?Фамилия|\[ФИО\]|\[Фамилия')
+
+
+def _last_block(text):
+    """Последний абзац текста (после последней пустой строки): (начало, строки)."""
+    body = text.rstrip()
+    cut = body.rfind('\n\n')
+    start = cut + 2 if cut != -1 else 0
+    return start, [l for l in body[start:].splitlines() if l.strip()]
+
+
+def template_signature():
+    """Подпись из образца телеграммы отдела (последний абзац с фамилией), если образец выбран."""
+    if not TELEGRAM_TEMPLATE:
+        return []
+    try:
+        from iskra_telegram import has_placeholders, template_text
+        sample = template_text(TELEGRAM_TEMPLATE)
+    except Exception:
+        return []
+    if has_placeholders(sample):
+        return []
+    _, lines = _last_block(sample)
+    return lines if lines and len(lines) <= 4 and NAME_LINE.search(lines[-1]) else []
+
+
+def enforce_signature(text, me=None):
+    """Подпись — из «Моих реквизитов» или из образца отдела, а не придуманная нейросетью: если в конце текста
+    подпись другая (или «[Фамилия И.О.]»), она заменяется. Подписи нет нигде — текст не трогаем."""
+    me = me or {}
+    sign = [l.strip() for l in me.get('signature', '').splitlines() if l.strip()] or template_signature()
+    if not sign or all(l in text for l in sign):
+        return text
+    start, lines = _last_block(text)
+    if lines and len(lines) <= 5 and NAME_LINE.search(' '.join(lines[-2:])) and not CUT_MARK in text[start:]:
+        head = text[:start].rstrip()
+        label = 'Подпись:\n' if re.match(r'\s*Подпись\s*:?\s*$', lines[0]) else ''
+        if re.search(r'Подпись\s*:\s*$', head):
+            return head + '\n' + '\n'.join(sign)
+        return head + '\n\n' + label + '\n'.join(sign)
+    return text
+
+
 def telegram_format(me=None):
     if TELEGRAM_TEMPLATE and Path(TELEGRAM_TEMPLATE).is_file():
         own = template_format(TELEGRAM_TEMPLATE, me)
@@ -554,7 +597,10 @@ def write(task, sources=(), me=None, **kw):
              'Чего не хватает — [УТОЧНИТЬ: …].')
     if truncated:
         user += f'\n(Часть материалов не поместилась: {", ".join(truncated)}.)'
-    return fix_dates(run(chat_prompt(user), max_tokens=kw.pop('max_tokens', 800), **kw), task + ' ' + keep)[0], truncated
+    out = fix_dates(run(chat_prompt(user), max_tokens=kw.pop('max_tokens', 800), **kw), task + ' ' + keep)[0]
+    if TELEGRAM_WORDS.search(task):
+        out = enforce_signature(out, me)
+    return out, truncated
 
 
 def answer(question, sources, **kw):

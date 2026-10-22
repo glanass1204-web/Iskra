@@ -3,6 +3,7 @@ import os
 import threading
 from pathlib import Path
 import tkinter as tk
+from iskra_errors import friendly_error
 from tkinter import ttk, filedialog, messagebox
 
 from iskra_batch import discover_fields, collect_tables, mail_merge, template_fields
@@ -210,7 +211,7 @@ class ToolsMixin:
                 if messagebox.askyesno('Готово', f"Создано документов: {r['created']}\nПапка: {r['output']}\n\nОткрыть папку?", parent=win):
                     _open_path(r['output'])
             except Exception as exc:
-                messagebox.showerror('Ошибка', str(exc), parent=win)
+                messagebox.showerror('Ошибка', 'Не получилось: ' + friendly_error(exc), parent=win)
         ttk.Button(win, text='Создать', style='Accent.TButton', command=run).pack(pady=(0, 12))
 
     # ---------- Телеграммы ----------
@@ -242,7 +243,7 @@ class ToolsMixin:
                 try:
                     telegram_docx(t.get('1.0', 'end-1c'), path, template)
                 except Exception as exc:
-                    messagebox.showerror('Ошибка', str(exc), parent=win); return
+                    messagebox.showerror('Ошибка', 'Не получилось: ' + friendly_error(exc), parent=win); return
                 status.set('Сохранено: ' + path + (' (по вашему шаблону)' if template else ' (стандартное оформление: Times New Roman 14, отступ 1,25 см, поля по ГОСТ)'))
                 if messagebox.askyesno('Готово', 'Телеграмма сохранена. Открыть?', parent=win):
                     _open_path(path)
@@ -268,7 +269,7 @@ class ToolsMixin:
                 save_history(ROOT, 'Проект телеграммы', Path(path).name)
                 status.set('Создан черновик с выдержками из источника.')
             except Exception as exc:
-                messagebox.showerror('Ошибка', str(exc), parent=win)
+                messagebox.showerror('Ошибка', 'Не получилось: ' + friendly_error(exc), parent=win)
 
         ttk.Button(buttons, text='Орфография', style='Accent.TButton', command=lambda: self.spell_window(target=t)).pack(side='left')
         ttk.Button(buttons, text='Проверить перед отправкой', command=check).pack(side='left', padx=6)
@@ -627,6 +628,9 @@ class ToolsMixin:
         ttk.Button(row, text='Написать макрос', style='Accent.TButton', command=lambda: build()).pack(side='left', padx=(10, 6))
         ai_btn = ttk.Button(row, text='Написать нейросетью', command=lambda: build_ai())
         ai_btn.pack(side='left', padx=(0, 6))
+        stop_btn = ttk.Button(row, text='Стоп', command=lambda: self.ai_stop())
+        stop_btn.pack(side='left', padx=(0, 10))
+        stop_btn.state(['disabled'])
         if not getattr(self, 'ai_ready', False):
             ai_btn.state(['disabled'])
         ttk.Button(row, text='Что я умею / примеры', command=lambda: show_help()).pack(side='left')
@@ -687,9 +691,17 @@ class ToolsMixin:
             text = task_box.get('1.0', 'end').strip()
             target = app.get() if app.get() != 'auto' else iskra_vba.detect_app(text)
             steps_text([('Нейросеть пишет макрос для ' + ('Excel' if target == 'excel' else 'Word') + '…', 'head'),
-                        ('Код проверяется так же, как макросы из шаблонов; при ошибках нейросеть исправляет его ещё раз.', 'ok')])
+                        ('Код проверяется так же, как макросы из шаблонов; при ошибках нейросеть исправляет его ещё раз.', 'ok'),
+                        ('Передумали — «Стоп» (или Esc).', 'warn')])
+            ai_btn.state(['disabled']); stop_btn.state(['!disabled'])
+            status.set('Нейросеть пишет макрос… «Стоп» — остановить.')
+
+            def idle():
+                if win.winfo_exists():
+                    ai_btn.state(['!disabled']); stop_btn.state(['disabled'])
 
             def done(res):
+                idle()
                 vba, problems = res
                 if not win.winfo_exists():
                     return
@@ -701,8 +713,13 @@ class ToolsMixin:
                             ('Перед запуском сохраните копию файла и прочитайте код: нейросеть может ошибиться.', 'warn')])
                 status.set('Макрос от нейросети. Запуск: Alt+F11 → Insert → Module → вставить → F5. Ошибка — «Была ошибка при запуске».')
                 save_history(ROOT, 'Макрос (нейросеть)', text[:300])
-            self.ai_background(lambda cancel: iskra_ai.vba(text, target, cancel=cancel), done, label='макрос',
-                               on_error=lambda e: win.winfo_exists() and status.set('Нейросеть: ' + e + ' Опишите задачу проще или выберите шаблон.'))
+            def failed(e):
+                idle()
+                if win.winfo_exists():
+                    status.set('Остановлено.' if e.startswith('Остановлено') else
+                               'Нейросеть: ' + e + ' Опишите задачу проще или выберите шаблон.')
+                    steps_text([('Макрос не написан: ' + e, 'bad')])
+            self.ai_background(lambda cancel: iskra_ai.vba(text, target, cancel=cancel), done, label='макрос', on_error=failed)
 
         def show_help():
             excel, word = iskra_vba.capabilities()

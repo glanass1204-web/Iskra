@@ -8,6 +8,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 import iskra_addons
+from iskra_errors import friendly_error  # noqa: F401  (и для других окон)
 import iskra_assistant as assistant
 import iskra_ai as ai
 from iskra_index import ROOT, extract, iter_documents, search_docs
@@ -21,22 +22,6 @@ SELECTED_DOC = ('по этому документ', 'по выбранному',
 # «по найденным», «по всем этим» — взять все документы из списка результатов слева.
 ALL_LISTED = ('по найденн', 'по всем найденн', 'по всем этим', 'по этим документ', 'по списку слева', 'по всем документам из списка',
               'из найденн', 'все найденн')
-
-
-def friendly_error(exc):
-    """Понятная причина вместо сообщения Python."""
-    import zipfile
-    if isinstance(exc, PermissionError):
-        return 'файл занят — он открыт в Word или Excel. Закройте его и повторите.'
-    if isinstance(exc, FileNotFoundError):
-        return 'файл не найден — возможно, его переместили или удалили.'
-    if isinstance(exc, zipfile.BadZipFile) or type(exc).__name__ == 'InvalidFileException':
-        return 'файл повреждён или это не .docx/.xlsx (старый .doc/.xls сохраните в новом формате).'
-    if isinstance(exc, MemoryError):
-        return 'не хватает памяти — закройте лишние программы.'
-    if isinstance(exc, OSError):
-        return f'не удалось открыть или записать файл ({exc.strerror or exc}).'
-    return 'что-то пошло не так. Подробности — в папке данных, файл ai_log.txt.'
 
 
 def editor_busy(t, status=None):
@@ -341,7 +326,8 @@ class AIMixin:
                 self.events.put(('call', lambda: (self.say(msg, 'proof'), messagebox.showinfo('Нейросеть', msg))))
             except ai.AIError as exc:
                 msg = str(exc) + '\n\nЖурнал: папка данных → ai_log.txt'
-                self.events.put(('call', lambda: (self.say(msg), messagebox.showerror('Нейросеть', msg))))
+                from iskra_clipboard import show_text
+                self.events.put(('call', lambda: (self.say(msg), show_text(self.root, 'Нейросеть', msg, warn=True))))
         threading.Thread(target=work, daemon=True).start()
 
     def ai_background(self, job, done=None, on_error=None, background=False, label=''):

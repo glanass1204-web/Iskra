@@ -153,7 +153,7 @@ class PeopleMixin:
             def show():
                 if not win.winfo_exists():
                     return
-                show_fn = messagebox.showwarning if any(lvl == 'ошибка' for lvl, _ in issues) else messagebox.showinfo
-                show_fn('Проверка перед отправкой', pc.report(issues), parent=win)
+                from iskra_clipboard import show_text
+                show_text(win, 'Проверка перед отправкой', pc.report(issues), warn=any(lvl == 'ошибка' for lvl, _ in issues))
             self.events.put(('call', show))
         threading.Thread(target=work, daemon=True).start()

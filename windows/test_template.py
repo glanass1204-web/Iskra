@@ -69,6 +69,17 @@ class TemplateTest(unittest.TestCase):
         self.assertAlmostEqual(body.paragraph_format.first_line_indent, Cm(1.25), delta=2000)
         self.assertFalse(body.runs[0].bold)
 
+    def test_signature_from_sample_is_enforced(self):
+        old = ai.TELEGRAM_TEMPLATE
+        ai.TELEGRAM_TEMPLATE = str(self.sample)
+        try:
+            bad = 'ТЕЛЕГРАММА\nНачальнику госпиталя\n\nПредставить сведения до 30.10.2026.\n\nНачальник отдела\n[Фамилия И.О.]'
+            out = ai.enforce_signature(bad)
+            self.assertIn('полковник П.П. Сидоров', out)
+            self.assertNotIn('[Фамилия', out)
+        finally:
+            ai.TELEGRAM_TEMPLATE = old
+
     def test_labeled_text_into_marked_template(self):
         text = 'ТЕЛЕГРАММА\n\nКому: госпиталя\n\nТекст:\nПредставить сведения до 30.10.2026.\n\nПодпись:\nНачальник штаба'
         tg.save_docx(text, self.out, str(self.marked))
