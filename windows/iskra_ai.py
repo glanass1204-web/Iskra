@@ -641,6 +641,102 @@ def strip_unasked(text, task, keep='', sources=()):
     return '\n'.join(out), removed
 
 
+_SPELL = None
+LAST_FIXES = []                 # что исправила последняя вычитка (для строки состояния)
+
+
+def _speller():
+    global _SPELL
+    if _SPELL is None:
+        from iskra_spell import SpellChecker
+        _SPELL = SpellChecker()
+    return _SPELL if _SPELL.available else None
+
+
+def _distance(a, b):
+    """Расстояние Дамерау–Левенштейна (сколько букв переставить/заменить/добавить)."""
+    d = [[i + j if i * j == 0 else 0 for j in range(len(b) + 1)] for i in range(len(a) + 1)]
+    for i in range(1, len(a) + 1):
+        for j in range(1, len(b) + 1):
+            cost = a[i - 1] != b[j - 1]
+            d[i][j] = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost)
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                d[i][j] = min(d[i][j], d[i - 2][j - 2] + 1)
+    return d[-1][-1]
+
+
+JUNK = [(re.compile(r'[\u3000-\u9fff\uac00-\ud7af]+'), ''),            # иероглифы — сбой модели
+        (re.compile(r'\*\*(.+?)\*\*'), r'\1'), (re.compile(r'__(.+?)__'), r'\1'),
+        (re.compile(r'^\s*#{1,6}\s*', re.MULTILINE), ''),
+        (re.compile(r'^\s*[-*•]\s+', re.MULTILINE), '– '),
+        (re.compile(r'`+'), '')]
+
+
+def proofread(text, sources=(), task=''):
+    """Вычитка текста нейросети: мусор разметки, типовые ошибки делового письма, опечатки по словарю.
+    Слово меняется, только если словарь уверен (одна-две буквы) и такого слова нет в материалах и задаче
+    (фамилии, названия, сокращения остаются). Возвращает (текст, [исправления])."""
+    from iskra_spell import fix_typical
+    fixes = []
+    for pattern, repl in JUNK:
+        new = pattern.sub(repl, text)
+        if new != text:
+            if 'убрана разметка/лишние символы' not in fixes:
+                fixes.append('убрана разметка/лишние символы')
+            text = new
+    tail = ''
+    if '--- ИСТОЧНИКИ' in text:
+        text, tail = text.split('--- ИСТОЧНИКИ', 1)
+        tail = '--- ИСТОЧНИКИ' + tail
+    text, n = fix_typical(text)
+    if n:
+        fixes.append(f'типовых ошибок: {n}')
+    dative = {'приказа': 'приказу', 'распоряжения': 'распоряжению', 'указания': 'указанию', 'решения': 'решению',
+              'плана': 'плану', 'графика': 'графику', 'договора': 'договору', 'положения': 'положению',
+              'постановления': 'постановлению', 'требования': 'требованию', 'указаний': 'указаниям'}
+    new = re.sub(r'(?<![А-Яа-яЁё])([Сс]огласно)\s+(' + '|'.join(dative) + r')(?![А-Яа-яЁё])',
+                 lambda m: f'{m.group(1)} {dative[m.group(2).lower()]}', text)
+    if new != text:
+        fixes.append('«согласно» с дательным падежом')
+        text = new
+    text = '\n'.join(line.rstrip() for line in text.split('\n'))
+    speller = _speller()
+    if speller is not None:
+        own = {w.lower().replace('ё', 'е') for w in re.findall(r'[А-Яа-яЁё-]+', task + ' ' + ' '.join(t for _, t in sources))}
+        changed = {}
+        try:
+            words = [m for m in re.finditer(r'(?<![А-Яа-яЁё-])[А-Яа-яЁё]{3,}(?![А-Яа-яЁё-])', text)]
+            unknown = []
+            for m in words:
+                w = m.group(0)
+                low = w.lower().replace('ё', 'е')
+                if low in own or w.isupper() or low in changed:
+                    continue
+                if not speller.known(w):
+                    unknown.append(w)
+            for w in list(dict.fromkeys(unknown))[:40]:
+                suggestions = [x for x in speller.suggest(w.lower(), limit=3) if ' ' not in x and '-' not in x]
+                if not suggestions:
+                    continue
+                best = suggestions[0]
+                limit = 1 if len(w) < 7 else 2
+                if _distance(w.lower(), best.lower()) <= limit and best.lower() != w.lower():
+                    changed[w.lower()] = best
+        except Exception:                                  # noqa: BLE001 — вычитка не должна ломать результат
+            changed = {}
+
+        def fix(m):
+            w = m.group(0)
+            best = changed.get(w.lower())
+            if not best:
+                return w
+            return best[:1].upper() + best[1:] if w[:1].isupper() else best
+        if changed:
+            text = re.sub(r'(?<![А-Яа-яЁё-])[А-Яа-яЁё]{3,}(?![А-Яа-яЁё-])', fix, text)
+            fixes += [f'{w} → {b}' for w, b in changed.items()]
+    return text + tail, fixes
+
+
 def write(task, sources=(), me=None, **kw):
     """Составить новый текст по задаче, опираясь на найденные документы."""
     block, truncated = materials(list(sources))
@@ -653,6 +749,10 @@ def write(task, sources=(), me=None, **kw):
     keep = kw.pop('keep_dates', '')
     if TELEGRAM_WORDS.search(task):
         user += telegram_format(me) + '\n'
+        user += ('Как писать текст телеграммы: коротко и по делу, официально-деловым языком; каждое поручение — '
+                 'отдельный пункт с номером («1. Представить…», «2. Обеспечить…»); глаголы в начале пункта; без вводных '
+                 'слов, повторов и пояснений; без английских слов, звёздочек и решёток; проверь падежи и согласование '
+                 '(«прошу представить сведения», «согласно приказу», «в течение суток»).\n')
     elif me and me.get('signature', '').strip():
         user += f'Подпись в конце: {me["signature"].strip()}\n'
     refs = PEOPLE.context(task + ' ' + block) if PEOPLE is not None else []
@@ -674,11 +774,16 @@ def write(task, sources=(), me=None, **kw):
              'Чего не хватает — [УТОЧНИТЬ: …].')
     if truncated:
         user += f'\n(Часть материалов не поместилась: {", ".join(truncated)}.)'
+    kw.setdefault('temperature', 0.15)                     # меньше «фантазии» — меньше ошибок и выдумок
     raw = run(chat_prompt(user), max_tokens=kw.pop('max_tokens', 800), **kw)
     raw, removed = strip_unasked(raw, task, keep, sources)     # даты, время, номера, имена файлов — только если просили
     if removed:
         write_log('Убрано не запрошенное: ' + '; '.join(removed[:20]))
     out = fix_dates(raw, task + ' ' + keep)[0]
+    out, fixes = proofread(out, sources, task + ' ' + keep)     # опечатки и типовые ошибки — до того, как увидит человек
+    LAST_FIXES[:] = fixes
+    if fixes:
+        write_log('Вычитка: ' + '; '.join(fixes[:30]))
     if TELEGRAM_WORDS.search(task):
         out = enforce_signature(out, me)
     return out, truncated
@@ -710,7 +815,10 @@ def edit(text, how, **kw):
     user = (f'{instruction}\nЕсли в тексте есть строки «Кому:», «Дата:», «Текст:», «Подпись:» — сохрани их; '
             'если их нет — не добавляй. Ничего не подписывай от себя. Верни только готовый текст.\n\n'
             f'Текст:\n{text.strip()}')
-    return run(chat_prompt(user), max_tokens=min(4000, len(text) // 2 + 400), temperature=0.2, **kw)
+    out = run(chat_prompt(user), max_tokens=min(4000, len(text) // 2 + 400), temperature=0.2, **kw)
+    out, fixes = proofread(out, [('исходный текст', text)])          # слова из исходного текста не трогаются
+    LAST_FIXES[:] = fixes
+    return out
 
 
 ARITY = {'СУММЕСЛИ': (2, 3), 'СЧЁТЕСЛИ': (2, 2), 'СЧЕТЕСЛИ': (2, 2), 'СРЗНАЧЕСЛИ': (2, 3), 'ВПР': (3, 4), 'ГПР': (3, 4),
@@ -1284,7 +1392,10 @@ def revise(request, previous, change, sources=(), me=None, kind='write', **kw):
     if block:
         user += '\n\nМатериалы (справка):\n\n' + block
     out = run(chat_prompt(user), max_tokens=kw.pop('max_tokens', min(4000, len(previous) // 2 + 600)), temperature=0.2, **kw)
-    return keep_unasked(previous, fix_dates(out, request + ' ' + previous + ' ' + change)[0], change, me)
+    out = keep_unasked(previous, fix_dates(out, request + ' ' + previous + ' ' + change)[0], change, me)
+    out, fixes = proofread(out, list(sources) + [('прошлый вариант', previous)], change)
+    LAST_FIXES[:] = fixes
+    return out
 
 
 SIGN_HEAD = re.compile(r'^\s*Подпись\s*:?\s*$', re.MULTILINE | re.IGNORECASE)

@@ -470,6 +470,9 @@ class AIMixin:
             for start, end in ai.fact_spans(result, doubtful):
                 t.tag_add('unverified', f'1.0+{start}c', f'1.0+{end}c')
             msg = f'{title}: готово. Отменить — Ctrl+Z (вернётся черновик по шаблону).'
+            if ai.LAST_FIXES:
+                spelled = [f for f in ai.LAST_FIXES if '→' in f]
+                msg += (' Искра вычитала текст: исправлено ' + (', '.join(spelled[:6]) if spelled else ', '.join(ai.LAST_FIXES[:3])) + '.')
             if doubtful:
                 msg += ' ПРОВЕРЬТЕ — этих чисел/дат нет в документах (подсвечены): ' + ', '.join(doubtful[:10])
             else:

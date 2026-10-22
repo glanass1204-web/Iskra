@@ -74,6 +74,18 @@ class RetrieveTest(unittest.TestCase):
         own, _ = ai.strip_unasked('Текст:\nПрибыть 27.10.2026.', 'оформи телеграммой', keep='прибыть 27.10.2026')
         self.assertIn('27.10.2026', own)                              # дату написал сам человек
 
+    def test_proofread_fixes_typos_keeps_names(self):
+        text = ('Текст:\n**Прошу** предаставить сведенья согласно приказа № 7 в течении суток. '
+                'Ответсвенный — майор Кузнецов 完成.\nПодпись:\nполковник И.И. Сидорчук')
+        out, fixes = ai.proofread(text, [('a', 'майор Кузнецов, полковник Сидорчук')], 'телеграмма')
+        if ai._speller() is not None:
+            self.assertIn('Прошу представить сведения согласно приказу № 7 в течение суток.', out)
+            self.assertIn('Ответственный — майор Кузнецов.', out)
+        self.assertIn('Сидорчук', out)
+        self.assertNotIn('**', out)
+        self.assertNotIn('完', out)
+        self.assertTrue(fixes)
+
     def test_file_date_in_name(self):
         d = Path(tempfile.mkdtemp())
         f = d / 'старая.txt'
