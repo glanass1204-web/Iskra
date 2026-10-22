@@ -14,9 +14,11 @@ try {
   }
 } catch { Write-Host "Список выпусков недоступен: $($_.Exception.Message)" }
 if (-not $url) {
-  $resp = Invoke-WebRequest 'https://github.com/ggml-org/whisper.cpp/releases/latest' -MaximumRedirection 0 -SkipHttpErrorCheck -Headers @{ 'User-Agent' = 'Iskra' }
-  $loc = [string]$resp.Headers.Location
-  if ($loc -match '/tag/([^/]+)$') { $tag = $Matches[1] }
+  # releases/latest переадресует на страницу последнего выпуска — номер выпуска берём из итогового адреса.
+  $resp = Invoke-WebRequest 'https://github.com/ggml-org/whisper.cpp/releases/latest' -Headers @{ 'User-Agent' = 'Iskra' }
+  $final = [string]$resp.BaseResponse.RequestMessage.RequestUri
+  Write-Host "Последний выпуск: $final"
+  if ($final -match '/tag/([^/?#]+)') { $tag = $Matches[1] }
   if (-not $tag) { throw 'Не найдена сборка whisper.cpp для Windows x64' }
   $url = "https://github.com/ggml-org/whisper.cpp/releases/download/$tag/whisper-bin-x64.zip"
 }

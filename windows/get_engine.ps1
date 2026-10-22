@@ -16,9 +16,11 @@ try {
 } catch { Write-Host "Список выпусков недоступен: $($_.Exception.Message)" }
 if (-not $url) {
   # Запасной путь без API: последний выпуск по ссылке releases/latest, имя файла — по образцу llama-<тег>-bin-win-cpu-x64.zip
-  $resp = Invoke-WebRequest 'https://github.com/ggml-org/llama.cpp/releases/latest' -MaximumRedirection 0 -SkipHttpErrorCheck -Headers @{ 'User-Agent' = 'Iskra' }
-  $loc = [string]$resp.Headers.Location
-  if ($loc -match '/tag/([^/]+)$') { $tag = $Matches[1] }
+  # releases/latest переадресует на страницу последнего выпуска — номер выпуска берём из итогового адреса.
+  $resp = Invoke-WebRequest 'https://github.com/ggml-org/llama.cpp/releases/latest' -Headers @{ 'User-Agent' = 'Iskra' }
+  $final = [string]$resp.BaseResponse.RequestMessage.RequestUri
+  Write-Host "Последний выпуск: $final"
+  if ($final -match '/tag/([^/?#]+)') { $tag = $Matches[1] }
   if (-not $tag) { throw 'Не найдена сборка llama.cpp для Windows x64 (CPU)' }
   $name = "llama-$tag-bin-win-cpu-x64.zip"
   $url = "https://github.com/ggml-org/llama.cpp/releases/download/$tag/$name"
