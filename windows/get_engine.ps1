@@ -20,8 +20,8 @@ $unpacked = Join-Path $env:TEMP 'iskra_llama'
 if (Test-Path $unpacked) { Remove-Item $unpacked -Recurse -Force }
 Expand-Archive $zip $unpacked
 New-Item -ItemType Directory -Force $Target | Out-Null
-# Нужны только программа для одиночных ответов и её библиотеки (без сервера и сетевых утилит).
-Get-ChildItem $unpacked -Recurse -Include 'llama-completion.exe','llama-cli.exe','*.dll' | Copy-Item -Destination $Target -Force
+# Программа для одиночных ответов и быстрый режим (llama-server: слушает только 127.0.0.1, с ключом) с библиотеками.
+Get-ChildItem $unpacked -Recurse -Include 'llama-completion.exe','llama-cli.exe','llama-server.exe','*.dll' | Copy-Item -Destination $Target -Force
 if ($Tools) {
   # Для сборки: программа, которая режет модель на части меньше 2 ГБ (ограничение GitHub на файл).
   New-Item -ItemType Directory -Force $Tools | Out-Null

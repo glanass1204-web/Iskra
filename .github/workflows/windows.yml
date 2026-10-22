@@ -163,6 +163,10 @@ jobs:
           $t = Start-Process (Join-Path $app 'Iskra.exe') -ArgumentList '--selftest-ai' -PassThru -Wait
           Get-Content (Join-Path $app 'data\selftest_ai.txt') -Encoding utf8
           if ($t.ExitCode -ne 0) { throw "Нейросеть не работает при распаковке по отдельным папкам: $($t.ExitCode)" }
+          if (-not (Select-String -Path (Join-Path $app 'data\selftest_ai.txt') -Pattern 'Режим: быстрый' -Encoding utf8)) {
+            Get-Content (Join-Path $app 'data\ai_server.log') -Tail 40 -ErrorAction SilentlyContinue
+            throw 'Быстрый режим (модель в памяти) не включился'
+          }
           Remove-Item 'C:\Проверка Искры' -Recurse -Force
 
       - name: Publish release

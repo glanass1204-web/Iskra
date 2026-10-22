@@ -81,6 +81,9 @@ class App(PlanMixin, AIMixin, WorkMixin, ToolsMixin):
         self.say(self.ai_status_line(), 'proof')
         if not self.ai_ready:
             self.ai_gather()
+        else:
+            # Модель грузится в память заранее, пока человек читает сводку: первый ответ — без ожидания загрузки.
+            self.root.after(8000, lambda: threading.Thread(target=iskra_ai.warm, daemon=True).start())
         self.root.after(600, self.maybe_first_run)
         self.root.after(4000, lambda: self._morning_enabled() and self.maybe_morning())
         self.root.after(100, self.poll)
@@ -497,6 +500,7 @@ class App(PlanMixin, AIMixin, WorkMixin, ToolsMixin):
             d.save(path); self.status.set(f'Сохранено: {path}')
 
     def close(self):
+        iskra_ai.shutdown()
         self.indexer.stop()
         self.inbox.stop()
         self.root.destroy()
@@ -741,6 +745,8 @@ def selftest_ai():
         ['ФИО', 'Должность'])), lambda r: 'Петров' in r)
     check('макрос VBA', lambda: (lambda c: c[0] + f'\nзамечаний проверки: {len(c[1])}')(
         iskra_ai.vba('удалить пустые строки на активном листе', 'excel')), lambda c: 'Sub ' in c and 'замечаний проверки: 0' in c)
+    lines.append(f'Режим: {iskra_ai.mode()}')
+    iskra_ai.shutdown()
     (ROOT / 'selftest_ai.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
     return 0 if ok else 1
 

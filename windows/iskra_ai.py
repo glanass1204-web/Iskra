@@ -12,8 +12,11 @@ import threading
 import time
 from pathlib import Path
 
+from iskra_ai_server import SERVER, ServerError
+
 CONTEXT_TOKENS = 8192
 ENGINE_PREFIX = []          # для тестов: запуск имитатора движка через python
+USE_SERVER = True           # быстрый режим: модель остаётся в памяти (llama-server только на 127.0.0.1)
 # Модели Qwen кладут примерно 3–4 русских символа в токен: 9000 символов материалов ≈ 2500–3000 токенов.
 MAX_SOURCE_CHARS = 9000
 
@@ -229,9 +232,69 @@ def run(prompt, max_tokens=700, on_text=None, cancel=None, timeout=600, base=Non
             waited = True
             on_text('… жду, пока нейросеть закончит предыдущую задачу')
     try:
+        server = binary.parent / _exe('llama-server')
+        if USE_SERVER and server.is_file():
+            try:
+                return _run_server(server, model, prompt, max_tokens, on_text, cancel, timeout, temperature)
+            except ServerError as exc:
+                if cancel is not None and cancel.is_set():
+                    raise AIError('Остановлено.') from exc
+                write_log('Быстрый режим недоступен, отвечаю обычным способом: ' + str(exc))
         return _run_locked(binary, model, prompt, max_tokens, on_text, cancel, timeout, temperature)
     finally:
         _LOCK.release()
+
+
+def _run_server(server, model, prompt, max_tokens, on_text, cancel, timeout, temperature):
+    home = model.parent.parent
+    log = home / 'data' / 'ai_server.log'
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        if log.is_file() and log.stat().st_size > 2_000_000:
+            log.unlink()
+    except OSError:
+        log = None
+    SERVER.ensure(ENGINE_PREFIX, server, model, home, CONTEXT_TOKENS, cancel, on_text, log)
+    try:
+        text = SERVER.complete(prompt, max_tokens, temperature, on_text, cancel, timeout, clean)
+    except TimeoutError:
+        raise AIError(f'Нейросеть не ответила за {timeout // 60} мин. Сократите задачу или материалы.')
+    except (OSError, ValueError) as exc:
+        SERVER.stop()
+        raise ServerError('связь с движком прервалась: ' + str(exc)) from exc
+    if text is None:
+        raise AIError('Остановлено.')
+    answer = clean(text)
+    if not answer:
+        raise AIError('Нейросеть вернула пустой ответ.')
+    if on_text:
+        on_text(answer)
+    return answer
+
+
+def mode():
+    return 'быстрый (модель в памяти)' if SERVER.alive() else 'обычный'
+
+
+def warm(base=None):
+    """Загрузить модель в память заранее (в фоне при запуске Искры), чтобы первый ответ был быстрым."""
+    binary, model = local_files(base)
+    server = binary.parent / _exe('llama-server')
+    if not (USE_SERVER and server.is_file() and available(base)) or not _LOCK.acquire(blocking=False):
+        return False
+    try:
+        home = model.parent.parent
+        SERVER.ensure(ENGINE_PREFIX, server, model, home, CONTEXT_TOKENS, log=home / 'data' / 'ai_server.log')
+        return True
+    except ServerError as exc:
+        write_log('Быстрый режим недоступен: ' + str(exc))
+        return False
+    finally:
+        _LOCK.release()
+
+
+def shutdown():
+    SERVER.stop()
 
 
 _LOCK = threading.Lock()
