@@ -22,6 +22,7 @@ def imports(path):
 
 
 def main(engine):
+    sys.stdout.reconfigure(encoding='utf-8')
     engine = Path(engine)
     local = {p.name.lower() for p in engine.iterdir()}
     system32 = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32'
