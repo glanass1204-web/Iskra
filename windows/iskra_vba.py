@@ -592,6 +592,7 @@ OPS = [
     Op('x_total', 'excel', 'Итого', r'итог|сумм\w* (внизу|в конце|под)', 'sheet', x_total),
     Op('x_number', 'excel', 'Нумерация', r'(пронумер|нумерац|номер\w* строк|столбец с номер|столбец №)', 'sheet', x_number_rows),
     Op('x_header', 'excel', 'Шапка', r'(шапк|заголов\w* (жирн|закреп)|закреп\w* (шапк|перв|заголов|строк)|автофильтр|фильтр\w* на шапк)', 'sheet', x_header),
+    Op('x_unmerge', 'excel', 'Разъединить ячейки', r'(разъедин|разобъедин|отмен\w* объедин|убр\w* объедин|снять объедин)|объедин\w* ячейк\w*.*(разъедин|убр|снять|отмен)', 'sheet', x_unmerge),
     Op('x_autofit', 'excel', 'Ширина столбцов', r'ширин|автоподбор|подогн', 'sheet', x_autofit),
     Op('x_trim', 'excel', 'Пробелы', r'пробел', 'sheet', x_trim),
     Op('x_case', 'excel', 'Регистр', r'прописн|заглавн|строчн|регистр|большими букв|маленьк\w* букв', 'sheet', x_case),
@@ -649,10 +650,16 @@ def understand(task, app=None):
     """Splits the task into steps. Returns (app, steps, not_understood)."""
     app = app or detect_app(task)
     folder = bool(re.search(r'(во? )?все\w* (документ|файл)\w*.*папк|в папке|из папки|каждом документе', task.lower())) and app == 'word'
-    steps, unknown = [], []
+    steps, unknown, clauses = [], [], []
     for clause in split_task(task):
         c = clause.lower().replace('ё', 'е')
         op = next((o for o in OPS if o.app == app and re.search(o.pattern, c)), None)
+        if op is None and steps and re.search(r'\b(ее|её|его|их|ей|им)\b', c):
+            # «закрепить шапку и сделать её жирной», «выделить повторы и покрасить их красным» — уточнение
+            # предыдущего шага: пересобираем его с этими словами, а не считаем непонятным.
+            steps.pop()
+            op = next(o for o in OPS if o.key == clauses[-1][0])
+            clause = clauses.pop()[1] + ' ' + clause
         if op is None:
             if not re.fullmatch(r'(во? )?все\w* (документ|файл)\w*( в| из)? папк\w*|в excel|в word', c):
                 unknown.append(clause)
@@ -668,6 +675,7 @@ def understand(task, app=None):
             warning = (warning + ' ' if warning else '') + 'Столбец не указан — взяла A. Напишите, например, «в столбце C».'
         title, lines = op.build(p)
         steps.append(Step(op, p, title, lines, warning.strip()))
+        clauses.append((op.key, clause))
     return app, steps, unknown, folder
 
 
@@ -706,7 +714,7 @@ def generate(task, app=None, name='Iskra_Macro'):
     if folder:
         out += ['    With Application.FileDialog(msoFileDialogFolderPicker)',
                 '        .Title = "Папка с документами Word"',
-                '        If .Show <> -1 Then Exit Sub',
+                '        If .Show <> -1 Then Application.ScreenUpdating = True: Exit Sub',   # «Отмена» — экран не замораживаем
                 '        folder = .SelectedItems(1) & "\\"',
                 '    End With',
                 '    outDir = folder & "Обработано Искрой\\"',
@@ -812,7 +820,107 @@ def lint(code):
     if re.search(r'^\s*Option\s+Explicit', code, re.IGNORECASE | re.MULTILINE):
         for n, var in undeclared(code):
             issues.append((n, f'Переменная «{var}» не объявлена (Variable not defined) — нужна строка Dim {var} As Variant'))
-    return sorted(issues)
+    issues += strict_checks(code, lines)
+    return sorted(set(issues))
+
+
+EXCEL_ONLY = re.compile(r'\b(ActiveSheet|ActiveWorkbook|ThisWorkbook|Worksheets|Workbooks|ActiveCell|xl[A-Z]\w*)\b')
+WORD_ONLY = re.compile(r'\b(ActiveDocument|Documents|ThisDocument|wd[A-Z]\w*)\b')
+
+
+def _app_of(code):
+    words = len(WORD_ONLY.findall(code)) + len(re.findall(r'As\s+Document\b', code))
+    excel = len(EXCEL_ONLY.findall(code)) + len(re.findall(r'As\s+Worksheet\b', code))
+    return 'word' if words > excel else 'excel'
+
+
+def _logical_lines(lines):
+    """Строки с учётом переноса « _»: [(номер первой строки, текст, сколько переносов)]."""
+    out, buf, start, cont = [], '', 0, 0
+    for n, raw in enumerate(lines, 1):
+        if not buf:
+            start = n
+        stripped = re.sub(r"'.*$", '', re.sub(r'"(?:[^"]|"")*"', '""', raw))
+        if re.search(r'\s_\s*$', stripped):
+            buf += raw.rstrip()[:-1] + ' '
+            cont += 1
+            continue
+        out.append((start, buf + raw, cont))
+        buf, cont = '', 0
+    if buf:
+        out.append((start, buf, cont))
+    return out
+
+
+def strict_checks(code, lines=None):
+    """Ошибки компиляции, которые иначе видны только в Excel/Word: незакрытые кавычки, метки GoTo, вызовы
+    несуществующих процедур и с неверным числом аргументов, повторные Dim, константы Excel в Word и наоборот,
+    слишком длинные строки, остатки шаблонов {…}."""
+    lines = lines if lines is not None else code.replace('\r\n', '\n').split('\n')
+    issues = []
+    app = _app_of(code)
+    for n, text, cont in _logical_lines(lines):
+        code_part = re.sub(r"'.*$", '', re.sub(r'"(?:[^"]|"")*"', '""', text))
+        if code_part.count('"') % 2:
+            issues.append((n, 'Незакрытая кавычка в строке'))
+        if cont > 24:
+            issues.append((n, 'Слишком много переносов строки « _» подряд (в VBA не больше 24)'))
+        if re.search(r'[{}]', code_part) or re.search(r'\bNone\b', code_part):
+            issues.append((n, 'Остаток шаблона ({…} или None) в коде'))
+        other = WORD_ONLY if app == 'excel' else EXCEL_ONLY
+        m = other.search(code_part)
+        if m:
+            issues.append((n, f'«{m.group(1)}» есть только в {"Word" if app == "excel" else "Excel"} — '
+                              f'в {"Excel" if app == "excel" else "Word"} такой макрос не запустится'))
+    for n, raw in enumerate(lines, 1):
+        if len(raw) > 1023:
+            issues.append((n, 'Строка длиннее 1023 символов — VBA её не примет'))
+    # Процедуры: границы, метки, повторные Dim, Exit не того вида
+    procs, cur = [], None
+    for n, raw in enumerate(lines, 1):
+        line = re.sub(r"'.*$", '', re.sub(r'"(?:[^"]|"")*"', '""', raw))
+        m = re.match(r'^\s*(?:Private\s+|Public\s+)?(Sub|Function)\s+(\w+)\s*\(([^)]*)\)', line, re.IGNORECASE)
+        if m:
+            params = [x for x in m.group(3).split(',') if x.strip()]
+            cur = {'kind': m.group(1).lower(), 'name': m.group(2), 'start': n, 'lines': [], 'nparams': len(params),
+                   'optional': sum(1 for x in params if re.match(r'\s*Optional\b', x, re.IGNORECASE))}
+            procs.append(cur)
+            continue
+        if re.match(r'^\s*End\s+(Sub|Function)\b', line, re.IGNORECASE):
+            cur = None
+            continue
+        if cur is not None:
+            cur['lines'].append((n, line))
+    by_name = {p['name'].lower(): p for p in procs}
+    for p in procs:
+        labels = {m.group(1).lower() for _, l in p['lines'] for m in [re.match(r'^\s*(\w+):\s*$', l)] if m}
+        dims = {}
+        for n, l in p['lines']:
+            for m in re.finditer(r'\bGoTo\s+(\w+)', l, re.IGNORECASE):
+                if m.group(1) != '0' and m.group(1).lower() not in labels:
+                    issues.append((n, f'Метка «{m.group(1)}» для GoTo не найдена в «{p["name"]}»'))
+            m = re.match(r'^\s*Dim\s+(.+)$', l, re.IGNORECASE)
+            if m:
+                for part in m.group(1).split(','):
+                    v = re.match(r'\s*(\w+)', part)
+                    if v:
+                        key = v.group(1).lower()
+                        if key in dims:
+                            issues.append((n, f'Переменная «{v.group(1)}» объявлена дважды в «{p["name"]}» (Duplicate declaration)'))
+                        dims[key] = n
+            wrong = 'Function' if p['kind'] == 'sub' else 'Sub'
+            if re.search(rf'\bExit\s+{wrong}\b', l, re.IGNORECASE):
+                issues.append((n, f'«Exit {wrong}» внутри {p["kind"].capitalize()} — должно быть «Exit {p["kind"].capitalize()}»'))
+            for m in re.finditer(r'\bCall\s+(\w+)\s*(?:\(([^)]*)\))?', l, re.IGNORECASE):
+                target = by_name.get(m.group(1).lower())
+                if target is None:
+                    if m.group(1).lower().startswith('iskra'):
+                        issues.append((n, f'Вызов «{m.group(1)}», но такой процедуры нет'))
+                    continue
+                args = len([a for a in (m.group(2) or '').split(',') if a.strip()])
+                if not (target['nparams'] - target['optional'] <= args <= target['nparams']):
+                    issues.append((n, f'«{m.group(1)}» вызывается с {args} аргументами, а принимает {target["nparams"]}'))
+    return issues
 
 
 def undeclared(code):
