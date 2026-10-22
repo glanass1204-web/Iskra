@@ -17,12 +17,13 @@ KEYS = {
     'свод': 'свод таблиц за день',
     'ждём_ответа': 'ждём ответа на исходящие',
     'главное': 'главное (пишет нейросеть, если включено)',
+    'подпись': 'подпись (из «Мои реквизиты»)',
 }
 SECTION_KEYS = {'ПРИШЛО': 'пришло', 'СРОКИ СЕГОДНЯ И ЗАВТРА': 'сроки', 'ПРОСРОЧЕНО': 'просрочено',
                 'НЕ ОБРАБОТАНО': 'не_обработано', 'СВОД ЗА ДЕНЬ': 'свод'}
 
 
-def values_from(sections, waiting_lines=(), main='', today=None):
+def values_from(sections, waiting_lines=(), main='', today=None, signature=''):
     today = today or date.today()
     vals = {k: [] for k in KEYS}
     vals['дата'] = today.strftime('%d.%m.%Y')
@@ -32,6 +33,7 @@ def values_from(sections, waiting_lines=(), main='', today=None):
                 vals[key] = list(lines)
     vals['ждём_ответа'] = list(waiting_lines)
     vals['главное'] = main.strip()
+    vals['подпись'] = signature.strip() or '[ДОЛЖНОСТЬ]\n[звание]                                        [И.О. Фамилия]'
     return vals
 
 
@@ -50,7 +52,7 @@ def make_template(path):
         doc.add_paragraph(title).runs[0].bold = True
         doc.add_paragraph('{{' + key + '}}')
     doc.add_paragraph('')
-    doc.add_paragraph('[ДОЛЖНОСТЬ]\n[звание]                                        [И.О. Фамилия]')
+    doc.add_paragraph('{{подпись}}')
     doc.save(path)
 
 
@@ -107,7 +109,7 @@ def fill(template, vals, out):
     return out
 
 
-def build(root, sections, waiting_lines=(), main='', today=None, template=None):
+def build(root, sections, waiting_lines=(), main='', today=None, template=None, signature=''):
     """Доклад в data/doklady/Доклад ДД.ММ.ГГГГ.docx. Нет своего образца — создаётся стандартный."""
     today = today or date.today()
     root = Path(root)
@@ -117,4 +119,4 @@ def build(root, sections, waiting_lines=(), main='', today=None, template=None):
     out_dir = root / 'doklady'
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f'Доклад {today.strftime("%d.%m.%Y")}.docx'
-    return fill(template, values_from(sections, waiting_lines, main, today), out)
+    return fill(template, values_from(sections, waiting_lines, main, today, signature), out)

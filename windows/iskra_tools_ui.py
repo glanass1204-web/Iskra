@@ -21,11 +21,14 @@ import iskra_ai
 DOC_TYPES = [('Word и текст', '*.docx *.txt'), ('Все документы', '*.docx *.xlsx *.pptx *.pdf *.txt *.md *.csv')]
 
 
-def _window(app, title, size):
+def _window(app, title, size, transient=True):
     win = tk.Toplevel(app.root)
     win.title('Искра · ' + title)
     win.geometry(size)
-    win.transient(app.root)
+    if transient:
+        win.transient(app.root)
+    # Esc в любом окне Искры останавливает нейросеть (раньше — только в главном окне).
+    win.bind('<Escape>', lambda _e: app.ai_stop() if hasattr(app, 'ai_stop') else None)
     return win
 
 
@@ -212,8 +215,10 @@ class ToolsMixin:
 
     # ---------- Телеграммы ----------
 
-    def telegrams(self, initial=None, note=None, report=None, source_paths=()):
-        win = _window(self, 'редактор телеграмм', '1180x700')
+    def telegrams(self, initial=None, note=None, report=None, source_paths=(), source_texts=()):
+        # Не «поверх главного окна»: редактор большой, главное окно должно выходить вперёд по щелчку.
+        win = _window(self, 'редактор телеграмм', '1100x680', transient=False)
+        win.after(50, lambda: (win.lift(), win.focus_force()))
         ttk.Label(win, text='Проект телеграммы · исходные документы не изменяются', font=('Segoe UI', 12, 'bold')).pack(anchor='w', padx=12, pady=8)
         buttons = ttk.Frame(win); buttons.pack(side='bottom', fill='x', padx=12, pady=8)
         status = tk.StringVar(value=note or 'Используйте утверждённый образец организации. Шаблон здесь — пример.')
@@ -228,7 +233,7 @@ class ToolsMixin:
         t.insert('1.0', self.to_template(initial) if initial else self.telegram_blank())
 
         def check():
-            self.precheck(win, t, source_paths)
+            self.precheck(win, t, source_paths, source_texts)
 
         def save():
             path = filedialog.asksaveasfilename(parent=win, defaultextension='.docx', filetypes=[('Word', '*.docx')], initialdir=str(ROOT))
@@ -252,7 +257,8 @@ class ToolsMixin:
                 messagebox.showinfo('Источник', 'Сначала найдите и выберите документ в главном окне.', parent=win); return
             path = self.results[ix][0]
             try:
-                t.replace('1.0', 'end', draft_from_sources('По выбранному документу', [(path, extract(Path(path)))]))
+                t.replace('1.0', 'end', draft_from_sources('По выбранному документу', [(path, extract(Path(path)))],
+                                                           template=self.telegram_blank()))
                 save_history(ROOT, 'Проект телеграммы', Path(path).name)
                 status.set('Создан черновик с выдержками из источника.')
             except Exception as exc:
@@ -285,9 +291,16 @@ class ToolsMixin:
     def telegram_blank(self):
         """Пустая телеграмма: по своему шаблону отдела, если он выбран, иначе стандартная."""
         template = self.telegram_template_path()
-        if not template:
-            return telegram_template()
         from datetime import date
+        if not template:
+            # Стандартный вид — но с моими реквизитами и сегодняшней датой («подставляются во все черновики»).
+            me = self.my_details()
+            text = telegram_template().replace('Дата: [ДАТА]', 'Дата: ' + date.today().strftime('%d.%m.%Y'))
+            if me.get('from'):
+                text = text.replace('От кого: [УТОЧНИТЬ]', 'От кого: ' + me['from'])
+            if me.get('signature', '').strip():
+                text = text.replace('Подпись: [ФИО]', 'Подпись:\n' + me['signature'].strip())
+            return text
         from iskra_telegram import has_placeholders, render_template, template_text
         try:
             sample = template_text(template)
@@ -369,26 +382,47 @@ class ToolsMixin:
             'Основание — в начало, «О выполнении доложить» — один раз в конец. Подпись — общая или [УТОЧНИТЬ ПОДПИСЬ].')).pack(anchor='w', padx=12, pady=10)
 
         def run():
-            try:
-                m = merge_telegrams_full([(Path(p).name, extract(Path(p))) for p in files], main_only=main_only.get(),
-                                         dates=dates.get(), fix=fix_typical if typos.get() else None)
-            except Exception as exc:
-                messagebox.showerror('Ошибка', str(exc), parent=win); return
-            if mine.get():
-                m.signature = [x.strip() for x in me['signature'].splitlines() if x.strip()]
-                if me.get('from'):
-                    m.header['От кого'] = me['from']
-            save_history(ROOT, 'Объединение телеграмм', ', '.join(Path(p).name for p in files)[:400])
-            win.destroy()
-            ed = self.telegrams(m.text(), ' '.join(m.report[:3]) + ' Проверьте пометки [УТОЧНИТЬ], [ДАТА], [НОМЕР] и нажмите «Орфография».',
-                                report=m.report)
-            if polish.get():
-                import iskra_ai
-                sources = [(Path(p).name, extract(Path(p))) for p in files]
-                draft = m.text().split('--- ИСТОЧНИКИ')[0]
-                self.ai_into_editor(ed, lambda cancel, update: iskra_ai.merge(sources, draft, me=me, on_text=update, cancel=cancel)[0],
-                                    sources, 'Объединение нейросетью')
-        ttk.Button(win, text='Объединить', style='Accent.TButton', command=run).pack(pady=(0, 12))
+            opts = dict(main_only=main_only.get(), dates=dates.get(), fix=fix_typical if typos.get() else None)
+            own, ai_on = mine.get(), polish.get()
+            go.state(['disabled'])
+            win.title('Искра · объединение телеграмм — читаю файлы…')
+
+            def work():
+                # Файлы читаются один раз и в фоне: окно не замирает на больших документах и сканах.
+                try:
+                    sources = [(Path(p).name, extract(Path(p))) for p in files]
+                    m = merge_telegrams_full(sources, **opts)
+                except Exception as exc:
+                    from iskra_ai_ui import friendly_error
+                    msg = friendly_error(exc)
+                    self.events.put(('call', lambda: win.winfo_exists() and (
+                        go.state(['!disabled']), messagebox.showerror('Объединение', 'Не получилось: ' + msg, parent=win))))
+                    return
+                self.events.put(('call', lambda: show(m, sources)))
+            threading.Thread(target=work, daemon=True).start()
+
+            def show(m, sources):
+                if own:
+                    m.signature = [x.strip() for x in me['signature'].splitlines() if x.strip()]
+                    if me.get('from'):
+                        m.header['От кого'] = me['from']
+                save_history(ROOT, 'Объединение телеграмм', ', '.join(Path(p).name for p in files)[:400])
+                if win.winfo_exists():
+                    win.destroy()
+                ed = self.telegrams(m.text(), ' '.join(m.report[:3]) + ' Проверьте пометки [УТОЧНИТЬ], [ДАТА], [НОМЕР] и нажмите «Проверить перед отправкой».',
+                                    report=m.report, source_paths=list(files))
+                if ai_on:
+                    import iskra_ai
+                    draft = m.text().split('--- ИСТОЧНИКИ')[0]
+                    # «Подпись — мои» снят: нейросеть не подставляет реквизиты, подпись — как в исходных телеграммах.
+                    who = me if own else {}
+
+                    def job(cancel, update):
+                        text = iskra_ai.merge(sources, draft, me=who, on_text=update, cancel=cancel)[0]
+                        return fix_typical(text)[0] if opts['fix'] else text
+                    self.ai_into_editor(ed, job, sources, 'Объединение нейросетью')
+        go = ttk.Button(win, text='Объединить', style='Accent.TButton', command=run)
+        go.pack(pady=(0, 12))
 
     # ---------- Орфография ----------
 
@@ -497,7 +531,9 @@ class ToolsMixin:
                     body, sep, tail = text.partition('--- ИСТОЧНИКИ')
                     t.delete('1.0', 'end'); t.insert('1.0', result + ('\n\n' + sep + tail if sep else ''))
                     run_check()
-            self.ai_background(lambda cancel: iskra_ai.edit(text.partition('--- ИСТОЧНИКИ')[0], 'Исправить ошибки', cancel=cancel), done)
+            self.ai_background(lambda cancel: iskra_ai.edit(text.partition('--- ИСТОЧНИКИ')[0], 'Исправить ошибки', cancel=cancel), done,
+                               on_error=lambda e: win.winfo_exists() and status.set('Нейросеть: ' + e + ' Текст не изменён.'),
+                               label='исправление ошибок')
         if getattr(self, 'ai_ready', False):
             ttk.Button(top, text='Исправить всё нейросетью', command=ai_fix).pack(side='right', padx=6)
         if target is None:
@@ -550,7 +586,10 @@ class ToolsMixin:
                     result.delete('1.0', 'end')
                     result.insert('1.0', res[0] + '\n\n' + (res[1] or '') + '\n(формула от нейросети: число аргументов проверено, '
                                   'диапазоны проверьте сами)\n\nИз чего состоит:\n' + explain_formula(res[0]))
-                self.ai_background(lambda cancel: iskra_ai.formula(text, cancel=cancel), done)
+                def failed(e):
+                    if win.winfo_exists():
+                        result.delete('1.0', 'end'); result.insert('1.0', 'Нейросеть: ' + e)
+                self.ai_background(lambda cancel: iskra_ai.formula(text, cancel=cancel), done, on_error=failed, label='формула')
             else:
                 result.insert('1.0', note + '\n\n' + examples)
 
@@ -656,7 +695,8 @@ class ToolsMixin:
                             ('Перед запуском сохраните копию файла и прочитайте код: нейросеть может ошибиться.', 'warn')])
                 status.set('Макрос от нейросети. Запуск: Alt+F11 → Insert → Module → вставить → F5. Ошибка — «Была ошибка при запуске».')
                 save_history(ROOT, 'Макрос (нейросеть)', text[:300])
-            self.ai_background(lambda cancel: iskra_ai.vba(text, target, cancel=cancel), done)
+            self.ai_background(lambda cancel: iskra_ai.vba(text, target, cancel=cancel), done, label='макрос',
+                               on_error=lambda e: win.winfo_exists() and status.set('Нейросеть: ' + e + ' Опишите задачу проще или выберите шаблон.'))
 
         def show_help():
             excel, word = iskra_vba.capabilities()
@@ -715,7 +755,13 @@ class ToolsMixin:
                             out.configure(state='normal')
                             out.delete('end-2l linestart', 'end')
                             out.insert('end', '\n\nРАЗБОР НЕЙРОСЕТИ:\n' + text); out.configure(state='disabled')
-                    self.ai_background(lambda cancel: iskra_ai.vba_error(code.get('1.0', 'end-1c'), err.get('1.0', 'end'), cancel=cancel), done)
+                    code_text, err_text = code.get('1.0', 'end-1c'), err.get('1.0', 'end')   # окно читаем здесь, не в фоне
+
+                    def failed(e):
+                        if dlg.winfo_exists():
+                            out.configure(state='normal'); out.insert('end', '\nНейросеть: ' + e); out.configure(state='disabled')
+                    self.ai_background(lambda cancel: iskra_ai.vba_error(code_text, err_text, cancel=cancel), done,
+                                       on_error=failed, label='разбор ошибки макроса')
             row2 = ttk.Frame(dlg); row2.pack(pady=(0, 10))
             ttk.Button(row2, text='Объяснить', style='Accent.TButton', command=explain).pack(side='left')
             ttk.Button(row2, text='Исправить код', command=lambda: (fix(), dlg.destroy())).pack(side='left', padx=8)

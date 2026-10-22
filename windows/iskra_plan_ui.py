@@ -26,6 +26,15 @@ class PlanMixin:
         self.control = Control(ROOT)
         self.autosvod = AutoSvod(ROOT)
         self.root.after(20000, self._plan_tick)
+        if self.autosvod.settings.get('enabled') and self.autosvod.ready:
+            # После перезапуска: восстановить «кто прислал / кто нет» за сегодня (файлы свода не переписываются).
+            def restore():
+                try:
+                    if self.autosvod.last is None and self.autosvod.today_files():
+                        self.autosvod.build(write=False)
+                except Exception:
+                    pass
+            threading.Thread(target=restore, daemon=True).start()
 
     def _plan_tick(self):
         """Раз в минуту: автосвод (если пришли новые таблицы) и напоминания о сроках поручений."""
@@ -236,9 +245,8 @@ class PlanMixin:
         threading.Thread(target=work, daemon=True).start()
 
     def _control_ai(self, job):
-        if self.ai_cancel is not None:
-            return                                  # нейросеть занята задачей пользователя — хватит найденного правилами
-        self.ai_background(job, lambda added: added and self._control_added(added, False, ai_found=True))
+        # Фоном: уступает задачам человека и не занимает «Стоп».
+        self.ai_background(job, lambda added: added and self._control_added(added, False, ai_found=True), background=True)
 
     def _control_added(self, added, announce, ai_found=False):
         self.refresh_control()
@@ -297,7 +305,12 @@ class PlanMixin:
                     text.insert('end', f'• {line}\n', 'late' if title == 'ПРОСРОЧЕНО' else '')
             text.configure(state='disabled')
             try:
-                MORNING.write_text(json.dumps({'shown': date.today().isoformat()}), encoding='utf-8')
+                try:
+                    data = json.loads(MORNING.read_text(encoding='utf-8'))
+                except (OSError, ValueError):
+                    data = {}
+                data['shown'] = date.today().isoformat()          # «показывать при запуске» не сбрасываем
+                MORNING.write_text(json.dumps(data), encoding='utf-8')
             except OSError:
                 pass
 
@@ -326,7 +339,11 @@ class PlanMixin:
                     text.configure(state='normal')
                     text.insert('1.0', 'ГЛАВНОЕ (нейросеть):\n' + result + '\n\n', 'ai')
                     text.configure(state='disabled')
-            self.ai_background(lambda cancel: ai.morning(state['text'], cancel=cancel), done)
+            def failed(e):
+                if win.winfo_exists():
+                    text.configure(state='normal'); text.insert('1.0', 'Нейросеть: ' + e + '\n\n', 'late')
+                    text.configure(state='disabled')
+            self.ai_background(lambda cancel: ai.morning(state['text'], cancel=cancel), done, on_error=failed, label='главное за день')
 
         def to_word():
             if 'text' not in state:
@@ -349,7 +366,8 @@ class PlanMixin:
                 return
             import iskra_report
             try:
-                out = iskra_report.build(ROOT, state['sections'], state.get('waiting', []), state.get('main', ''))
+                out = iskra_report.build(ROOT, state['sections'], state.get('waiting', []), state.get('main', ''),
+                                         signature=self.my_details().get('signature', ''))
             except Exception as exc:
                 messagebox.showerror('Доклад', f'Не удалось собрать доклад: {exc}\nПроверьте образец: data\\doklad_obrazec.docx', parent=win)
                 return
@@ -465,7 +483,8 @@ class PlanMixin:
                 extra.append('Не представили сведения: ' + ', '.join(r['missing']) + '.')
             if extra:
                 text = text.replace('\n\nПодпись:', '\n' + '\n'.join(extra) + '\n\nПодпись:', 1)
-            ed = self.telegrams(initial=text, note='Доклад по автосводу (с изменениями к прошлому дню). Проверьте цифры.')
+            ed = self.telegrams(initial=text, note='Доклад по автосводу (с изменениями к прошлому дню). Проверьте цифры.',
+                                source_texts=[('свод', svod_table_text(r['svod']) + ('\n' + '\n'.join(extra) if extra else ''))])
             if self.ai_ready:
                 table = svod_table_text(r['svod']) + ('\n' + '\n'.join(extra) if extra else '')
                 self.ai_into_editor(ed, lambda cancel, update: ai.svod_report(table, me=me, on_text=update, cancel=cancel)[0],

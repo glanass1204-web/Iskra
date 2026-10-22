@@ -16,6 +16,8 @@ MONTH_WORD = r'(январ[яь]|феврал[яь]|марта?|апрел[яь]
 NUM_DATE = re.compile(r'(?<!\d)(\d{1,2})\.(\d{1,2})\.(\d{4}|\d{2})(?!\d)')
 WORD_DATE = re.compile(r'(?<!\d)(\d{1,2})\s+' + MONTH_WORD + r'(?:\s+(\d{4}))?', re.IGNORECASE)
 DEADLINE_WORDS = re.compile(r'(?<![а-яё])(до|не позднее|не позже|срок\w*|в течение|исполнить|представить|направить|подготовить|обеспечить)(?![а-яё])', re.IGNORECASE)
+REF_BEFORE = re.compile(r'(?<![а-яё])от\s*$', re.IGNORECASE)
+REF_AFTER = re.compile(r'\s*(?:г\.?|года)?\s*(?:№|N\s?\d)', re.IGNORECASE)
 # «к 25 октября» — только прямо перед датой, иначе «№ 15-к от 20.10» тоже считался бы сроком.
 DEADLINE_K = re.compile(r'(?<![\w-])к\s+$', re.IGNORECASE)
 # Sentence end, but not after initials («С.П. Сидоров») or common abbreviations («тел. 8…», «г. Москва»).
@@ -77,9 +79,16 @@ def parse_dates(text, today=None):
         mo = _month(m.group(2))
         y = int(m.group(3)) if m.group(3) else today.year
         try:
-            found.append((m.start(), m.end(), date(y, mo, int(m.group(1)))))
+            d = date(y, mo, int(m.group(1)))
         except (ValueError, TypeError):
-            pass
+            continue
+        if not m.group(3) and (today - d).days > 180:
+            # «до 15 января», написанное в декабре, — это следующий год (а «до 3 марта» в июне — прошедший март)
+            try:
+                d = date(y + 1, mo, int(m.group(1)))
+            except ValueError:
+                continue
+        found.append((m.start(), m.end(), d))
     found.sort()
     return found
 
@@ -89,8 +98,11 @@ def deadlines(text, today=None):
     out = []
     seen = set()
     for s in sentences(text):
-        for start, _, d in parse_dates(s, today):
+        for start, end, d in parse_dates(s, today):
             before = s[max(0, start - 40):start]
+            # «приказа от 01.09.2026 № 12» — дата ссылки на документ, а не срок
+            if REF_BEFORE.search(before) or REF_AFTER.match(s[end:end + 12]):
+                continue
             if DEADLINE_WORDS.search(before) or DEADLINE_K.search(before):
                 key = (d, s)
                 if key not in seen:
@@ -225,7 +237,6 @@ HELP = '''Я помогаю работать с документами на эт
 • сводка — что пришло, сроки сегодня и завтра, просрочено; поручения — контроль исполнения; кто не прислал — автосвод
 • журнал (исходящие) — номера исходящих и кто не ответил; справочник — звания и должности в нужном падеже
 • доклад по образцу — ежедневный доклад в Word по вашему образцу
-• в любой программе: выделите текст и нажмите Ctrl+Alt+Пробел — исправить, сократить, оформить, ответить
 • поиск понимает смысл: «сколько людей в госпитале» найдёт «численность личного состава»
 • сколько документов — что сейчас в поиске
 С нейросетью (версия «с нейросетью», тоже без интернета) можно писать как угодно — она поймёт, что нужно:
@@ -233,6 +244,9 @@ HELP = '''Я помогаю работать с документами на эт
 • напиши доклад о готовности техники по последним телеграммам — черновик по найденным документам
 • вопрос со знаком «?»: какой срок представления сведений по телеграмме 154? — ответ по документам с источником
 • в редакторе телеграмм — «Нейросеть ▾»: официальный стиль, сократить, исправить ошибки
+• в любой программе: выделите текст и нажмите Ctrl+Alt+Пробел — исправить, сократить, оформить, ответить
+• после ответа можно уточнять: «сделай короче», «поменяй срок на 30.10», «а кто подписал?» — правлю тот же ответ;
+  начать заново — «новое: …»
 Документ выбирается в списке результатов слева.'''
 
 
@@ -341,3 +355,10 @@ def new_topic_text(text):
     """«новое: …» — явно начать заново; возвращает текст без приставки или None."""
     m = re.match(r'^\s*(новое|новый вопрос|новая тема)\s*[:,.-]\s*(.+)$', text, re.IGNORECASE)
     return m.group(2).strip() if m else None
+
+
+def related(text, previous):
+    """Есть ли у нового вопроса общие слова с прошлым разговором (основы по 5 букв, без служебных слов)."""
+    def stems(t):
+        return {w[:5] for w in re.findall(r'[а-яё0-9/]{4,}', t.lower().replace('ё', 'е')) if w not in STOP}
+    return bool(stems(text) & stems(previous))

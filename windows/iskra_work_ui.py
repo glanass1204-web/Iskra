@@ -148,7 +148,14 @@ class WorkMixin:
                 ai_job = (lambda cancel, update: ai.reply(source_text, Path(path).name, me=me, on_text=update, cancel=cancel)[0],
                           [(Path(path).name, source_text)])
             else:
-                text = compose.compose(kind, me, to=v['to'].get().strip(), basis=v['basis'].get().strip(),
+                to = v['to'].get().strip()
+                if getattr(self, 'people', None) is not None and to:
+                    # Фамилия из справочника — адресат с должностью и званием в дательном падеже.
+                    import iskra_people as pp
+                    hits = [x for x in self.people.find(to) if pp.split_fio(x['fio'])[0].lower()[:4] in to.lower()]
+                    if len(hits) == 1:
+                        to = ' '.join(pp.addressee(hits[0]))
+                text = compose.compose(kind, me, to=to, basis=v['basis'].get().strip(),
                                        subject=v['subject'].get().strip(), deadline=v['deadline'].get().strip(),
                                        points=points.get('1.0', 'end-1c').splitlines())
                 fields = {'кому': v['to'].get().strip(), 'основание': v['basis'].get().strip(), 'тема': v['subject'].get().strip(),
@@ -171,7 +178,8 @@ class WorkMixin:
             save_history(ROOT, 'Черновик телеграммы', kind)
             left = compose.unfilled(text)
             win.destroy()
-            ed = self.telegrams(initial=text, note=(f'Черновик готов. Впишите места [УТОЧНИТЬ…] — их {len(left)}. ' if left else 'Черновик готов. ')
+            ed = self.telegrams(initial=text, source_paths=[v['source'].get().strip()] if kind == 'Ответ на входящую' else (),
+                                note=(f'Черновик готов. Впишите места [УТОЧНИТЬ…] — их {len(left)}. ' if left else 'Черновик готов. ')
                                 + 'Затем «Орфография» и «Сохранить в Word».')
             if use_ai.get():
                 self.ai_into_editor(ed, ai_job[0], ai_job[1], 'Телеграмма от нейросети')
@@ -299,7 +307,7 @@ class WorkMixin:
             r = state.get('r')
             if r:
                 me = self.my_details()
-                ed = self.telegrams(initial=compose.svod_report(r['svod'], me),
+                ed = self.telegrams(initial=compose.svod_report(r['svod'], me), source_texts=[('свод', svod_table_text(r['svod']))],
                                     note='Доклад по своду. Проверьте цифры и впишите места [УТОЧНИТЬ…].')
                 if getattr(self, 'ai_ready', False):
                     table = svod_table_text(r['svod'])
@@ -360,6 +368,7 @@ class WorkMixin:
     def refresh_inbox(self):
         tree = self.inbox_tree
         keep = set(tree.selection())
+        view = tree.yview()                              # список не прыгает наверх, пока человек в нём работает
         tree.delete(*tree.get_children())
         for it in self.inbox.items():
             days = _days_left(it.get('deadline'))
@@ -380,6 +389,7 @@ class WorkMixin:
         for iid in keep:
             if tree.exists(iid):
                 tree.selection_add(iid)
+        tree.yview_moveto(view[0])
         new, work = self.inbox.counts()
         folders = self.inbox.folders()
         self.inbox_info.set((f'Слежу за папками: {len(folders)} · проверка каждые {self.inbox.interval} с' if folders
@@ -439,7 +449,8 @@ class WorkMixin:
             me = self.my_details()
             draft = compose.reply(text, me, it['name'])
             left = compose.unfilled(draft)
-            ed = self.telegrams(initial=draft, note=f'Ответ на «{it["name"]}» по пунктам. Впишите, что сделано, — мест [УТОЧНИТЬ…]: {len(left)}.')
+            ed = self.telegrams(initial=draft, source_paths=[it['path']],
+                                note=f'Ответ на «{it["name"]}» по пунктам. Впишите, что сделано, — мест [УТОЧНИТЬ…]: {len(left)}.')
             if getattr(self, 'ai_ready', False):
                 self.ai_into_editor(ed, lambda cancel, update: ai.reply(text, it['name'], me=me, on_text=update, cancel=cancel)[0],
                                     [(it['name'], text)], 'Ответ от нейросети')

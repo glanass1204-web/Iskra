@@ -115,7 +115,8 @@ class AutoSvod:
 
     # ---------- сборка ----------
 
-    def build(self, today=None, order=None):
+    def build(self, today=None, order=None, write=True):
+        """write=False — только посчитать (после перезапуска Искры: кто прислал, кто нет), файлы не трогать."""
         today = today or date.today()
         files = self.today_files(today)
         order = order if order is not None else self.settings.get('order', [])
@@ -142,6 +143,10 @@ class AutoSvod:
         expected = list(order) or list(prev)
         result['missing'] = [o for o in expected if fold(o) not in sent]
         result['changes'] = dynamics(values, prev)
+        if not write:
+            result['svod'] = svod
+            self.last = result
+            return result
         out_dir = Path(self.settings.get('out') or self.settings['folder'])
         out_dir.mkdir(parents=True, exist_ok=True)
         output = out_dir / f'Свод {today.strftime(DATE_FMT)}.xlsx'

@@ -121,6 +121,8 @@ def compose(kind, me=None, to='', basis='', subject='', points=None, deadline=''
     else:  # Доклад
         lines.append(f'{"Во исполнение " + basis + " д" if basis else "Д"}окладываю:')
         lines += items or ['1. [УТОЧНИТЬ: суть доклада].']
+        if deadline:
+            lines.append(f'Срок: {deadline}.')            # поле «Срок» в окне не должно пропадать и у доклада
     lines += _signature(me)
     return '\n'.join(lines)
 

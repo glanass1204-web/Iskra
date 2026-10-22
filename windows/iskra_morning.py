@@ -82,6 +82,17 @@ def counts(sections):
     return {title: len(lines) for title, lines in sections}
 
 
-def upcoming_from_docs(docs, today=None):
-    """Сроки из всех документов поиска на сегодня-завтра."""
-    return assistant.upcoming(docs, today, ahead=1, behind=0)
+def upcoming_from_docs(docs, today=None, max_age_days=150):
+    """Сроки из документов поиска на сегодня-завтра. Старые файлы (больше ~5 месяцев) не берём: их «до 23 октября»
+    без года иначе всплывало бы каждый год."""
+    import os
+    import time
+    fresh = []
+    for item in docs:
+        try:
+            age = (time.time() - os.path.getmtime(item[0])) / 86400
+        except (OSError, TypeError, IndexError):
+            age = 0
+        if age <= max_age_days:
+            fresh.append(item)
+    return assistant.upcoming(fresh, today, ahead=1, behind=0)

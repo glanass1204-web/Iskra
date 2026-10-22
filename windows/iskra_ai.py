@@ -230,7 +230,8 @@ def run(prompt, max_tokens=700, on_text=None, cancel=None, timeout=600, base=Non
             raise AIError('Остановлено.')
         if on_text and not waited:
             waited = True
-            on_text('… жду, пока нейросеть закончит предыдущую задачу')
+            on_text('… загружаю нейросеть в память (один раз за сеанс)' if SERVER.loading
+                    else '… жду, пока нейросеть закончит предыдущую задачу')
     try:
         server = binary.parent / _exe('llama-server')
         if USE_SERVER and server.is_file():
@@ -267,9 +268,14 @@ def _run_server(server, model, prompt, max_tokens, on_text, cancel, timeout, tem
     answer = clean(text)
     if not answer:
         raise AIError('Нейросеть вернула пустой ответ.')
+    if SERVER.last_cut:
+        answer += '\n\n' + CUT_MARK
     if on_text:
         on_text(answer)
     return answer
+
+
+CUT_MARK = '[УТОЧНИТЬ: ответ обрезан — не поместился целиком; проверьте конец или попросите «продолжи»]'
 
 
 def mode():
@@ -473,16 +479,22 @@ def style_samples(task, limit=2, max_chars=1500):
     return [(name, text) for _, name, text in scored[:limit]]
 
 
+TELEGRAM_WORDS = re.compile(r'телеграм|(?<![а-яё])тлг(?![а-яё])|шифртелеграм', re.IGNORECASE)
+
+
 def DATE_RULES(today=None):
     from datetime import date
     t = (today or date.today()).strftime('%d.%m.%Y')
     return (f'Сегодня {t}. Дата нового документа — сегодняшняя ({t}), если в задаче не сказано иное.\n'
             'Сроки бери из задачи. Из материалов переноси срок, только если он ещё не прошёл и относится к этой задаче. '
+            'Если документы расходятся (разные сроки, числа) — верен более новый документ (дата в имени материала). '
             'Прошедшие даты из материалов НЕ вставляй как сроки и как дату документа; старая дата допустима только в ссылке '
             '«На № … от …». Если срок неясен — [УТОЧНИТЬ: срок].\n')
 
 
-PAST_CONTEXT = re.compile(r'(?:до|не позднее|к|срок\w*[:\s]*(?:до)?|в срок до|Дата\s*:)\s*$', re.IGNORECASE)
+PAST_CONTEXT = re.compile(r'(?<![А-Яа-яЁё])(?:до|не позднее|к|срок\w*[:\s]*(?:до)?|в срок до|Дата\s*:)\s*$', re.IGNORECASE)
+DONE_VERBS = re.compile(r'(представлен|выполнен|проведен|направлен|исполнен|сделан|отправлен|доложен|получен|завершен)\w*',
+                        re.IGNORECASE)
 
 
 def fix_dates(text, request='', today=None):
@@ -490,7 +502,7 @@ def fix_dates(text, request='', today=None):
     Даты, которые пользователь сам написал в просьбе, остаются. Возвращает (текст, список замен)."""
     from datetime import date
     today = today or date.today()
-    asked = set(re.findall(r'\d{1,2}\.\d{1,2}\.\d{4}', request or ''))
+    asked = set(re.findall(r'\d{1,2}\.\d{1,2}\.\d{4}', request or ''))    # даты из просьбы и своего текста — не трогаем
     changed = []
 
     def repl(m):
@@ -502,6 +514,9 @@ def fix_dates(text, request='', today=None):
         before = text[max(0, m.start() - 30):m.start()]
         if when >= today or m.group(0) in asked or not PAST_CONTEXT.search(before):
             return m.group(0)
+        sentence = text[max(0, text.rfind('.', 0, m.start() - 12) + 1):m.end() + 40]
+        if DONE_VERBS.search(sentence):
+            return m.group(0)                     # «сведения представлены до 15.10» — это факт, а не новый срок
         if re.search(r'Дата\s*:\s*$', before):
             changed.append(f'{m.group(0)} → {today.strftime("%d.%m.%Y")} (дата документа)')
             return today.strftime('%d.%m.%Y')
@@ -519,8 +534,11 @@ def write(task, sources=(), me=None, **kw):
             'возьми из них только нужные факты (номера, даты, сроки, названия) и составь именно тот текст, '
             'который требуется в задаче. Если это ответ или доклад на входящий документ — начни со ссылки на него '
             '(«На № … от …») и изложи по существу: что сделано или будет сделано и в какой срок.\n')
-    if 'телеграм' in task.lower():
+    keep = kw.pop('keep_dates', '')
+    if TELEGRAM_WORDS.search(task):
         user += telegram_format(me) + '\n'
+    elif me and me.get('signature', '').strip():
+        user += f'Подпись в конце: {me["signature"].strip()}\n'
     refs = PEOPLE.context(task + ' ' + block) if PEOPLE is not None else []
     if refs:
         user += ('\nСправочник (точные звания и должности; адресата ставь в дательный падеж: «Начальнику …», '
@@ -533,7 +551,9 @@ def write(task, sources=(), me=None, **kw):
         user += '\nМатериалы (справка; используй только факты из них):\n\n' + block + '\n'
     user += ('\nВерни только готовый текст документа, без вступлений вроде «Вот текст» и без пояснений после. '
              'Чего не хватает — [УТОЧНИТЬ: …].')
-    return fix_dates(run(chat_prompt(user), max_tokens=kw.pop('max_tokens', 800), **kw), task)[0], truncated
+    if truncated:
+        user += f'\n(Часть материалов не поместилась: {", ".join(truncated)}.)'
+    return fix_dates(run(chat_prompt(user), max_tokens=kw.pop('max_tokens', 800), **kw), task + ' ' + keep)[0], truncated
 
 
 def answer(question, sources, **kw):
@@ -543,7 +563,8 @@ def answer(question, sources, **kw):
         raise AIError('По вопросу не нашлось документов. Уточните слова или добавьте папки для поиска.')
     from datetime import date
     user = (f'Сегодня {date.today().strftime("%d.%m.%Y")}.\nВопрос: {question.strip()}\n\nДокументы:\n\n{block}\n\n'
-            'Ответь коротко и по существу только по этим документам. После ответа с новой строки напиши '
+            'Ответь коротко и по существу только по этим документам. Если документы расходятся — верен более новый '
+            '(дата файла в имени материала), скажи об этом. После ответа с новой строки напиши '
             '«Источник: » и имя файла. Если ответа в документах нет — так и напиши: «В документах не нашла».')
     return run(chat_prompt(user), max_tokens=kw.pop('max_tokens', 400), temperature=0.1, **kw), truncated
 
@@ -561,7 +582,7 @@ def edit(text, how, **kw):
     user = (f'{instruction}\nЕсли в тексте есть строки «Кому:», «Дата:», «Текст:», «Подпись:» — сохрани их; '
             'если их нет — не добавляй. Ничего не подписывай от себя. Верни только готовый текст.\n\n'
             f'Текст:\n{text.strip()}')
-    return run(chat_prompt(user), max_tokens=min(1500, len(text) // 2 + 300), temperature=0.2, **kw)
+    return run(chat_prompt(user), max_tokens=min(4000, len(text) // 2 + 400), temperature=0.2, **kw)
 
 
 ARITY = {'СУММЕСЛИ': (2, 3), 'СЧЁТЕСЛИ': (2, 2), 'СЧЕТЕСЛИ': (2, 2), 'СРЗНАЧЕСЛИ': (2, 3), 'ВПР': (3, 4), 'ГПР': (3, 4),
@@ -640,12 +661,27 @@ def summarize(title, text, **kw):
 
 QUESTION_WORDS = set('что как какой какая какие каком когда где кто кому сколько почему зачем ли есть был была были '
                      'найди напиши составь подготовь сделай текст ответ документ документы по про о об на в и с для '
-                     'нужно надо мне нам прошу пожалуйста'.split())
+                     'нужно надо мне нам прошу пожалуйста справку справка телеграмму телеграмма тлг доклад доклада '
+                     'ответь ответ ответа подготовь подготовить составить написать напиши сделай найди найти '
+                     'документам документах всем всех этим этих эту этот найденным'.split())
 
 
 def keywords(text):
-    words = re.findall(r'[А-Яа-яЁёA-Za-z0-9/№-]{3,}', text)
-    return [w for w in words if w.lower().replace('ё', 'е') not in QUESTION_WORDS][:10]
+    """Слова для поиска: номера («№ 7», «154/2»), даты, содержательные слова. Если слов много — самые длинные
+    (в длинной задаче тема обычно не в первых словах)."""
+    tokens = re.findall(r'№\s*\d+(?:/\d+)?|\d{1,2}\.\d{1,2}(?:\.\d{2,4})?|[А-Яа-яЁёA-Za-z0-9/-]{3,}', text)
+    out = []
+    for w in tokens:
+        numbered = w.startswith('№')
+        w = re.sub(r'^№\s*', '', w)
+        if w.lower().replace('ё', 'е') in QUESTION_WORDS or (w.isdigit() and len(w) < 2 and not numbered):
+            continue
+        if w not in out:
+            out.append(w)
+    if len(out) > 10:
+        keep = set(sorted(out, key=lambda w: (not any(c.isdigit() for c in w), -len(w)))[:10])
+        out = [w for w in out if w in keep]
+    return out
 
 
 def passages(text, words, limit=2200):
@@ -694,6 +730,15 @@ def retrieve(query, search_fn, read_fn, docs=12, extra=(), smart_fn=None):
         if len(dict.fromkeys(found)) < docs:
             found += [r[0] for r in search_fn(' '.join(words), True)]
     paths = list(dict.fromkeys(list(extra) + found))[:max(docs, len(extra))]
+
+    def mtime(p):
+        try:
+            return Path(p).stat().st_mtime
+        except OSError:
+            return 0
+    # Отобраны самые подходящие; в работу — сначала новые (при обрезке теряются старые, а не свежие).
+    chosen = [p for p in paths if p in extra]
+    paths = chosen + sorted((p for p in paths if p not in extra), key=mtime, reverse=True)
     out = []
     for p in paths:
         try:
@@ -730,7 +775,7 @@ def condense(task, sources, budget=MAX_SOURCE_CHARS, on_progress=None, cancel=No
         got = notes(task, name, text, cancel=cancel, **kw).strip()
         if got and not re.fullmatch(r'\W*НЕТ\W*', got, re.IGNORECASE):
             out.append((name + ' — выписка', got))
-    return out or list(sources)[:3]
+    return out                                     # ни в одном документе нет нужного — пишем по задаче, с [УТОЧНИТЬ]
 
 
 # ---------- проверка фактов: числа и даты в ответе должны быть в документах ----------
@@ -866,11 +911,15 @@ def merge(sources, draft='', me=None, **kw):
     """Несколько похожих телеграмм → одна связная, без повторов. draft — результат объединения по правилам (подсказка)."""
     task = ('Объедини эти похожие телеграммы в ОДНУ телеграмму: каждое поручение — один раз, без повторов и вводных фраз, '
             'основание — в начале, «О выполнении доложить» — один раз в конце. Если в телеграммах разные сроки или числа '
-            'для одного поручения — не выбирай сам, напиши [УТОЧНИТЬ: срок 25.10 или 27.10].')
+            'для одного поручения — не выбирай сам, а напиши [УТОЧНИТЬ: срок … или …], подставив оба значения из телеграмм.')
     srcs = list(sources)
+    if sum(len(t) for _, t in srcs) + len(draft) > MAX_SOURCE_CHARS:
+        # Всё не помещается — из каждой телеграммы сначала выписка, чтобы последние не обрезались.
+        srcs = condense(task, srcs, budget=MAX_SOURCE_CHARS - len(draft), on_progress=kw.get('on_text'),
+                        cancel=kw.get('cancel'))
     if draft:
         srcs = [('черновик объединения (по правилам)', draft)] + srcs
-    return write(task, srcs, me=me, max_tokens=900, **kw)
+    return write(task, srcs, me=me, max_tokens=1200, **kw)
 
 
 # ---------- Word → Excel ----------
@@ -878,11 +927,12 @@ def merge(sources, draft='', me=None, **kw):
 def extract_fields(text, fields, **kw):
     """Значения полей из документа. Принимается только то, что дословно есть в тексте (проверка от выдумок)."""
     names = ', '.join(f'«{f}»' for f in fields)
-    user = (f'Документ:\n{text[:7000]}\n\nНайди в документе значения полей: {names}. '
+    body = text if len(text) <= 9000 else text[:6000] + '\n…\n' + text[-3000:]     # подпись и исполнитель — в конце
+    user = (f'Документ:\n{body}\n\nНайди в документе значения полей: {names}. '
             'Ответь только JSON вида {"поле": "значение"}. Значение копируй из документа без изменений '
             '(тот же падеж, те же сокращения). Если значения нет — пустая строка.')
     data = _json(run(chat_prompt(user, system='Ты извлекаешь данные из документов. Отвечаешь только JSON.'),
-                     max_tokens=60 + 40 * len(fields), temperature=0.0, **kw))
+                     max_tokens=100 + 70 * len(fields), temperature=0.0, **kw))
     flat = ' '.join(text.split()).lower().replace('ё', 'е')
     out = {}
     for f in fields:
@@ -956,6 +1006,8 @@ def svod_report(table_text, me=None, **kw):
     """Доклад по своду: только цифры из таблицы."""
     task = ('Подготовь телеграмму-доклад по своду: по каждой организации — её цифры, затем итог; кратко отметь, где «на лицо» '
             'заметно меньше «по списку». Все цифры — только из таблицы, ничего не вычисляй, кроме того, что есть в строке «Итого».')
+    rows = table_text.count('\n') + 1
+    kw.setdefault('max_tokens', min(3500, 300 + rows * 45))
     return write(task, [('свод', table_text)], me=me, **kw)
 
 
@@ -964,12 +1016,19 @@ def svod_report(table_text, me=None, **kw):
 def tasks(text, **kw):
     """Поручения из документа: [{"что", "срок", "кто"}]. Проверку сроков и ответственных делает iskra_control.merge_ai."""
     import json
-    user = (f'Документ:\n{text[:6000]}\n\nВыпиши все поручения (что нужно сделать). Ответь только JSON-списком: '
+    body = text if len(text) <= 12000 else text[:9000] + '\n…\n' + text[-3000:]
+    user = (f'Документ:\n{body}\n\nВыпиши все поручения (что нужно сделать). Ответь только JSON-списком: '
             '[{"что": "…", "срок": "ДД.ММ.ГГГГ или пусто", "кто": "ответственный или пусто"}]. '
             'Сроки и ответственных бери только из документа.')
     out = run(chat_prompt(user, system='Ты выписываешь поручения из служебных документов. Отвечаешь только JSON.'),
-              max_tokens=500, temperature=0.0, **kw)
+              max_tokens=1400, temperature=0.0, **kw)
     m = re.search(r'\[.*\]', out, re.DOTALL)
+    if not m and '[' in out and '}' in out:
+        # Ответ обрезан на середине списка — берём все целые записи.
+        m = re.search(r'\[.*\}', out[out.index('['):], re.DOTALL)
+        if m:
+            out = out[out.index('['):][:m.end()] + ']'
+            m = re.search(r'\[.*\]', out, re.DOTALL)
     if not m:
         return []
     try:
@@ -981,7 +1040,7 @@ def tasks(text, **kw):
 
 def morning(facts, **kw):
     """Главное за день в 3–5 строках по готовой сводке (цифры и сроки — только из неё)."""
-    user = (f'Сводка на утро:\n{facts[:6000]}\n\nНапиши в 3–5 коротких строках, что сегодня главное и что сделать в первую '
+    user = (f'Сводка на утро:\n{facts[:10000]}\n\nНапиши в 3–5 коротких строках, что сегодня главное и что сделать в первую '
             'очередь. Только по этой сводке, без новых фактов.')
     return run(chat_prompt(user), max_tokens=250, temperature=0.2, **kw)
 
@@ -1005,20 +1064,31 @@ def search_words(query, **kw):
 
 # ---------- уточнение предыдущего ответа ----------
 
-def revise(request, previous, change, sources=(), me=None, **kw):
-    """Поправить свой прошлый текст по просьбе: меняется только то, что просят."""
+def revise(request, previous, change, sources=(), me=None, kind='write', **kw):
+    """Поправить свой прошлый текст по просьбе: меняется только то, что просят.
+    kind='ask'/'chat' — это был ответ на вопрос: переделать подачу, без правил оформления документа."""
     block, _ = materials(list(sources))
+    if kind in ('ask', 'chat'):
+        user = (f'Вопрос был: «{request.strip()}».\n\nТвой ответ:\n{previous.strip()}\n\n'
+                f'Пользователь просит: «{change.strip()}». Переделай ответ так, как он просит, не меняя фактов, '
+                'чисел и дат. Строку «Источник: …» сохрани. Верни только новый ответ.')
+        if block:
+            user += '\n\nДокументы (справка):\n\n' + block
+        return run(chat_prompt(user), max_tokens=600, temperature=0.2, **kw)
     user = (f'Ты уже подготовил текст по задаче: «{request.strip()}».\n\nТекущий текст:\n{previous.strip()}\n\n'
             f'Пользователь просит изменить: «{change.strip()}».\n'
             'Внеси именно это изменение. Всё остальное оставь как есть: оформление, порядок, факты, номера, даты, подпись. '
             'Новые факты бери только из просьбы пользователя или из материалов. '
             'Верни полностью исправленный текст целиком, без пояснений и без слов «вот исправленный текст».\n' + DATE_RULES())
-    if 'телеграм' in (request + previous[:40]).lower():
+    refs = PEOPLE.context(change + ' ' + previous) if PEOPLE is not None else []
+    if refs:
+        user += ('\nСправочник (точные звания и должности; адресата — в дательном падеже):\n' + '\n'.join(refs) + '\n')
+    if TELEGRAM_WORDS.search(request + ' ' + previous[:200]) or TELEGRAM_TEMPLATE:
         user += '\n' + telegram_format(me)
     if block:
         user += '\n\nМатериалы (справка):\n\n' + block
-    out = run(chat_prompt(user), max_tokens=kw.pop('max_tokens', min(1500, len(previous) // 2 + 500)), temperature=0.2, **kw)
-    return keep_unasked(previous, fix_dates(out, change)[0], change)
+    out = run(chat_prompt(user), max_tokens=kw.pop('max_tokens', min(4000, len(previous) // 2 + 600)), temperature=0.2, **kw)
+    return keep_unasked(previous, fix_dates(out, request + ' ' + previous + ' ' + change)[0], change, me)
 
 
 SIGN_HEAD = re.compile(r'^\s*Подпись\s*:?\s*$', re.MULTILINE | re.IGNORECASE)
@@ -1026,16 +1096,34 @@ HEADS = {'кому': re.compile(r'^\s*Кому\s*:.*$', re.MULTILINE | re.IGNORE
          'от кого': re.compile(r'^\s*От кого\s*:.*$', re.MULTILINE | re.IGNORECASE)}
 
 
-def keep_unasked(previous, result, change):
-    """Части, о которых не просили (подпись, «Кому», «От кого»), остаются как были: модель иногда трогает лишнее."""
+def _block(text, head):
+    """Блок от заголовка до пустой строки (или конца)."""
+    m = head.search(text)
+    if not m:
+        return None
+    end = text.find('\n\n', m.end())
+    return m.start(), (end if end != -1 else len(text))
+
+
+def keep_unasked(previous, result, change, me=None):
+    """Части, о которых не просили (подпись, «Кому», «От кого»), остаются как были: модель иногда трогает лишнее.
+    Добавленное после подписи по просьбе (исполнитель, телефон) не трогаем."""
     low = change.lower()
-    if not re.search(r'подпис|должност|звани|фамили|кто подпис', low):
-        old = SIGN_HEAD.search(previous)
-        new = SIGN_HEAD.search(result)
+    if not re.search(r'подпис|должност|звани|фамили|подписыва', low):
+        old, new = _block(previous, SIGN_HEAD), _block(result, SIGN_HEAD)
         if old and new:
-            result = result[:new.start()] + previous[old.start():].rstrip() + '\n'
+            result = result[:new[0]] + previous[old[0]:old[1]] + result[new[1]:]
+        elif me and me.get('signature', '').strip():
+            sign = me['signature'].strip()
+            if sign in previous and sign not in result:
+                # Свой шаблон без «Подпись:» — подпись пользователя должна остаться как в прошлом тексте.
+                last = sign.splitlines()[-1].strip()
+                pos = result.rfind(last.split()[-1]) if last.split() else -1
+                if pos == -1:
+                    result = result.rstrip() + '\n\n' + sign
+    asked_to = re.search(r'кому|адрес\w*|адресат\w*|отправ\w*|направ\w*|получател\w*|начальник\w*|командир\w*', low)
     for word, rx in HEADS.items():
-        if word.split()[-1] in low or 'адресат' in low and word == 'кому':
+        if (word == 'кому' and asked_to) or (word == 'от кого' and re.search(r'от кого|от имени|отправител', low)):
             continue
         old, new = rx.search(previous), rx.search(result)
         if old and new and old.group(0).strip() != new.group(0).strip():
@@ -1047,7 +1135,9 @@ def followup(history, question, sources=(), **kw):
     """Продолжение разговора: новый вопрос с учётом прошлых вопросов и ответов (и тех же документов)."""
     talk = '\n\n'.join(f'Вопрос: {q.strip()}\nОтвет: {a.strip()[:1500]}' for q, a in history[-3:])
     block, _ = materials(list(sources))
-    user = (f'Мы уже говорили:\n\n{talk}\n\nТеперь пользователь пишет (это продолжение того же разговора): '
+    from datetime import date
+    user = (f'Сегодня {date.today().strftime("%d.%m.%Y")}.\nМы уже говорили:\n\n{talk}\n\n'
+            'Теперь пользователь пишет (это продолжение того же разговора): '
             f'«{question.strip()}».\nОтветь коротко и по существу, с учётом сказанного выше.')
     if block:
         user += ('\n\nДокументы (отвечай только по ним; в конце с новой строки «Источник: » и имя файла; '

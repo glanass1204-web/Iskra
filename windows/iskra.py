@@ -1,4 +1,4 @@
-import os, re, threading, queue
+import os, re, threading, queue, time
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -22,8 +22,13 @@ from iskra_index import ROOT, extract, index_folder, search_docs, forget_folder,
 import iskra_assistant as assistant
 
 ROOT.mkdir(parents=True, exist_ok=True)
-VERSION = '1.9.1'
+VERSION = '1.9.2'
 ACCENT = '#24518A'
+
+
+# Команды, после которых фраза может быть уточнением прошлого ответа нейросети.
+DOC_CMDS = {'deadlines', 'dates', 'people', 'numbers', 'money', 'contacts', 'summary'}
+FOLLOW_CMDS = {'search', 'write', 'ask', 'telegram', 'reply'} | DOC_CMDS
 
 
 class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin, WorkMixin, ToolsMixin):
@@ -32,6 +37,7 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
         root.title(f'Искра {VERSION} — помощник по документам')
         root.geometry('1180x740'); root.minsize(860, 540)
         self.events = queue.Queue()
+        self._ai_queue, self._bg_jobs, self._bg_yield = [], [], threading.Event()
         self.results = []          # [(path, snippet)] — так же, как раньше, для инструментов
         self.doc_cache = {}        # path -> text выбранных документов
         self.indexer = AutoIndexer(ROOT, index_folder, self.events.put)
@@ -93,7 +99,8 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
             self.root.after(8000, lambda: threading.Thread(target=iskra_ai.warm, daemon=True).start())
         self.start_hotkey()
         self.root.after(600, self.maybe_first_run)
-        self.root.after(4000, lambda: self._morning_enabled() and self.maybe_morning())
+        # Сводку при запуске не показываем в первый запуск (сначала мастер) и не выдёргиваем фокус, если человек уже печатает.
+        self.root.after(4000, self._startup_morning)
         self.root.after(100, self.poll)
 
     # ---------- оформление ----------
@@ -221,11 +228,25 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
             # Уточнение к прошлому ответу нейросети («сделай короче», «поменяй срок», «а кто подписал?») —
             # правим тот же ответ, а не ищем заново.
             last = getattr(self, 'last_ai', None)
-            if (self.ai_ready and last and cmd in ('search', 'write', 'ask', 'telegram')
-                    and assistant.is_followup(text, last['kind'])):
-                self.ai_followup(text)
+            if (last and last['kind'] in ('ask', 'chat') and assistant.is_question(text)
+                    and not re.match(r'^(а|и|но)\b', text.lower())
+                    and not assistant.related(text, last['request'] + ' ' + last['answer'])
+                    and time.monotonic() - last['time'] > 120):
+                last = self.last_ai = None              # новый вопрос на другую тему — искать заново, а не в старых документах
+            if (self.ai_ready and cmd in FOLLOW_CMDS and assistant.is_followup(text, (last or {}).get('kind', 'write'))
+                    and (last or self.ai_busy())):
+                if last is None or self.ai_busy():
+                    # Ответ ещё пишется — уточнение применится к нему, как только он будет готов.
+                    self.ai_background(lambda cancel: None, lambda _: self.ai_followup(text), label=f'«{text}»')
+                else:
+                    self.ai_followup(text)
                 return
             self.last_ai = None                          # новая просьба — прошлый ответ больше не уточняем
+            # Вопрос обычной фразой («кто подписал телеграмму 154?», «когда сдавать сведения?») — ответ нейросети
+            # по документам, а не список ФИО/сроков выбранного документа. Короткие команды кнопок — как раньше.
+            if (self.ai_ready and cmd in DOC_CMDS and len(text.split()) >= 3
+                    and (text.rstrip().endswith('?') or self.selected() is None)):
+                cmd, arg = 'ask', text
             # Не похоже ни на одну команду и это не явный поиск — пусть нейросеть поймёт, что нужно.
             if (cmd == 'search' and self.ai_ready and len(text.split()) >= 3
                     and not re.match(r'^(найди|найти|поиск|ищи|покажи|где)\b', text.lower())):
@@ -261,6 +282,14 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
             for t in (late + soon)[:10]:
                 self.say(f'• {t["deadline"]} — {t["text"]}' + (f' [{t["responsible"]}]' if t['responsible'] else ''), 'proof')
         elif cmd == 'autosvod':
+            lines = self.autosvod.summary_lines()
+            if lines:
+                for line in lines:
+                    self.say(line)
+            elif not self.autosvod.settings.get('enabled'):
+                self.say('Автосвод не настроен — укажите папку, куда присылают таблицы.', 'proof')
+            else:
+                self.say('Сегодня таблиц в папке автосвода ещё нет — не прислал никто.', 'proof')
             self.autosvod_window()
         elif cmd == 'journal':
             waiting = self.journal.waiting()
@@ -288,12 +317,22 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
             if self.ai_ready and len(text.split()) > 3:
                 self.ai_write(text)
             else:
-                self.compose_window()
+                low = text.lower()
+                kind = next((k for w, k in (('запрос', 'Запрос сведений'), ('указани', 'Указание'), ('напомин', 'Напоминание о сроке'),
+                                            ('ответ', 'Ответ на входящую'), ('доклад', 'Доклад')) if w in low), None)
+                self.compose_window(kind)
         elif cmd == 'reply':
-            if self.inbox_tree.selection():
+            chosen = self.selected() if re.search(r'\b(эт[уоа]|этот|этой|выбранн\w*|на не[её]|на него|по нему)\b', text.lower()) else None
+            if chosen is not None:
+                # «ответь на эту телеграмму» — на выбранную в списке слева
+                if self.ai_ready:
+                    self.ai_write(text + ' (по этому документу)')
+                else:
+                    self.compose_window('Ответ на входящую', source=self.results[chosen][0])
+            elif self.inbox_tree.selection():
                 self.tabs.select(self.inbox_tab)
                 self.inbox_reply()
-            elif self.ai_ready and len(text.split()) > 4:
+            elif self.ai_ready:
                 self.ai_write(text)
             else:
                 self.compose_window('Ответ на входящую')
@@ -463,14 +502,26 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
     def poll(self):
         try:
             while True:
-                event = self.events.get_nowait()
-                if isinstance(event, tuple) and event[0] == 'call':
-                    event[1]()
-                else:
-                    self.status.set(str(event))
-        except queue.Empty:
-            pass
-        self.root.after(150, self.poll)
+                try:
+                    event = self.events.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    if isinstance(event, tuple) and event[0] == 'call':
+                        event[1]()
+                    elif self.ai_cancel is None:
+                        self.status.set(str(event))         # сообщения индексатора не перекрывают «Нейросеть пишет…»
+                except Exception as exc:
+                    # Одна ошибка не должна останавливать всё окно: пишем в журнал и работаем дальше.
+                    import traceback
+                    from iskra_ai_ui import friendly_error
+                    iskra_ai.write_log('Ошибка в окне: ' + ''.join(traceback.format_exception(exc))[-2000:])
+                    try:
+                        self.say('Не получилось: ' + friendly_error(exc))
+                    except Exception:
+                        pass
+        finally:
+            self.root.after(150, self.poll)
 
     def find(self, report=False):
         q = self.query.get().strip()
@@ -478,9 +529,13 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
             return
         self.status.set('Ищу…')
 
+        self._search_gen = getattr(self, '_search_gen', 0) + 1
+        gen = self._search_gen
+
         def expand(text):
-            # Нейросеть подсказывает слова, только если ни обычный, ни смысловой поиск ничего не нашли.
-            if not self.ai_ready:
+            # Нейросеть подсказывает слова, только если ни обычный, ни смысловой поиск ничего не нашли —
+            # и только если она свободна: поиск не должен ждать чужой ответ.
+            if not self.ai_ready or iskra_ai._LOCK.locked() or gen != self._search_gen:
                 return []
             self.events.put(('call', lambda: self.status.set('По словам не нашла — спрашиваю нейросеть, как это обычно пишут…')))
             try:
@@ -491,7 +546,8 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
         def work():
             import iskra_smartsearch
             rows, how = iskra_smartsearch.search(q, root=ROOT, ai_expand=expand)
-            self.events.put(('call', lambda: self.show_results(q, rows, report, how)))
+            if gen == self._search_gen:                 # пока искали, человек начал новый поиск — старый не показываем
+                self.events.put(('call', lambda: self.show_results(q, rows, report, how)))
         threading.Thread(target=work, daemon=True).start()
 
     def show_results(self, q, rows, report, how=''):
@@ -544,6 +600,15 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
             for line in self.text.get('1.0', 'end-1c').splitlines():
                 d.add_paragraph(line)
             d.save(path); self.status.set(f'Сохранено: {path}')
+
+    def _startup_morning(self, tries=0):
+        if not self._morning_enabled() or not (ROOT / 'setup.json').exists():
+            return
+        typing = self.query.get().strip() or self.question.get().strip()
+        if typing and tries < 20:
+            self.root.after(15000, lambda: self._startup_morning(tries + 1))
+            return
+        self.maybe_morning()
 
     def close(self):
         self.stop_hotkey()

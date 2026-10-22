@@ -69,6 +69,8 @@ class Server:
         self.failed_for = None          # модель, на которой быстрый режим не поднялся — второй раз не пробуем
         self.lock = threading.Lock()
         self._watch = None
+        self.last_cut = False           # последний ответ упёрся в предел длины
+        self.loading = False            # модель грузится в память
 
     # ---------- запуск ----------
 
@@ -105,24 +107,32 @@ class Server:
             if on_text:
                 on_text('… загружаю нейросеть в память (один раз за сеанс, до минуты)')
             started = time.monotonic()
-            while True:
-                if self.proc.poll() is not None:
-                    self.proc, self.failed_for = None, model
-                    raise ServerError('движок закрылся при загрузке')
-                if cancel is not None and cancel.is_set():
-                    self.stop()
-                    raise ServerError('остановлено')
-                if self._health():
-                    break
-                if time.monotonic() - started > LOAD_TIMEOUT:
-                    self.stop()
-                    self.failed_for = model
-                    raise ServerError('модель не загрузилась за 5 минут')
-                time.sleep(0.5)
+            self.loading = True
+            try:
+                self._wait_loaded(model, cancel, started)
+            finally:
+                self.loading = False
             self.last_used = time.monotonic()
             if self._watch is None:
                 self._watch = threading.Thread(target=self._idle_watch, daemon=True)
                 self._watch.start()
+
+    def _wait_loaded(self, model, cancel, started):
+        """Ждать, пока движок загрузит модель и ответит на /health."""
+        while True:
+            if self.proc.poll() is not None:
+                self.proc, self.failed_for = None, model
+                raise ServerError('движок закрылся при загрузке')
+            if cancel is not None and cancel.is_set():
+                self.stop()
+                raise ServerError('остановлено')
+            if self._health():
+                break
+            if time.monotonic() - started > LOAD_TIMEOUT:
+                self.stop()
+                self.failed_for = model
+                raise ServerError('модель не загрузилась за 5 минут')
+            time.sleep(0.5)
 
     def _health(self):
         try:
@@ -163,6 +173,7 @@ class Server:
                            'stop': ['<|im_end|>', '<|im_start|>']}, ensure_ascii=False).encode('utf-8')
         conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=timeout)
         started, text, shown = time.monotonic(), '', ''
+        self.last_cut = False
         try:
             conn.request('POST', '/completion', body=body, headers={
                 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + self.key})
@@ -205,6 +216,7 @@ class Server:
                             shown = now
                             on_text(now)
                     if data.get('stop'):
+                        self.last_cut = bool(data.get('stopped_limit') or data.get('truncated'))
                         break
             except (OSError, http.client.HTTPException):
                 if not why:

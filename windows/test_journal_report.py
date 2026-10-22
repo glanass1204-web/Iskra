@@ -29,7 +29,10 @@ class JournalTest(unittest.TestCase):
         text = 'ТЕЛЕГРАММА\n\nКому: Начальнику госпиталя\nДата: [ДАТА]\nНомер: [НОМЕР]\n\nТекст: Представить сведения о численности.'
         self.assertEqual(jr.addressee_from_text(text), 'Начальнику госпиталя')
         self.assertTrue(jr.subject_from_text(text).startswith('Представить сведения'))
-        filled = jr.put_number(text, '17/шт', '22.10.2026')
+        filled, placed = jr.put_number(text, '17/шт', '22.10.2026')
+        self.assertTrue(placed)
+        self.assertIn('№ 5/шт', jr.put_number('Исх. [УТОЧНИТЬ: номер] от [УТОЧНИТЬ: дата]', '5/шт', '22.10.2026')[0])
+        self.assertFalse(jr.put_number('Просто текст', '5', '22.10.2026')[1])
         self.assertIn('Номер: 17/шт', filled)
         self.assertIn('Дата: 22.10.2026', filled)
         self.assertEqual(jr.addressee_from_text('Начальнику госпиталя\nполковнику\nИванову И.И.\n\nПрошу...'),

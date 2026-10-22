@@ -1,5 +1,6 @@
 """Окна справочника людей, папки образцов отдела и проверки перед отправкой."""
 import os
+import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk, filedialog, messagebox
@@ -132,20 +133,27 @@ class PeopleMixin:
         menu.configure(postcommand=fill)
         return mb
 
-    def precheck(self, win, t, source_paths=()):
+    def precheck(self, win, t, source_paths=(), source_texts=()):
+        """Проверка перед отправкой. Исходные документы читаются в фоне — окно не замирает."""
         text = t.get('1.0', 'end-1c')
-        sources = []
-        for p in source_paths or ():
-            try:
-                sources.append((Path(p).name, extract(Path(p))))
-            except Exception:
-                pass
-        issues = pc.check(text, sources=sources, people=self.people)
-        from iskra_services import telegram_check
-        issues += [('внимание', x) for x in telegram_check(pc.body(text))
-                   if not x.startswith(('Орфография и фактическая', 'Не заполнено', 'Документ пуст'))]
-        if any(lvl == 'ошибка' for lvl, _ in issues):
-            messagebox.showwarning('Проверка перед отправкой', pc.report(issues), parent=win)
-        else:
-            messagebox.showinfo('Проверка перед отправкой', pc.report(issues), parent=win)
-        return issues
+        people = self.people
+
+        def work():
+            sources = list(source_texts or ())        # уже известные тексты (таблица свода и т. п.)
+            for p in source_paths or ():
+                try:
+                    sources.append((Path(p).name, extract(Path(p))))
+                except Exception:
+                    pass
+            issues = pc.check(text, sources=sources, people=people)
+            from iskra_services import telegram_check
+            issues += [('внимание', x) for x in telegram_check(pc.body(text))
+                       if not x.startswith(('Орфография и фактическая', 'Не заполнено', 'Документ пуст'))]
+
+            def show():
+                if not win.winfo_exists():
+                    return
+                show_fn = messagebox.showwarning if any(lvl == 'ошибка' for lvl, _ in issues) else messagebox.showinfo
+                show_fn('Проверка перед отправкой', pc.report(issues), parent=win)
+            self.events.put(('call', show))
+        threading.Thread(target=work, daemon=True).start()

@@ -82,7 +82,8 @@ class HotkeyMixin:
                 try:
                     if how == 'telegram':
                         result = ai.write('Оформи этот текст как служебную телеграмму, не добавляя новых фактов',
-                                          [('выделенный текст', text)], me=me, on_text=show, cancel=cancel)[0]
+                                          [('выделенный текст', text)], me=me, on_text=show, cancel=cancel,
+                                          keep_dates=text)[0]          # даты из своего текста — не «прошедшие сроки»
                     elif how == 'reply':
                         result = ai.reply(text, 'выделенный текст', me=me, on_text=show, cancel=cancel)[0]
                     elif how == 'brief':
@@ -93,7 +94,12 @@ class HotkeyMixin:
                     doubtful = ai.unverified(result, [('выделенный текст', text)])
                     note = ('Готово. Проверьте — этих чисел/дат не было в тексте: ' + ', '.join(doubtful[:8])) if doubtful \
                         else 'Готово. Все числа и даты — из выделенного текста.'
-                    self.events.put(('call', lambda: win.winfo_exists() and (show(result), status.set(note))))
+                    if ai.CUT_MARK in result:
+                        note = ('Ответ не поместился целиком — вставка отключена, чтобы не потерять конец вашего текста. '
+                                'Выделите кусок поменьше.')
+                    self.events.put(('call', lambda: win.winfo_exists() and (
+                        show(result), status.set(note),
+                        paste_btn.state(['disabled'] if ai.CUT_MARK in result else ['!disabled'] if state['insert'] else ['disabled']))))
                 except ai.AIError as exc:
                     msg = str(exc)
                     self.events.put(('call', lambda: win.winfo_exists() and status.set(msg)))

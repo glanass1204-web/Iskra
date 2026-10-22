@@ -74,8 +74,9 @@ def extract(text, source='', today=None):
                 continue
             seen.add(key)
             dl = assistant.deadlines(s, today)
+            ahead = [d for d in dl if d.sort_key >= (today or date.today())]
             out.append({'text': _short(re.sub(r'^\d{1,2}[.)]\s*', '', s)),
-                        'deadline': dl[0].value if dl else common_deadline,
+                        'deadline': (ahead or dl)[0].value if dl else common_deadline,
                         'responsible': responsible_in(s) or para_resp or addressee or doc_resp,
                         'source': source, 'number': number})
     return out
@@ -85,7 +86,7 @@ def merge_ai(rule_tasks, ai_tasks, text):
     """Поручения от нейросети дополняют правила. Срок принимается, только если такая дата есть в документе."""
     from iskra_ai import supported
     flat = ' '.join(text.split()).lower().replace('ё', 'е')
-    dates = {d.strftime(DATE_FMT) for _, _, d in assistant.parse_dates(text)}
+    dates = {f.value for f in assistant.deadlines(text)}     # только даты-сроки, не «от 01.09» ссылок
     have = {t['text'].lower()[:60] for t in rule_tasks}
     out = list(rule_tasks)
     for t in ai_tasks:

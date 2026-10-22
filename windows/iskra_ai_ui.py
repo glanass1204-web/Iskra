@@ -23,10 +23,83 @@ ALL_LISTED = ('по найденн', 'по всем найденн', 'по вс�
               'из найденн', 'все найденн')
 
 
+def friendly_error(exc):
+    """Понятная причина вместо сообщения Python."""
+    import zipfile
+    if isinstance(exc, PermissionError):
+        return 'файл занят — он открыт в Word или Excel. Закройте его и повторите.'
+    if isinstance(exc, FileNotFoundError):
+        return 'файл не найден — возможно, его переместили или удалили.'
+    if isinstance(exc, zipfile.BadZipFile) or type(exc).__name__ == 'InvalidFileException':
+        return 'файл повреждён или это не .docx/.xlsx (старый .doc/.xls сохраните в новом формате).'
+    if isinstance(exc, MemoryError):
+        return 'не хватает памяти — закройте лишние программы.'
+    if isinstance(exc, OSError):
+        return f'не удалось открыть или записать файл ({exc.strerror or exc}).'
+    return 'что-то пошло не так. Подробности — в папке данных, файл ai_log.txt.'
+
+
+class EditorStream:
+    """Нейросеть пишет в редактор. Пока пишет — поле только для чтения (набранное человеком не затрётся) и без
+    сотен шагов в истории отмены; в конце одна замена — Ctrl+Z возвращает прежний текст одним нажатием."""
+
+    def __init__(self, app, win, t, status=None):
+        self.app, self.win, self.t, self.status = app, win, t, status
+        self.original = t.get('1.0', 'end-1c')
+        self.t.configure(undo=False, state='disabled')
+
+    def alive(self):
+        try:
+            return bool(self.win.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def _set(self, value):
+        self.t.configure(state='normal')
+        self.t.delete('1.0', 'end'); self.t.insert('1.0', value)
+
+    def update(self, value):
+        """Для фонового потока: показать текст по мере написания."""
+        def put():
+            if self.alive() and value and not value.startswith('…'):
+                self._set(value)
+                self.t.configure(state='disabled')
+            elif self.alive() and value and value.startswith('…') and self.status is not None:
+                self.status.set(value.strip('… '))
+        self.app.events.put(('call', put))
+
+    def finish(self, final):
+        if not self.alive():
+            return False
+        self._set(self.original)                     # история отмены — от прежнего текста
+        self.t.configure(undo=True, autoseparators=False)
+        self.t.edit_separator()
+        self.t.delete('1.0', 'end'); self.t.insert('1.0', final)
+        self.t.edit_separator()
+        self.t.configure(autoseparators=True)
+        try:
+            self.win.lift()
+        except tk.TclError:
+            pass
+        return True
+
+    def fail(self, message):
+        if not self.alive():
+            return
+        self._set(self.original)
+        self.t.configure(undo=True)
+        if self.status is not None:
+            self.status.set('Нейросеть: ' + message + ' Текст остался прежним.')
+
+
 class AIMixin:
     ai_ready = False
     ai_cancel = None
     ai_cancel_all = threading.Event()      # Esc: остановить и фоновые задачи (поиск полей в Word → Excel)
+    _ai_queue = None                       # задачи человека, ждущие очереди
+    _bg_jobs = None                        # фоновые задачи (входящие, поручения)
+    _bg_running = False
+    _bg_yield = None                       # установлен — фоновая задача уступает модель человеку
     _brief_queue = None
 
     # ---------- первый запуск ----------
@@ -259,29 +332,55 @@ class AIMixin:
                 self.events.put(('call', lambda: (self.say(msg), messagebox.showerror('Нейросеть', msg))))
         threading.Thread(target=work, daemon=True).start()
 
-    def ai_background(self, job, done=None):
-        """Запуск модели в фоне: одна задача за раз, Esc или «Стоп» — остановить."""
+    def ai_background(self, job, done=None, on_error=None, background=False, label=''):
+        """Задача нейросети в фоне. Задачи человека идут по очереди (вторая не отклоняется, а ждёт первую)
+        и всегда раньше фоновых (справки о входящих, поручения): фоновая уступает, а потом продолжается.
+        on_error(текст) — чтобы окно, откуда пришла задача, не осталось с надписью «пишет…»."""
         if not self.ai_ready:
-            messagebox.showinfo('Нейросеть', self.ai_status_line())
+            if on_error:
+                on_error(self.ai_status_line())
+            else:
+                messagebox.showinfo('Нейросеть', self.ai_status_line())
+            return
+        if background:
+            self._bg_jobs.append((job, done))
+            self._bg_next()
             return
         if self.ai_cancel is not None:
-            messagebox.showinfo('Нейросеть', 'Нейросеть ещё пишет предыдущий ответ. Подождите или нажмите «Стоп».')
+            self._ai_queue.append((job, done, on_error, label))
+            self.say(f'Поставила в очередь{": " + label if label else ""} — начну сразу после текущего ответа.', 'proof')
             return
+        self._ai_start(job, done, on_error)
+
+    def _ai_start(self, job, done, on_error):
         cancel = threading.Event()
         self.ai_cancel = cancel
+        self._bg_yield.set()                       # фоновая задача уступает модель человеку
         self.status.set('Нейросеть пишет… (Esc — остановить)')
         if getattr(self, 'stop_btn', None):
             self.stop_btn.state(['!disabled'])
 
         def finish(result=None, error=None):
             self.ai_cancel = None
-            self.status.set('Готов к работе')
             if getattr(self, 'stop_btn', None):
                 self.stop_btn.state(['disabled'])
-            if error:
-                self.say('Нейросеть: ' + error)
-            elif done:
-                done(result)
+            try:
+                if error:
+                    self.say('Нейросеть: ' + error)
+                    if on_error:
+                        on_error(error)
+                elif done:
+                    done(result)
+            finally:
+                if self.ai_cancel is not None:
+                    pass                                   # done() уже запустил следующую задачу (уточнение)
+                elif self._ai_queue:
+                    job2, done2, err2, _ = self._ai_queue.pop(0)
+                    self._ai_start(job2, done2, err2)
+                else:
+                    self.status.set('Готов к работе')
+                    self._bg_yield.clear()
+                    self._bg_next()
 
         def work():
             try:
@@ -291,14 +390,51 @@ class AIMixin:
                 msg = str(exc)
                 self.events.put(('call', lambda: finish(error=msg)))
             except Exception as exc:
-                msg = f'ошибка: {exc}'
+                msg = friendly_error(exc)
+                ai.write_log('Ошибка задачи нейросети: ' + repr(exc))
                 self.events.put(('call', lambda: finish(error=msg)))
         threading.Thread(target=work, daemon=True).start()
+
+    def _bg_next(self):
+        """Следующая фоновая задача — только когда человек ничего не ждёт."""
+        if self._bg_running or self.ai_cancel is not None or not self._bg_jobs:
+            return
+        job, done = self._bg_jobs.pop(0)
+        self._bg_running = True
+
+        def work():
+            try:
+                result = job(self._bg_yield)
+                ok = not self._bg_yield.is_set()
+            except ai.AIError:
+                result, ok = None, False
+            except Exception as exc:
+                ai.write_log('Фоновая задача: ' + repr(exc))
+                result, ok = None, True                # ошибка — не повторяем
+            def after():
+                self._bg_running = False
+                if ok:
+                    if done and result is not None:
+                        try:
+                            done(result)
+                        except Exception as exc:
+                            ai.write_log('Фоновая задача (итог): ' + repr(exc))
+                elif self._bg_yield.is_set():
+                    self._bg_jobs.insert(0, (job, done))   # уступила человеку — повторим потом
+                self._bg_next()
+            self.events.put(('call', after))
+        threading.Thread(target=work, daemon=True).start()
+
+    def ai_busy(self):
+        return self.ai_cancel is not None
 
     def ai_stop(self, _=None):
         if self.ai_cancel is not None:
             self.ai_cancel.set()
-        self.ai_cancel_all.set()
+            if self._ai_queue:
+                self.say(f'Остановила. В очереди ещё: {len(self._ai_queue)}.', 'proof')
+        else:
+            self.ai_cancel_all.set()               # нет задачи в чате — остановить подбор полей Word → Excel
 
     # ---------- нейросеть пишет прямо в редактор ----------
 
@@ -311,23 +447,13 @@ class AIMixin:
         original = t.get('1.0', 'end-1c')
         tail = original[original.find('--- ИСТОЧНИКИ'):] if '--- ИСТОЧНИКИ' in original else ''
         t.tag_configure('unverified', background='#FFE0B2')
-        status.set(f'{title}: нейросеть пишет… (пока здесь черновик по шаблону; Esc в главном окне — остановить)')
-        state = {'started': False}
-
-        def update(value):
-            def put():
-                if not win.winfo_exists() or not value or value.startswith('…'):
-                    return
-                if not state['started']:
-                    state['started'] = True
-                    t.edit_separator()
-                t.delete('1.0', 'end'); t.insert('1.0', value)
-            self.events.put(('call', put))
+        status.set(f'{title}: нейросеть пишет… (пока здесь черновик по шаблону; Esc — остановить)')
+        stream = EditorStream(self, win, t, status)
 
         def done(result):
-            if not win.winfo_exists():
+            final = result + ('\n\n' + tail if tail else '')
+            if not stream.finish(final):
                 return
-            t.delete('1.0', 'end'); t.insert('1.0', result + ('\n\n' + tail if tail else ''))
             doubtful = ai.unverified(result, sources)
             for start, end in ai.fact_spans(result, doubtful):
                 t.tag_add('unverified', f'1.0+{start}c', f'1.0+{end}c')
@@ -338,37 +464,27 @@ class AIMixin:
                 msg += ' Все числа и даты есть в документах.'
             status.set(msg)
             save_history(ROOT, title, (sources[0][0] if sources else '')[:200])
+            # Запомнить, чтобы «сделай короче» в чате правило этот черновик.
+            paths = [n for n, _ in sources if Path(n).suffix] if sources else []
+            self.remember('write', title, result, sources, paths, editor)
 
-        def job_with_errors(cancel):
-            try:
-                return job(cancel, update)
-            except ai.AIError:
-                self.events.put(('call', lambda: win.winfo_exists() and (
-                    t.delete('1.0', 'end'), t.insert('1.0', original))))
-                raise
-        self.ai_background(job_with_errors, done)
+        self.ai_background(lambda cancel: job(cancel, stream.update), done, on_error=stream.fail, label=title)
 
     # ---------- входящие: краткая справка нейросети в фоне ----------
 
     def inbox_briefs(self, items):
-        """Каждый новый документ нейросеть кратко описывает в фоне (по одному, не мешая работе)."""
-        import queue as _queue
-        if self._brief_queue is None:
-            self._brief_queue = _queue.Queue()
-
-            def worker():
-                while True:
-                    it = self._brief_queue.get()
-                    try:
-                        text = extract(Path(it['path']))
-                        result = ai.brief(text)
-                        self.inbox.update(it['path'], ai_brief=' '.join(result.split())[:600])
-                        self.events.put(('call', lambda: (self.refresh_inbox(), self.inbox_show())))
-                    except Exception:
-                        pass
-            threading.Thread(target=worker, daemon=True).start()
+        """Каждый новый документ нейросеть кратко описывает в фоне — уступая задачам человека."""
         for it in items:
-            self._brief_queue.put(it)
+            def job(cancel, it=it):
+                text = extract(Path(it['path']))
+                return it, ai.brief(text, cancel=cancel)
+
+            def done(result):
+                it, brief = result
+                self.inbox.update(it['path'], ai_brief=' '.join(brief.split())[:600])
+                self.refresh_inbox()
+                self.inbox_show()
+            self.ai_background(job, done, background=True)
 
     # ---------- понимание свободной фразы ----------
 
@@ -384,6 +500,14 @@ class AIMixin:
                  'chat': '«подробнее», «а если …», «приведи пример»',
                  'formula': '«а если по столбцу D», «только для полигона», «без пустых»'}
         self.say(f'Можно уточнить — поправлю этот же ответ: {hints[kind]}. Начать заново: «новое: …».', 'proof')
+
+    def check_facts(self, answer, sources):
+        """Числа и даты ответа, которых нет в документах, — сказать сразу (нейросеть могла выдумать)."""
+        if not sources:
+            return
+        doubtful = ai.unverified(answer, sources)
+        if doubtful:
+            self.say('Проверьте: этих чисел/дат нет в документах — ' + ', '.join(doubtful[:10]), 'proof')
 
     def _editor_alive(self, editor):
         try:
@@ -403,6 +527,7 @@ class AIMixin:
                 return ai.followup(last['history'], text, last['sources'], on_text=update, cancel=cancel)
 
             def done(answer):
+                self.check_facts(answer, last['sources'])
                 self.remember(kind, text, answer, last['sources'], last['paths'])
             self.ai_background(job, done)
             return
@@ -427,33 +552,26 @@ class AIMixin:
             whole = t.get('1.0', 'end-1c')
             previous, sep, tail = whole.partition('--- ИСТОЧНИКИ')
             self.say('Поправляю черновик в открытом редакторе (Ctrl+Z — вернуть как было).', 'proof')
-            t.edit_separator()
-            status.set(f'Нейросеть правит: «{text}»… (Esc в главном окне — остановить)')
-
-            def update(value):
-                def put():
-                    if win.winfo_exists() and value and not value.startswith('…'):
-                        t.delete('1.0', 'end'); t.insert('1.0', value)
-                self.events.put(('call', put))
+            status.set(f'Нейросеть правит: «{text}»… (Esc — остановить)')
+            stream = EditorStream(self, win, t, status)
 
             def done_edit(result):
-                if win.winfo_exists():
-                    t.delete('1.0', 'end')
-                    t.insert('1.0', result + ('\n\n' + sep + tail if sep else ''))
+                if stream.finish(result + ('\n\n' + sep + tail if sep else '')):
                     doubtful = ai.unverified(result, last['sources'] + [('просьба', text), ('прошлый текст', previous)])
                     status.set(f'Поправлено: «{text}». Отменить — Ctrl+Z.' +
                                (' Проверьте — этого не было ни в документах, ни в просьбе: ' + ', '.join(doubtful[:8]) if doubtful else ''))
-                    win.lift()
                 last['answer'], last['time'] = result, time.monotonic()
                 self.say('Готово — черновик в редакторе исправлен. Можно уточнять дальше.', 'proof')
             self.ai_background(lambda cancel: ai.revise(last['request'], previous.strip(), text, last['sources'], me=me,
-                                                        on_text=update, cancel=cancel), done_edit)
+                                                        on_text=stream.update, cancel=cancel), done_edit,
+                               on_error=stream.fail, label=f'«{text}»')
             return
         self.say('Поправляю предыдущий ответ.', 'proof')
 
         def job(cancel):
             update = self._stream_to_chat('Исправленный вариант:')
-            return ai.revise(last['request'], last['answer'], text, last['sources'], me=me, on_text=update, cancel=cancel)
+            return ai.revise(last['request'], last['answer'], text, last['sources'], me=me, kind=kind,
+                             on_text=update, cancel=cancel)
 
         def done(result):
             if kind == 'write':
@@ -462,7 +580,7 @@ class AIMixin:
                 self.remember('write', last['request'], result, last['sources'], last['paths'], editor)
             else:
                 self.remember(kind, last['request'], result, last['sources'], last['paths'])
-        self.ai_background(job, done)
+        self.ai_background(job, done, label=f'«{text}»')
 
     def ai_route(self, text):
         """Фраза не похожа ни на одну команду — нейросеть решает, что сделать."""
@@ -481,7 +599,8 @@ class AIMixin:
                 self.query.set(what or text); self.find(report=True)
             else:
                 self.say(f'Поняла так: {ai.COMMANDS.get(cmd, cmd)}.', 'proof')
-                self.ask(what if cmd in ('ask', 'write', 'formula', 'macro') and what else text, routed=cmd)
+                # Для текста и вопроса — слова человека как есть («по найденным», «тлг» не теряются).
+                self.ask(what if cmd in ('formula', 'macro') and what else text, routed=cmd)
         self.ai_background(job, done)
 
     def ai_chat(self, text):
@@ -498,16 +617,23 @@ class AIMixin:
     def _stream_to_chat(self, title):
         """Функция для фонового потока: показывает текст нейросети в чате по мере написания.
         Окно меняется только в главном потоке — через очередь событий."""
+        AIMixin._streams = getattr(AIMixin, '_streams', 0) + 1
+        a, b = f'ai_s{AIMixin._streams}', f'ai_e{AIMixin._streams}'
         state = {'started': False}
 
         def put(value):
+            # Меняется только свой кусок чата (между метками a и b): сообщения, пришедшие во время ответа
+            # («Беру документы…», «Новый файл…»), остаются на месте.
             self.chat.configure(state='normal')
             if not state['started']:
                 state['started'] = True
                 self.chat.insert('end', title + '\n', 'value')
-                self.chat.mark_set('ai_start', 'end-1c'); self.chat.mark_gravity('ai_start', 'left')
-            self.chat.delete('ai_start', 'end-1c')
-            self.chat.insert('ai_start', (value or '…') + '\n', 'iskra')
+                self.chat.mark_set(a, 'end-1c'); self.chat.mark_gravity(a, 'left')
+                self.chat.mark_set(b, 'end-1c'); self.chat.mark_gravity(b, 'left')
+            piece = (value or '…') + '\n'
+            self.chat.delete(a, b)
+            self.chat.insert(a, piece, 'iskra')
+            self.chat.mark_set(b, f'{a} + {len(piece)} chars')
             self.chat.configure(state='disabled'); self.chat.see('end')
 
         def update(value):
@@ -557,7 +683,10 @@ class AIMixin:
             self.events.put(('call', lambda: self.tabs.select(0)))
             update = self._stream_to_chat('Черновик (нейросеть):')
             sources, full, paths = self._gather(task, extra, cancel, update)
-            text, _ = ai.write(task, sources, me=me, on_text=update, cancel=cancel)
+            text, cut = ai.write(task, sources, me=me, on_text=update, cancel=cancel)
+            if cut:
+                self.events.put(('call', lambda: self.say('Не поместились целиком: ' + ', '.join(cut) +
+                                                          ' — проверьте, всё ли учтено.', 'proof')))
             return text, paths, full
 
         def done(result):
@@ -568,7 +697,7 @@ class AIMixin:
                            note='Черновик нейросети. Проверьте факты по источникам, впишите [УТОЧНИТЬ…], затем «Проверить перед отправкой».',
                            source_paths=paths)
             self.remember('write', task, text, sources, paths, editor)
-        self.ai_background(job, done)
+        self.ai_background(job, done, label='черновик')
 
     def ai_ask(self, question):
         extra = self._chosen_doc(question)
@@ -584,14 +713,11 @@ class AIMixin:
 
         def done(result):
             text, sources, paths = result
+            self.check_facts(text, sources)
             self.remember('ask', question, text, sources, paths)
-            self.say('Проверить: ' + ', '.join(Path(p).name for p in paths), 'proof')
-            self.results = [(p, '') for p in paths]
-            self.listbox.delete(0, 'end')
-            for p in paths:
-                self.listbox.insert('end', Path(p).name)
-            self.found_label.set(f'Документы для ответа: {len(paths)} — двойной щелчок откроет')
-        self.ai_background(job, done)
+            # Список результатов поиска слева не трогаем — документы ответа просто перечислены здесь.
+            self.say('Документы ответа: ' + ', '.join(Path(p).name for p in paths), 'proof')
+        self.ai_background(job, done, label='ответ по документам')
 
     def ai_formula(self, task):
         def job(cancel):
@@ -615,26 +741,25 @@ class AIMixin:
         menu = tk.Menu(mb, tearoff=False)
         mb['menu'] = menu
 
-        def run(how):
+        def run(how, change=None):
             original = text_widget.get('1.0', 'end-1c')
             if not original.strip():
                 return
             body, sep, tail = original.partition('--- ИСТОЧНИКИ')
-            status.set(f'Нейросеть: «{how}»… (Esc в главном окне — остановить)')
-
-            def update(value):
-                def put():
-                    if text_widget.winfo_exists():
-                        text_widget.delete('1.0', 'end'); text_widget.insert('1.0', value)
-                self.events.put(('call', put))
+            label = change or how
+            status.set(f'Нейросеть: «{label}»… (Esc — остановить)')
+            stream = EditorStream(self, text_widget.winfo_toplevel(), text_widget, status)
 
             def done(result):
-                if text_widget.winfo_exists():
-                    text_widget.delete('1.0', 'end')
-                    text_widget.insert('1.0', result + ('\n\n' + sep + tail if sep else ''))
-                    status.set(f'Готово: «{how}». Отменить — Ctrl+Z.')
-            text_widget.edit_separator()
-            self.ai_background(lambda cancel: ai.edit(body, how, on_text=update, cancel=cancel), done)
+                if stream.finish(result + ('\n\n' + sep + tail if sep else '')):
+                    status.set(f'Готово: «{label}». Отменить — Ctrl+Z.')
+            if change:
+                # Своими словами — как уточнение: меняется только то, что просят (подпись, адресат, даты — как были).
+                job = lambda cancel: ai.revise('телеграмма', body.strip(), change, me=self.my_details(),
+                                               on_text=stream.update, cancel=cancel)
+            else:
+                job = lambda cancel: ai.edit(body, how, on_text=stream.update, cancel=cancel)
+            self.ai_background(job, done, on_error=stream.fail, label=f'«{label}»')
         for how in ai.EDITS:
             menu.add_command(label=how, command=lambda h=how: run(h))
 
@@ -643,7 +768,7 @@ class AIMixin:
             how = simpledialog.askstring('Поправить', 'Что изменить? Например: «поменяй срок на 30.10.2026», '
                                          '«добавь пункт о технике», «адресат — начальник штаба»', parent=text_widget.winfo_toplevel())
             if how and how.strip():
-                run('Внеси в текст изменение: ' + how.strip() + '. Всё остальное оставь как есть.')
+                run(None, change=how.strip())
         menu.add_separator()
         menu.add_command(label='Поправить своими словами…', command=own)
         if not self.ai_ready:

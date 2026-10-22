@@ -123,7 +123,12 @@ class JournalMixin:
             if due is None:
                 return
             it = self.journal.register(to, subject, reply_by=due)
-            new = jr.put_number(t.get('1.0', 'end-1c'), it['number'], it['date'])
-            t.delete('1.0', 'end'); t.insert('1.0', new)
-            status.set(f'Зарегистрировано в журнале исходящих: № {it["number"]} от {it["date"]}.')
+            new, placed = jr.put_number(t.get('1.0', 'end-1c'), it['number'], it['date'])
+            if not placed:
+                # В тексте нет места для номера — ставим в начало строки, где стоит курсор.
+                t.insert('insert linestart', f'№ {it["number"]} от {it["date"]}\n')
+            else:
+                t.delete('1.0', 'end'); t.insert('1.0', new)
+            status.set(f'Зарегистрировано в журнале исходящих: № {it["number"]} от {it["date"]}.' +
+                       ('' if placed else ' Места для номера в тексте не было — вписала строкой у курсора, перенесите куда нужно.'))
         return ttk.Button(parent, text='Присвоить номер', command=assign)

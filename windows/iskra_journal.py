@@ -136,8 +136,15 @@ def subject_from_text(text):
 
 
 def put_number(text, number, when):
-    """Вписать номер и дату в шаблонные места («Номер: [НОМЕР]», «Дата: [ДАТА]», «№ ___»)."""
-    text = re.sub(r'(Номер\s*:\s*)(\[НОМЕР\]|_+|$)', lambda m: m.group(1) + number, text, count=1, flags=re.MULTILINE)
-    text = re.sub(r'(Дата\s*:\s*)(\[ДАТА\]|_+)', lambda m: m.group(1) + when, text, count=1)
-    text = re.sub(r'№\s*_{2,}', '№ ' + number, text, count=1)
-    return text
+    """Вписать номер и дату в места для них («Номер: [НОМЕР]», «[УТОЧНИТЬ: номер]», «№ ___», «Дата: [ДАТА]»).
+    Возвращает (текст, вписан ли номер)."""
+    before = text
+    text = re.sub(r'(Номер\s*:\s*)(\[НОМЕР\]|\[УТОЧНИТЬ:?\s*номер\]|_+|$)', lambda m: m.group(1) + number, text,
+                  count=1, flags=re.MULTILINE | re.IGNORECASE)
+    if text == before:
+        text = re.sub(r'\[(?:НОМЕР|УТОЧНИТЬ:?\s*номер)\]|№\s*_{2,}', '№ ' + number, text, count=1, flags=re.IGNORECASE)
+    placed = text != before
+    text = re.sub(r'(Дата\s*:\s*)(\[ДАТА\]|\[УТОЧНИТЬ:?\s*дата\]|_+)', lambda m: m.group(1) + when, text, count=1,
+                  flags=re.IGNORECASE)
+    text = re.sub(r'\[(?:ДАТА|УТОЧНИТЬ:?\s*дата)\]', when, text, count=1, flags=re.IGNORECASE)
+    return text, placed

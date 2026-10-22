@@ -26,8 +26,16 @@ class Extraction(unittest.TestCase):
     def test_all_dates(self):
         self.assertEqual([f.value for f in a.all_dates(DOC, TODAY)], ['15.10.2026', '20.10.2026', '25.10.2026', '01.11.2026'])
 
-    def test_word_dates_without_year_use_current_year(self):
-        self.assertEqual(a.deadlines('Сдать отчёт до 3 марта.', TODAY)[0].value, '03.03.2026')
+    def test_word_dates_without_year_use_nearest_year(self):
+        # Без года — ближайшая к сегодняшнему дню дата: «до 3 марта» в октябре — следующий март,
+        # в июне — прошедший; «до 25 октября» в октябре — этот год.
+        self.assertEqual(a.deadlines('Сдать отчёт до 3 марта.', TODAY)[0].value, '03.03.2027')
+        self.assertEqual(a.deadlines('Сдать отчёт до 3 марта.', date(2026, 6, 1))[0].value, '03.03.2026')
+        self.assertEqual(a.deadlines('Сдать отчёт до 25 октября.', TODAY)[0].value, '25.10.2026')
+
+    def test_reference_date_is_not_deadline(self):
+        t = 'Представить копию приказа от 01.09.2026 № 12 в срок до 30.10.2026.'
+        self.assertEqual([f.value for f in a.deadlines(t, TODAY)], ['30.10.2026'])
 
     def test_people(self):
         self.assertEqual([f.value for f in a.people(DOC)], ['Иванову И.И.', 'Петровой А.С.', 'Сидорова С.П.'])
