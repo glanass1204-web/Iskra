@@ -106,6 +106,33 @@ class RetrieveTest(unittest.TestCase):
         finally:
             ai.run = old
 
+    def test_sample_of_other_kind_not_used_and_copy_redone(self):
+        import tempfile
+        sample = ('ТЕЛЕГРАММА\n\nКомандирам подразделений\n\nВо исполнение указаний штаба округа ПРИКАЗЫВАЮ:\n'
+                  '1. Провести проверку наличия и технического состояния автомобильной техники подразделений.\n'
+                  '2. Неисправную технику выявить, принять меры к её восстановлению силами ремонтных подразделений.\n'
+                  '3. О выполнении доложить.\n\nНачальник штаба\nполковник А.А. Смирнов')
+        d = Path(tempfile.mkdtemp())
+        (d / 'Телеграмма о проверке техники.txt').write_text(sample, encoding='utf-8')
+        old_dir, old_run = ai.STYLE_DIR, ai.run
+        ai.STYLE_DIR = d
+        calls = []
+        try:
+            self.assertIsNone(ai.best_sample('Составь телеграмму-ответ: сведения о технике направляем, техника готова'))
+            self.assertIsNotNone(ai.best_sample('Составь телеграмму командирам: провести проверку техники к зиме'))
+            # нейросеть переписала образец, а задачу (учения, полигон) не раскрыла — второй раз без образца
+            answers = [sample, 'ТЕЛЕГРАММА\nТекст:\n' + '1. Организовать выход подразделений на полигон для учений '
+                       'с техникой, проверить готовность техники к учениям. ' * 6]
+            ai.run = lambda prompt, **kw: calls.append(prompt) or answers[min(len(calls) - 1, 1)]
+            out, _ = ai.write('Составь телеграмму командирам: организовать выход на полигон для учений с проверкой техники',
+                              [('план.docx', 'Учения на полигоне, техника')])
+            self.assertEqual(len(calls), 2)
+            self.assertIn('ОБРАЗЕЦ', calls[0])
+            self.assertNotIn('ОБРАЗЕЦ', calls[1])
+            self.assertIn('полигон', out)
+        finally:
+            ai.STYLE_DIR, ai.run = old_dir, old_run
+
     def test_file_date_in_name(self):
         d = Path(tempfile.mkdtemp())
         f = d / 'старая.txt'

@@ -767,15 +767,54 @@ def expand(text, task, materials_text, need, **kw):
     return out if len(body_of(out)) > len(body_of(text)) else text
 
 
+def doc_kind(text, task=False):
+    """Вид документа: указание («ПРИКАЗЫВАЮ», «провести…»), запрос («ПРОШУ представить»), доклад/ответ
+    («ДОКЛАДЫВАЮ», «На № …»), справка. Для задачи — по её словам. None — непонятно."""
+    t = (text or '').lower().replace('ё', 'е')
+    if task:
+        if re.search(r'справк', t):
+            return 'справка'
+        if re.search(r'доклад|докладыв|ответ|отчет|сообщи|донесени|доложи', t):
+            return 'доклад'
+        if re.search(r'запрос|запроси|прошу|попроси|представить сведени|предоставить сведени', t):
+            return 'запрос'
+        if re.search(r'указани|поручи|распоряжени|провести|обеспечить|командирам|организовать', t):
+            return 'указание'
+        return None
+    head = t[:1500]
+    if re.search(r'\bсправка\b', head[:200]):
+        return 'справка'
+    if re.search(r'приказываю|требую|обязываю|поручаю|предписываю', head):
+        return 'указание'
+    if re.search(r'докладываю|доношу|сообщаю|на №|на ваш', head):
+        return 'доклад'
+    if re.search(r'\bпрошу\b', head):
+        return 'запрос'
+    return None
+
+
+def kinds_fit(task_kind, sample_kind):
+    if task_kind is None or sample_kind is None:
+        return True
+    return task_kind == sample_kind or {task_kind, sample_kind} == {'указание', 'запрос'}
+
+
+_GENERIC = {w[:6] for w in ('телеграмма телеграммы телеграмму составь составить напиши написать подготовь подготовить '
+                            'командирам командиру начальнику начальника подразделений подразделения штаба штаб округа '
+                            'сведения сведений доложить представить обеспечить провести выполнении выполнения документ '
+                            'документа прошу приказываю').split()}
+
+
 def best_sample(task, materials_text='', limit=2600):
-    """Один образец для подражания, самый близкий к задаче: из папки образцов отдела или из ваших отправленных
-    документов. Возвращает (откуда, текст) или None."""
+    """Один образец для подражания, близкий к задаче И того же вида (ответ — по образцу ответа, а не приказа):
+    из папки образцов отдела или из ваших отправленных документов. Возвращает (откуда, текст) или None."""
     def stems(text):
-        return {w.lower().replace('ё', 'е')[:6] for w in re.findall(r'[А-Яа-яЁё]{4,}', text)}
+        return {w.lower().replace('ё', 'е')[:6] for w in re.findall(r'[А-Яа-яЁё]{4,}', text)} - _GENERIC
     want = stems(task) | stems(materials_text[:1500])
+    kind = doc_kind(task, task=True)
     candidates = []
-    for name, text in style_samples(task, limit=3, max_chars=limit):
-        candidates.append((len(want & stems(name + ' ' + text[:1500])) + 1, f'образец отдела «{name}»', text))
+    for name, text in style_samples(task, limit=4, max_chars=limit):
+        candidates.append((len(want & stems(name + ' ' + text[:1500])), f'образец отдела «{name}»', text))
     try:
         import iskra_memory
         for score, s in iskra_memory.similar_sent(task, materials_text, limit=2):
@@ -784,9 +823,40 @@ def best_sample(task, materials_text='', limit=2600):
     except Exception:                                      # noqa: BLE001 — память не обязательна
         pass
     want_telegram = bool(TELEGRAM_WORDS.search(task))
-    candidates = [c for c in candidates if not want_telegram or TELEGRAM_WORDS.search(c[2][:300]) or c[0] >= 3] or candidates
-    candidates.sort(key=lambda c: -c[0])
-    return (candidates[0][1], candidates[0][2]) if candidates else None
+    fit = [c for c in candidates if kinds_fit(kind, doc_kind(c[2]))
+           and (not want_telegram or TELEGRAM_WORDS.search(c[2][:300]) or c[0] >= 3) and c[0] >= 2]
+    fit.sort(key=lambda c: -c[0])
+    return (fit[0][1], fit[0][2]) if fit else None
+
+
+def _ratio(line, text):
+    import difflib
+    best = 0.0
+    for chunk in re.split(r'(?<=[.;:])\s+|\n', text):
+        if chunk and abs(len(chunk) - len(line)) < len(line) * 0.3:
+            best = max(best, difflib.SequenceMatcher(None, line, chunk).ratio())
+    return best
+
+
+def copied_from(text, sample):
+    """Доля строк образца, которые нейросеть переписала почти дословно (0…1)."""
+    lines = [re.sub(r'\W+', ' ', line.lower()).strip() for line in body_of(sample).splitlines()]
+    lines = [line for line in lines if len(line) > 25]
+    if not lines:
+        return 0.0
+    out = re.sub(r'[^\w\n.;:]+', ' ', (text or '').lower())
+    same = sum(1 for line in lines if line in re.sub(r'\W+', ' ', out) or _ratio(line, out) > 0.9)
+    return same / len(lines)
+
+
+def task_coverage(text, task):
+    """Какая доля содержательных слов задачи есть в тексте (0…1): отписка по образцу задачу не раскрывает."""
+    words = ({w.lower().replace('ё', 'е')[:5] for w in re.findall(r'[А-Яа-яЁё]{4,}', task)}
+             - {g[:5] for g in _GENERIC} - {w[:5] for w in QUESTION_WORDS})
+    if not words:
+        return 1.0
+    low = (text or '').lower().replace('ё', 'е')
+    return sum(1 for w in words if w in low) / len(words)
 
 
 def write(task, sources=(), me=None, **kw):
@@ -798,6 +868,7 @@ def write(task, sources=(), me=None, **kw):
     telegram = bool(TELEGRAM_WORDS.search(task))
     user = ''
     sample_len = 0
+    sample_text, no_sample_user = '', None
     if block:
         user += 'МАТЕРИАЛЫ (справка; факты бери только отсюда):\n\n' + block + '\n\n'
     refs = PEOPLE.context(task + ' ' + block) if PEOPLE is not None else []
@@ -809,10 +880,12 @@ def write(task, sources=(), me=None, **kw):
     if iskra_memory.LAST_TIME.search(task):
         user += iskra_memory.prompt_block(task, block) + '\n'     # «как в прошлый раз» — прошлый документ как основа
     else:
+        no_sample_user = user                              # то же задание без образца — если нейросеть станет списывать
         sample = best_sample(task, block)
         if sample:
             where, text = sample
             sample_len = len(body_of(text))
+            sample_text = text
             user += (f'ОБРАЗЕЦ — так пишут у пользователя ({where}). Повтори его построение, обороты, оформление и '
                      'ПОЛНОТУ: столько же частей и подробностей, если их позволяют материалы. Факты, даты, номера и '
                      'адресата из образца НЕ переноси:\n---\n' + text + '\n---\n\n')
@@ -841,6 +914,13 @@ def write(task, sources=(), me=None, **kw):
     kw.setdefault('temperature', 0.15)                     # меньше «фантазии» — меньше ошибок и выдумок
     max_tokens = kw.pop('max_tokens', 1300)
     raw = run(chat_prompt(user), max_tokens=max_tokens, **kw)
+    if sample_text and copied_from(raw, sample_text) > 0.5 and task_coverage(raw, task) < 0.6:
+        # Переписала образец, а задачу не раскрыла — заново, без образца (по задаче и материалам).
+        write_log('Нейросеть переписала образец вместо задачи — пишу заново без образца.')
+        user = no_sample_user + iskra_learn.prompt_block(example=False) + user[user.index('ЗАДАЧА:'):].replace(
+            'не меньше, чем в образце; если образца нет — ', '')
+        sample_len = 0
+        raw = run(chat_prompt(user), max_tokens=max_tokens, **kw)
     need = max(MIN_BODY, int(sample_len * 0.7)) if (block or sample_len) else 0
     if need and len(body_of(raw)) < need and CUT_MARK not in raw:
         try:
