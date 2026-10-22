@@ -641,6 +641,10 @@ def strip_unasked(text, task, keep='', sources=()):
             new = re.sub(r'([,;:])\s*([.,;:])', r'\2', new)
             new = re.sub(r'\s{2,}', ' ', new).strip()
             new = re.sub(r'^[,.;:]\s*', '', new)
+            # «Срок выполнения … составляет.» — дату убрали, фраза оборвалась: убрать её целиком
+            new = re.sub(r'(?:^|(?<=[.!?]\s))[^.!?\n]*?(?:составляет|является|установлен\w*|истекает|назначен\w*|'
+                         r'до|к|не позднее|от|на|по состоянию)\s*[.;](?=\s|$)', '', new, flags=re.IGNORECASE)
+            new = re.sub(r'\s{2,}', ' ', new).strip()
             new = new[:1].upper() + new[1:] if new and line.strip()[:1].isupper() else new
         out.append(new)
     return '\n'.join(out), removed
@@ -1014,6 +1018,10 @@ def edit(text, how, **kw):
             'если их нет — не добавляй. Ничего не подписывай от себя. Верни только готовый текст.\n\n'
             f'Текст:\n{text.strip()}')
     out = run(chat_prompt(user), max_tokens=min(4000, len(text) // 2 + 400), temperature=0.2, **kw)
+    if not re.search(r'^\s*(Кому|Дата|Текст|Подпись)\s*:', text, re.IGNORECASE | re.MULTILINE):
+        # В исходном тексте не было «Кому:/Дата:/Подпись:» — нейросеть их не добавляет (и пустые [УТОЧНИТЬ] тоже)
+        out = re.sub(r'^\s*(?:Кому|От кого|Дата|Номер|Подпись)\s*:.*$\n?', '', out, flags=re.IGNORECASE | re.MULTILINE)
+        out = re.sub(r'^\s*Текст\s*:\s*$\n?', '', out, flags=re.IGNORECASE | re.MULTILINE).strip()
     out, fixes = proofread(out, [('исходный текст', text)])          # слова из исходного текста не трогаются
     LAST_FIXES[:] = fixes
     return out
