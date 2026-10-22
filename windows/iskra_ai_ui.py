@@ -226,8 +226,12 @@ class AIMixin:
                     self.say(self.ai_status_line(), 'proof')
                 self.events.put(('call', done))
             if addons:
-                self.events.put(('call', lambda: (self.say('Нашла дополнения в соседних папках и подключила их.', 'proof'),
-                                                  self.say(self.addons_status_line(), 'proof'))))
+                def enable():
+                    self.say('Нашла дополнения в соседних папках и подключила их.', 'proof')
+                    self.say(self.addons_status_line(), 'proof')
+                    if 'voice' in addons and getattr(self, 'voice_btn', None):
+                        self.voice_btn.state(['!disabled'])
+                self.events.put(('call', enable))
         threading.Thread(target=work, daemon=True).start()
 
     def ai_check(self):

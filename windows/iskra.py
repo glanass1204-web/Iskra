@@ -12,6 +12,7 @@ from iskra_plan_ui import PlanMixin
 from iskra_hotkey_ui import HotkeyMixin
 from iskra_people_ui import PeopleMixin
 from iskra_journal_ui import JournalMixin
+from iskra_voice_ui import VoiceMixin
 import iskra_ai
 from iskra_formula import build_formula, explain_formula
 from iskra_macros import MACROS, export_macro
@@ -21,11 +22,11 @@ from iskra_index import ROOT, extract, index_folder, search_docs, forget_folder,
 import iskra_assistant as assistant
 
 ROOT.mkdir(parents=True, exist_ok=True)
-VERSION = '1.8.1'
+VERSION = '1.9'
 ACCENT = '#24518A'
 
 
-class App(JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin, WorkMixin, ToolsMixin):
+class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin, WorkMixin, ToolsMixin):
     def __init__(self, root):
         self.root = root
         root.title(f'Искра {VERSION} — помощник по документам')
@@ -179,6 +180,7 @@ class App(JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin, WorkMixin,
         q = ttk.Entry(row, textvariable=self.question, font=('Segoe UI', 11))
         q.pack(side='left', fill='x', expand=True); q.bind('<Return>', lambda e: self.ask())
         ttk.Button(row, text='Спросить', style='Accent.TButton', command=self.ask).pack(side='left', padx=(6, 0))
+        self.voice_button(row).pack(side='left', padx=(6, 0))
         self.stop_btn = ttk.Button(row, text='Стоп', command=self.ai_stop)
         self.stop_btn.pack(side='left', padx=(6, 0)); self.stop_btn.state(['disabled'])
         sc.pack(side='right', fill='y'); self.chat.pack(fill='both', expand=True)
@@ -248,6 +250,18 @@ class App(JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin, WorkMixin,
                 self.say(f'• {t["deadline"]} — {t["text"]}' + (f' [{t["responsible"]}]' if t['responsible'] else ''), 'proof')
         elif cmd == 'autosvod':
             self.autosvod_window()
+        elif cmd == 'journal':
+            waiting = self.journal.waiting()
+            self.say(f'Исходящих в журнале: {len(self.journal.items)}, ждём ответа: {len(waiting)}, '
+                     f'из них просрочено: {sum(1 for _, late in waiting if late)}. Следующий номер: {self.journal.peek()}.')
+            for line in self.journal.lines_for_morning()[:10]:
+                self.say('• ' + line, 'proof')
+            self.journal_window()
+        elif cmd == 'people':
+            self.people_window()
+        elif cmd == 'report':
+            self.morning_window()
+            self.say('Сводка открыта — нажмите «Доклад по образцу» (с нейросетью сначала «Главное — нейросеть»).', 'proof')
         elif cmd == 'explain':
             self.say('Что делает формула:\n' + explain_formula(arg))
         elif cmd == 'spell':
@@ -793,6 +807,23 @@ def selftest_ai():
     return 0 if ok else 1
 
 
+def selftest_voice(wav):
+    """Iskra.exe --selftest-voice <запись.wav>: распознавание речи (английская фраза — голос Windows) → data/selftest_voice.txt."""
+    import time
+    import iskra_voice
+    lines, ok = [f'Голос установлен: {iskra_voice.available()}'], iskra_voice.available()
+    if ok:
+        t = time.time()
+        try:
+            text = iskra_voice.transcribe(wav, lang='en')
+        except Exception as exc:
+            text = f'ОШИБКА {exc!r}'
+        ok = 'hello' in text.lower() or 'test' in text.lower()
+        lines.append(f'{"OK  " if ok else "FAIL"} распознано за {time.time() - t:.1f} с: {text}')
+    (ROOT / 'selftest_voice.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    return 0 if ok else 1
+
+
 def selftest_ocr(folder):
     """Iskra.exe --selftest-ocr <папка>: распознавание тестовых сканов (картинка и PDF) → data/selftest_ocr.txt."""
     import iskra_ocr
@@ -811,6 +842,8 @@ def selftest_ocr(folder):
 
 if __name__ == '__main__':
     import sys
+    if '--selftest-voice' in sys.argv:
+        sys.exit(selftest_voice(sys.argv[sys.argv.index('--selftest-voice') + 1]))
     if '--selftest-ocr' in sys.argv:
         sys.exit(selftest_ocr(sys.argv[sys.argv.index('--selftest-ocr') + 1]))
     if '--selftest-ai' in sys.argv:

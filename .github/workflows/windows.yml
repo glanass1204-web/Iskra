@@ -78,6 +78,40 @@ jobs:
           Push-Location dist-ocr
           7z a -tzip -mx=5 ../extras/Iskra-dop-skany.zip Iskra | Out-Null
           Pop-Location
+
+      - name: Cache voice model
+        uses: actions/cache@v4
+        with:
+          path: windows/voice-cache
+          key: voice-whisper-small-q5_1-v1
+
+      - name: Voice add-on
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          # Дополнительный архив: голосовые команды. Распаковывается поверх Искры, остальное не меняется.
+          ./get_voice.ps1 -Target dist-voice/Iskra/voice -ModelCache voice-cache
+          python check_engine_deps.py dist-voice/Iskra/voice
+          if ($LASTEXITCODE -ne 0) { throw 'Голосу не хватает библиотек в папке voice' }
+          # Проверочная запись: английская фраза голосом Windows (русского голоса на сервере сборки нет).
+          Add-Type -AssemblyName System.Speech
+          $wav = Join-Path (Get-Location) 'voice-test.wav'
+          $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+          $fmt = New-Object System.Speech.AudioFormat.SpeechAudioFormatInfo(16000, [System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen, [System.Speech.AudioFormat.AudioChannel]::Mono)
+          $synth.SetOutputToWaveFile($wav, $fmt)
+          $synth.Speak('Hello. This is a test of the voice commands.')
+          $synth.Dispose()
+          $app = 'C:\Проверка голоса\Iskra'
+          Copy-Item dist/Iskra $app -Recurse
+          Copy-Item dist-voice/Iskra/voice (Join-Path $app 'voice') -Recurse
+          $t = Start-Process (Join-Path $app 'Iskra.exe') -ArgumentList '--selftest-voice', ('"' + $wav + '"') -PassThru -Wait
+          Get-Content (Join-Path $app 'data\selftest_voice.txt') -Encoding utf8
+          if ($t.ExitCode -ne 0) { throw "Речь не распознаётся: $($t.ExitCode)" }
+          Remove-Item 'C:\Проверка голоса' -Recurse -Force
+          Push-Location dist-voice
+          7z a -tzip -mx=1 ../extras/Iskra-dop-golos.zip Iskra | Out-Null
+          Pop-Location
           Get-ChildItem extras | ForEach-Object { Write-Host "$($_.Name): $([math]::Round($_.Length / 1MB)) МБ" }
 
       - uses: actions/upload-artifact@v4
@@ -202,4 +236,4 @@ jobs:
             --prerelease \
             --target "$GITHUB_SHA" \
             --title "Искра для Windows — последняя сборка" \
-            --notes "Сборка ${GITHUB_RUN_NUMBER}. ОБНОВЛЕНИЕ: если Искра с нейросетью уже скачана — скачайте только Iskra-AI-chast-01 (программа и движок) и распакуйте поверх старой с заменой файлов; части модели 02 … NN не меняются, ваши данные сохраняются. С нейросетью: скачайте ВСЕ файлы Iskra-AI-chast-01 … chast-NN (каждый до 400 МБ) и распакуйте их в одну и ту же папку (если распаковали каждый в свою папку рядом — Искра соберёт части сама), затем запустите Iskra\\Iskra.exe. Проверка: меню Файл → Проверить нейросеть. Если какой-то файл не докачался — скачайте заново только его. Без нейросети: Iskra-Windows.zip (35 МБ). ДОПОЛНЕНИЯ (по желанию, распаковать поверх Искры): Iskra-dop-skany.zip — распознавание сканов и фото документов. Интернет для работы не нужен."
+            --notes "Сборка ${GITHUB_RUN_NUMBER}. ОБНОВЛЕНИЕ: если Искра с нейросетью уже скачана — скачайте только Iskra-AI-chast-01 (программа и движок) и распакуйте поверх старой с заменой файлов; части модели 02 … NN не меняются, ваши данные сохраняются. С нейросетью: скачайте ВСЕ файлы Iskra-AI-chast-01 … chast-NN (каждый до 400 МБ) и распакуйте их в одну и ту же папку (если распаковали каждый в свою папку рядом — Искра соберёт части сама), затем запустите Iskra\\Iskra.exe. Проверка: меню Файл → Проверить нейросеть. Если какой-то файл не докачался — скачайте заново только его. Без нейросети: Iskra-Windows.zip (35 МБ). ДОПОЛНЕНИЯ (по желанию, распаковать поверх Искры): Iskra-dop-skany.zip — распознавание сканов и фото документов; Iskra-dop-golos.zip — голосовые команды. Интернет для работы не нужен."
