@@ -5,17 +5,27 @@ $ErrorActionPreference = 'Stop'
 $headers = @{ 'User-Agent' = 'Iskra' }
 if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
 # Самый свежий выпуск со сборкой для Windows x64 на процессоре (бывают выпуски без неё).
-$releases = Invoke-RestMethod -Headers $headers 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30'
-$release = $null; $asset = $null
-foreach ($r in $releases) {
-  if ($r.draft) { continue }
-  $a = $r.assets | Where-Object { $_.name -match 'win.*cpu.*x64.*\.zip$' -and $_.name -notmatch 'cudart' } | Select-Object -First 1
-  if ($a) { $release = $r; $asset = $a; break }
+$tag = $null; $url = $null; $name = $null
+try {
+  $releases = Invoke-RestMethod -Headers $headers 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30'
+  foreach ($r in $releases) {
+    if ($r.draft) { continue }
+    $a = $r.assets | Where-Object { $_.name -match 'win.*cpu.*x64.*\.zip$' -and $_.name -notmatch 'cudart' } | Select-Object -First 1
+    if ($a) { $tag = $r.tag_name; $url = $a.browser_download_url; $name = $a.name; break }
+  }
+} catch { Write-Host "Список выпусков недоступен: $($_.Exception.Message)" }
+if (-not $url) {
+  # Запасной путь без API: последний выпуск по ссылке releases/latest, имя файла — по образцу llama-<тег>-bin-win-cpu-x64.zip
+  $resp = Invoke-WebRequest 'https://github.com/ggml-org/llama.cpp/releases/latest' -MaximumRedirection 0 -SkipHttpErrorCheck -Headers @{ 'User-Agent' = 'Iskra' }
+  $loc = [string]$resp.Headers.Location
+  if ($loc -match '/tag/([^/]+)$') { $tag = $Matches[1] }
+  if (-not $tag) { throw 'Не найдена сборка llama.cpp для Windows x64 (CPU)' }
+  $name = "llama-$tag-bin-win-cpu-x64.zip"
+  $url = "https://github.com/ggml-org/llama.cpp/releases/download/$tag/$name"
 }
-if (-not $asset) { throw 'Не найдена сборка llama.cpp для Windows x64 (CPU)' }
-$zip = Join-Path $env:TEMP $asset.name
-Write-Host "Скачиваю llama.cpp $($release.tag_name): $($asset.name)"
-Invoke-WebRequest -Headers $headers $asset.browser_download_url -OutFile $zip
+$zip = Join-Path $env:TEMP $name
+Write-Host "Скачиваю llama.cpp ${tag}: $name"
+Invoke-WebRequest -Headers @{ 'User-Agent' = 'Iskra' } $url -OutFile $zip
 $unpacked = Join-Path $env:TEMP 'iskra_llama'
 if (Test-Path $unpacked) { Remove-Item $unpacked -Recurse -Force }
 Expand-Archive $zip $unpacked
@@ -33,5 +43,5 @@ foreach ($dll in 'msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll', 'vcruntime1
   $src = Join-Path $env:SystemRoot "System32\$dll"
   if (Test-Path $src) { Copy-Item $src -Destination $Target -Force }
 }
-Set-Content (Join-Path $Target 'VERSION.txt') "llama.cpp $($release.tag_name) — https://github.com/ggml-org/llama.cpp (MIT)"
+Set-Content (Join-Path $Target 'VERSION.txt') "llama.cpp $tag — https://github.com/ggml-org/llama.cpp (MIT)"
 Write-Host "Готово: $Target"

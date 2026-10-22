@@ -4,17 +4,25 @@ $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $headers = @{ 'User-Agent' = 'Iskra' }
 if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
-$releases = Invoke-RestMethod -Headers $headers 'https://api.github.com/repos/ggml-org/whisper.cpp/releases?per_page=20'
-$release = $null; $asset = $null
-foreach ($r in $releases) {
-  if ($r.draft) { continue }
-  $a = $r.assets | Where-Object { $_.name -match '^whisper-bin-x64\.zip$' } | Select-Object -First 1
-  if ($a) { $release = $r; $asset = $a; break }
+$tag = $null; $url = $null
+try {
+  $releases = Invoke-RestMethod -Headers $headers 'https://api.github.com/repos/ggml-org/whisper.cpp/releases?per_page=20'
+  foreach ($r in $releases) {
+    if ($r.draft) { continue }
+    $a = $r.assets | Where-Object { $_.name -match '^whisper-bin-x64\.zip$' } | Select-Object -First 1
+    if ($a) { $tag = $r.tag_name; $url = $a.browser_download_url; break }
+  }
+} catch { Write-Host "Список выпусков недоступен: $($_.Exception.Message)" }
+if (-not $url) {
+  $resp = Invoke-WebRequest 'https://github.com/ggml-org/whisper.cpp/releases/latest' -MaximumRedirection 0 -SkipHttpErrorCheck -Headers @{ 'User-Agent' = 'Iskra' }
+  $loc = [string]$resp.Headers.Location
+  if ($loc -match '/tag/([^/]+)$') { $tag = $Matches[1] }
+  if (-not $tag) { throw 'Не найдена сборка whisper.cpp для Windows x64' }
+  $url = "https://github.com/ggml-org/whisper.cpp/releases/download/$tag/whisper-bin-x64.zip"
 }
-if (-not $asset) { throw 'Не найдена сборка whisper.cpp для Windows x64' }
-$zip = Join-Path $env:TEMP $asset.name
-Write-Host "Скачиваю whisper.cpp $($release.tag_name): $($asset.name)"
-Invoke-WebRequest -Headers $headers $asset.browser_download_url -OutFile $zip
+$zip = Join-Path $env:TEMP 'whisper-bin-x64.zip'
+Write-Host "Скачиваю whisper.cpp ${tag}"
+Invoke-WebRequest -Headers @{ 'User-Agent' = 'Iskra' } $url -OutFile $zip
 $unpacked = Join-Path $env:TEMP 'iskra_whisper'
 if (Test-Path $unpacked) { Remove-Item $unpacked -Recurse -Force }
 Expand-Archive $zip $unpacked
@@ -32,5 +40,5 @@ if (-not (Test-Path $model) -or (Get-Item $model).Length -lt 100MB) {
   Invoke-WebRequest 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin' -OutFile $model
 }
 Copy-Item $model $Target -Force
-Set-Content (Join-Path $Target 'VERSION.txt') "whisper.cpp $($release.tag_name) — https://github.com/ggml-org/whisper.cpp (MIT); модель Whisper small (MIT, OpenAI)"
+Set-Content (Join-Path $Target 'VERSION.txt') "whisper.cpp $tag — https://github.com/ggml-org/whisper.cpp (MIT); модель Whisper small (MIT, OpenAI)"
 Write-Host "Готово: $Target"
