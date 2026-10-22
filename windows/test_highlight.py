@@ -224,6 +224,51 @@ class Merge(unittest.TestCase):
         self.assertEqual(rep.unplaced, [])
         self.assertEqual(len(rep.placed), 3)
 
+    def test_unmarked_differences_and_accept(self):
+        template = make('у_образец.docx', HEAD, ROWS)
+        rows = [r[:] for r in ROWS]
+        rows[0][2] = '125'                                     # отмечено зелёным
+        rows[1][4] = '11'                                      # изменено, но не отмечено
+        rows.insert(3, ['4', 'Ржев', '230', 'Орлов О.О.', '7'])  # новая строка без отметки
+        src = make('у_рота.docx', HEAD, rows, marks={(1, 2)})
+        out = TMP / 'у_итог.docx'
+        rep = H.merge(template, [src], out)
+        self.assertEqual(len(rep.placed), 1)
+        kinds = {(u['object'], u['column']): u for u in rep.unmarked}
+        self.assertEqual(kinds[('Тверь', 'Численность')]['new'], '11')
+        self.assertEqual(kinds[('Тверь', 'Численность')]['old'], '10')
+        self.assertIn(('Ржев', 'новая строка'), kinds)
+        self.assertEqual(table_text(out)[2][4], '10')          # без выбора — не перенесено
+        rep2 = H.merge(template, [src], out, accept=[u['id'] for u in rep.unmarked])
+        rows_out = table_text(out)
+        self.assertEqual(rows_out[2][4], '11')
+        self.assertIn('Ржев', [r[1] for r in rows_out])
+        self.assertEqual(rep2.unmarked, [])
+        self.assertEqual(rows_out[-1][4], '41')                 # 15 + 11 + 8 + 7
+        change = next(c for c in rep2.changes if c.get('column') == 'Численность')
+        self.assertEqual((change['object'], change['old'], change['new']), ('Тверь', '10', '11'))
+        self.assertTrue(any(c.get('new_row') for c in rep2.changes))
+        snap = rep2.snapshot[0]['rows']
+        self.assertEqual(next(r for r in snap if r['object'] == 'Ржев')['cells']['Численность'], '7')
+
+    def test_days_recount_and_threshold(self):
+        from datetime import date
+        d = Document()
+        t = d.add_table(rows=3, cols=2)
+        t.cell(0, 0).text = 'ПУ'; t.cell(0, 1).text = 'Время нахождения в районе'
+        t.cell(1, 0).text = 'КП 1'
+        r = t.cell(1, 1).paragraphs[0]; r.add_run('4 сут. с 19.10.2026')
+        t.cell(2, 0).text = 'КП 2'; t.cell(2, 1).text = '1 сут. с 23.10.26'
+        path = TMP / 'сутки.docx'
+        d.save(path)
+        rep = H.recount_days_file(path, today=date(2026, 10, 25), threshold=5)
+        t = Document(str(path)).tables[0]
+        self.assertEqual(t.cell(1, 1).text, '7 сут. с 19.10.2026')     # 19…25 октября — 7 суток
+        self.assertEqual(t.cell(2, 1).text, '3 сут. с 23.10.26')
+        self.assertEqual(len(rep.days), 2)
+        self.assertEqual(rep.long_stay, ['КП 1 — 7 сут. с 19.10.2026'])
+        self.assertEqual(t.cell(1, 1).paragraphs[0].runs[0].font.highlight_color, WD_COLOR_INDEX.YELLOW)
+
     def test_colors(self):
         self.assertTrue(H._green_hex('92D050'))
         self.assertTrue(H._green_hex('00FF00'))

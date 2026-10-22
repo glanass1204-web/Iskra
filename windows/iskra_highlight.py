@@ -18,6 +18,7 @@ from pathlib import Path
 
 from docx import Document
 from docx.enum.text import WD_COLOR_INDEX
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
 GREEN_NAMES = {'green', 'brightgreen', 'darkgreen'}      # «green» в Word — ярко-зелёный (салатовый)
@@ -33,6 +34,11 @@ class Report:
     unplaced: list = field(default_factory=list)    # подсвечено, но места в образце не нашлось
     totals: list = field(default_factory=list)
     files_without_marks: list = field(default_factory=list)
+    unmarked: list = field(default_factory=list)    # отличия без отметки: [{id, file, object, column, old, new}]
+    changes: list = field(default_factory=list)     # что поменялось (для доклада и истории)
+    days: list = field(default_factory=list)        # пересчитанные «N сут.»
+    long_stay: list = field(default_factory=list)   # дольше порога
+    snapshot: list = field(default_factory=list)    # состояние таблиц после сбора
 
     def text(self):
         out = [f'Перенесено изменений: {len(self.placed)}' + (f', новых строк: {len(self.added_rows)}' if self.added_rows else '') + '.']
@@ -44,6 +50,13 @@ class Report:
             out += ['  • ' + u for u in self.unplaced]
         if self.totals:
             out.append('Пересчитано «Итого»: ' + '; '.join(self.totals))
+        if self.long_stay:
+            out.append('Дольше порога в районе (выделено жёлтым): ' + '; '.join(self.long_stay))
+        if self.days:
+            out.append(f'Пересчитано «сут.» на сегодня: {len(self.days)}.')
+        if self.unmarked:
+            out.append(f'Отличия БЕЗ зелёной отметки ({len(self.unmarked)}) — не перенесены, можно выбрать галочками:')
+            out += [f'  • {u["object"]} / {u["column"]}: «{u["old"]}» → «{u["new"]}» ({u["file"]})' for u in self.unmarked[:100]]
         if self.files_without_marks:
             out.append('В этих файлах нет зелёной/салатовой подсветки: ' + ', '.join(self.files_without_marks))
         if self.placed:
@@ -345,18 +358,40 @@ def _fmt(n):
 
 # ---------- главное ----------
 
-def merge(template, sources, output, mark=True):
-    """template — образец .docx; sources — присланные .docx; output — куда сохранить. Возвращает Report."""
+def _row_label(row):
+    """Чем строка называется: первая непустая ячейка, не номер («КП 5447 обр СпН»)."""
+    return next((x.text for x in row if norm(x.text) and not re.match(r'^\d+\.?$', norm(x.text))), '')
+
+
+def merge(template, sources, output, mark=True, accept=(), days=True, threshold=None, today=None):
+    """template — образец .docx; sources — присланные .docx; output — куда сохранить. Возвращает Report.
+    accept — отличия без отметки, которые человек выбрал перенести (их id из report.unmarked).
+    days — пересчитать «N сут. с ДАТА» на сегодня; threshold — дольше скольких суток выделить."""
     report = Report()
+    accept = set(accept)
     doc = Document(str(template))
     dst_tables = [grid(t) for t in doc.tables]
     dst_fills = [fills(t) for t in doc.tables]
     totals_before = [_totals(g) for g in dst_tables]
-    # цель → {значение: [файлы]} и сами значения ячеек
-    cell_values, cell_where = {}, {}
+    # цель → {значение: [ячейка-источник, [файлы]]}
+    cell_values, cell_info = {}, {}
     par_values = {}
-    new_rows = {}                                        # индекс таблицы → [(ячейки по столбцам образца, файл)]
+    new_rows = {}                                        # индекс таблицы → [(ячейки по столбцам образца, файл, раздел)]
     dst_pars = [p for p in doc.paragraphs]
+
+    def put(best, dst, target, col, c, name):
+        key = (best, target, col)
+        cell_values.setdefault(key, {}).setdefault(norm(c.text), [c, []])[1].append(name)
+        cell_info[key] = (_row_label(dst[target]), dst.headers[col])
+
+    def add_row(best, g, r_index, row, mapping, name):
+        cells = {}
+        for j, c in enumerate(row):
+            if j in mapping and c not in cells.values():
+                cells[mapping[j]] = c
+        signature = tuple(norm(c.text) for c in cells.values())
+        if signature not in {tuple(norm(c.text) for c in x[0].values()) for x in new_rows.get(best, [])}:
+            new_rows.setdefault(best, []).append((cells, name, section_of(g, r_index)))
 
     for path in sources:
         name = Path(path).name
@@ -371,52 +406,58 @@ def merge(template, sources, output, mark=True):
                 for row in g:
                     for c in row:
                         c.resolve(dst_fills[best])            # раскраска строк, как в образце, — не изменение
-            if not any(c.green for row in g for c in row):
-                continue
-            found_marks = True
+            marked_table = any(c.green for row in g for c in row)
+            found_marks = found_marks or marked_table
             if best is None or table_score(g, dst_tables[best]) < 0.3:
-                for row in g:
-                    if any(c.green for c in row):
-                        report.unplaced.append(f'{name}: строка «{" | ".join(c.text for c in row)}» — в образце нет такой таблицы')
+                if marked_table:
+                    for row in g:
+                        if any(c.green for c in row):
+                            report.unplaced.append(f'{name}: строка «{" | ".join(c.text for c in row)}» — в образце нет такой таблицы')
                 continue
             dst = dst_tables[best]
             mapping = column_map(g.headers, dst.headers)
             for r_index, row in enumerate(g[g.head:], g.head):
-                if not any(c.green for c in row) or is_section(row):
+                if is_section(row) or is_empty(row):
                     continue
+                marked = any(c.green for c in row)
                 target, why = match_row(row, mapping, dst)
-                if target is None and all(c.all_green or not norm(c.text) for c in row):
+                if target is None and marked and all(c.all_green or not norm(c.text) for c in row):
                     # Вся строка зелёная: это либо новая строка, либо старая, целиком отмеченная, — сверяем по всем ячейкам.
                     target, why = match_row(row, mapping, dst, include_green=True)
                     if target is None:
-                        cells = {}
-                        for j, c in enumerate(row):
-                            if j in mapping and c not in cells.values():
-                                cells[mapping[j]] = c
-                        signature = tuple(norm(c.text) for c in cells.values())
-                        if signature not in {tuple(norm(c.text) for c in x[0].values()) for x in new_rows.get(best, [])}:
-                            new_rows.setdefault(best, []).append((cells, name, section_of(g, r_index)))
+                        add_row(best, g, r_index, row, mapping, name)
                         continue
                 if target is None:
-                    report.unplaced.append(f'{name}: строка «{" | ".join(c.text for c in row)}» — '
-                                           + ('подходит к нескольким строкам образца' if why else 'нет такой строки в образце'))
+                    if marked:
+                        report.unplaced.append(f'{name}: строка «{" | ".join(c.text for c in row)}» — '
+                                               + ('подходит к нескольким строкам образца' if why else 'нет такой строки в образце'))
+                    elif sum(1 for c in set(row) if norm(c.text)) >= 2:
+                        uid = (str(path), t_index, r_index, 'row')
+                        if uid in accept:
+                            add_row(best, g, r_index, row, mapping, name)
+                        else:
+                            report.unmarked.append({'id': uid, 'file': name, 'object': _row_label(row),
+                                                    'column': 'новая строка', 'old': '',
+                                                    'new': ' | '.join(dict.fromkeys(c.text for c in row if c.text))})
                     continue
                 done = set()
                 for j, c in enumerate(row):
-                    if not c.green or id(c) in done:
+                    if id(c) in done or j not in mapping:
+                        if c.green and j not in mapping and id(c) not in done:
+                            report.unplaced.append(f'{name}: «{c.text}» — нет столбца «{g.headers[j]}» в образце')
+                        done.add(id(c))
                         continue
                     done.add(id(c))
-                    if j not in mapping:
-                        report.unplaced.append(f'{name}: «{c.text}» — нет столбца «{g.headers[j]}» в образце')
-                        continue
                     goal = dst[target][mapping[j]]
                     if norm(c.text) == norm(goal.text):
-                        continue                               # отмечено, но значение как в образце — менять нечего
+                        continue                               # значение как в образце — менять нечего
                     col = next(k for k, x in enumerate(dst[target]) if x is goal)   # объединённая ячейка — один адрес
-                    key = (best, target, col)
-                    cell_values.setdefault(key, {}).setdefault(norm(c.text), [c, []])[1].append(name)
-                    label = next((x.text for x in dst[target] if norm(x.text) and not re.match(r'^\d+\.?$', norm(x.text))), '')
-                    cell_where[key] = f'{label} / {dst.headers[col]}'
+                    uid = (str(path), t_index, r_index, j)
+                    if c.green or uid in accept:
+                        put(best, dst, target, col, c, name)
+                    elif norm(c.text):                         # пустая ячейка у исполнителя — «не заполнил», не изменение
+                        report.unmarked.append({'id': uid, 'file': name, 'object': _row_label(dst[target]),
+                                                'column': dst.headers[col], 'old': goal.text, 'new': c.text})
         for p in src.paragraphs:
             segs = segments(p._p)
             if not any(g for _, g in segs):
@@ -439,11 +480,14 @@ def merge(template, sources, output, mark=True):
 
     for (t, r, c), variants in cell_values.items():
         cell = dst_tables[t][r][c].cell
-        where = cell_where[(t, r, c)]
+        label, header = cell_info[(t, r, c)]
+        old = dst_tables[t][r][c].text
+        where = f'{label} / {header}'
         if len(variants) == 1:
             src_cell, files = next(iter(variants.values()))
             set_cell(cell, src_cell.paragraphs, mark)
             report.placed.append(f'{where}: «{src_cell.text}» ({", ".join(files)})')
+            report.changes.append({'object': label, 'column': header, 'old': old, 'new': src_cell.text, 'files': files})
         else:
             text = '[УТОЧНИТЬ: ' + ' или '.join(f'{v[0].text} ({", ".join(v[1])})' for v in variants.values()) + ']'
             set_cell(cell, [[(text, True)]], True, WD_COLOR_INDEX.YELLOW)
@@ -463,6 +507,9 @@ def merge(template, sources, output, mark=True):
     for t, table in enumerate(doc.tables):
         if t < len(totals_before) and totals_before[t]:
             _recount(grid(table), totals_before[t], report, mark)
+    if days:
+        update_days(doc, today=today, threshold=threshold, report=report)
+    report.snapshot = snapshot(doc)
     Path(output).parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output))
     return report
@@ -507,6 +554,9 @@ def _add_rows(table, dst, rows, mark, report):
             set_cell(cell, src.paragraphs if src else [[('', False)]], mark)
         where = f' (раздел «{section.upper()}»)' if section else ''
         report.added_rows.append(f'{" | ".join(c.text for c in cells.values() if c.text)}{where} ({name})')
+        report.changes.append({'object': next((c.text for c in cells.values() if norm(c.text)), ''), 'new_row': True,
+                               'values': {dst.headers[k]: c.text for k, c in cells.items() if c.text and k < len(dst.headers)},
+                               'section': section, 'files': [name]})
 
 
 def _label(row):
@@ -555,3 +605,126 @@ def _recount(g, before, report, mark):
             if old is not None and abs(old - total) > 0.001:
                 set_cell(row[k].cell, [[(_fmt(total), True)]], mark)
                 report.totals.append(f'{g.headers[k]}: {_fmt(old)} → {_fmt(total)}')
+
+
+# ---------- «N сут. с ДАТА» ----------
+
+DAYS = re.compile(r'(\d+)(\s*сут(?:ок|ки|\.)?\s*[сc]\s*)(\d{1,2})\.(\d{1,2})\.(\d{2,4})', re.IGNORECASE)
+
+
+def days_since(day, month, year, today):
+    """Сутки в районе с даты прибытия включительно: с 19.10 по 22.10 — 4 сут."""
+    from datetime import date
+    year = int(year)
+    year += 2000 if year < 100 else 0
+    try:
+        start = date(year, int(month), int(day))
+    except ValueError:
+        return None
+    n = (today - start).days + 1
+    return n if n >= 1 else None
+
+
+def _paragraph_days(p, today, threshold):
+    """Пересчитать число суток в абзаце. Число правится внутри своего фрагмента — оформление не меняется.
+    Возвращает [(было, стало)]."""
+    runs = list(p._p.iter(qn('w:r')))
+    texts = [_run_text(r) for r in runs]
+    full = ''.join(texts)
+    out = []
+    for m in DAYS.finditer(full):
+        n = days_since(m.group(3), m.group(4), m.group(5), today)
+        if n is None:
+            continue
+        start, end = m.span(1)
+        pos, run = 0, None
+        for r, t in zip(runs, texts):
+            if pos <= start and end <= pos + len(t):
+                run = r
+                break
+            pos += len(t)
+        if run is None:
+            continue                                     # число разорвано на фрагменты — не трогаем
+        long = threshold is not None and n > threshold
+        if n != int(m.group(1)):
+            for t_el in run.iter(qn('w:t')):
+                text = t_el.text or ''
+                local = start - pos
+                if text[local:local + (end - start)] == m.group(1):
+                    t_el.text = text[:local] + str(n) + text[local + (end - start):]
+                    break
+                pos += len(text)
+            out.append((m.group(0), f'{n}{m.group(2)}{m.group(3)}.{m.group(4)}.{m.group(5)}', long))
+        elif long:
+            out.append((m.group(0), m.group(0), long))
+        if long:
+            rpr = run.find(qn('w:rPr'))
+            if rpr is None:
+                rpr = OxmlElement('w:rPr'); run.insert(0, rpr)
+            for el in rpr.findall(qn('w:highlight')):
+                rpr.remove(el)
+            hl = OxmlElement('w:highlight'); hl.set(qn('w:val'), 'yellow'); rpr.append(hl)
+    return out
+
+
+def update_days(doc, today=None, threshold=None, report=None):
+    """Все «N сут. с ДАТА» в документе — на сегодня; дольше порога — выделить жёлтым. Возвращает число правок."""
+    from datetime import date
+    today = today or date.today()
+    report = report if report is not None else Report()
+    changed = 0
+    for table in doc.tables:
+        g = grid(table)
+        seen = set()
+        for row in g:
+            for c in row:
+                if id(c.cell._tc) in seen:
+                    continue
+                seen.add(id(c.cell._tc))
+                for p in c.cell.paragraphs:
+                    for old, new, long in _paragraph_days(p, today, threshold):
+                        if old != new:
+                            changed += 1
+                            report.days.append(f'{_row_label(row)}: {old} → {new}')
+                        if long:
+                            report.long_stay.append(f'{_row_label(row)} — {new}')
+    for p in doc.paragraphs:
+        for old, new, long in _paragraph_days(p, today, threshold):
+            if old != new:
+                changed += 1
+                report.days.append(f'{old} → {new}')
+            if long:
+                report.long_stay.append(new)
+    return changed
+
+
+def recount_days_file(path, output=None, today=None, threshold=None):
+    """Пересчитать сутки в готовом документе (без переноса изменений). Сохраняет в output (по умолчанию — тот же файл)."""
+    doc = Document(str(path))
+    report = Report()
+    update_days(doc, today=today, threshold=threshold, report=report)
+    doc.save(str(output or path))
+    return report
+
+
+# ---------- снимок для истории ----------
+
+def snapshot(doc):
+    """Состояние таблиц: [{'headers': [...], 'rows': [{'object', 'section', 'cells': {заголовок: текст}}]}]."""
+    out = []
+    for table in doc.tables:
+        g = grid(table)
+        rows = []
+        for i in range(g.head, len(g)):
+            row = g[i]
+            if is_section(row) or is_empty(row) or TOTAL.match(_label(row)):
+                continue
+            cells, seen = {}, set()
+            for k, c in enumerate(row):
+                if id(c) in seen or k >= len(g.headers):
+                    continue
+                seen.add(id(c))
+                cells[g.headers[k] or f'столбец {k + 1}'] = c.text
+            rows.append({'object': _row_label(row), 'section': section_of(g, i), 'cells': cells})
+        out.append({'headers': list(g.headers), 'rows': rows})
+    return out

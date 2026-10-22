@@ -20,6 +20,7 @@ from iskra_workflows import normalize_layout, draft_from_sources, save_history
 import iskra_vba
 import iskra_ai
 import iskra_drafts
+import iskra_highlight
 
 DOC_TYPES = [('Word и текст', '*.docx *.txt'), ('Все документы', '*.docx *.xlsx *.pptx *.pdf *.txt *.md *.csv')]
 
@@ -411,20 +412,29 @@ class ToolsMixin:
             status.set('Черновиков пока нет: они появляются, когда вы работаете в редакторе телеграмм.')
         return win
 
-    def highlight_window(self, files=()):
-        """Несколько присланных документов → изменения, выделенные зелёным/салатовым, — в один документ по образцу."""
-        import iskra_highlight
-        from iskra_clipboard import show_text
-        win = _window(self, 'перенос изменений по подсветке', '820x560')
-        settings_path = ROOT / 'highlight.json'
+    def _highlight_settings(self):
         try:
-            settings = json.loads(settings_path.read_text(encoding='utf-8'))
+            return json.loads((ROOT / 'highlight.json').read_text(encoding='utf-8'))
         except (OSError, ValueError):
-            settings = {}
+            return {}
+
+    def _save_highlight_settings(self, **values):
+        data = self._highlight_settings()
+        data.update(values)
+        try:
+            (ROOT / 'highlight.json').write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
+        except OSError:
+            pass
+
+    def highlight_window(self, files=()):
+        """Несколько присланных документов → изменения, отмеченные зелёным/салатовым, — в один документ по образцу."""
+        import iskra_pu
+        win = _window(self, 'перенос изменений по подсветке', '860x640')
+        settings = self._highlight_settings()
         ttk.Label(win, text='Исполнители отмечают свои изменения зелёным или салатовым (цветом шрифта, маркером или заливкой '
-                            'ячейки). Искра перенесёт всё выделенное из присланных файлов в один документ по образцу: '
+                            'ячейки). Искра перенесёт всё отмеченное из присланных файлов в один документ по образцу: '
                             'таблицы — по заголовкам столбцов и по строке (город, фамилия), а не по номеру; новые строки '
-                            'добавит, «Итого» пересчитает. Присланные файлы не меняются.', wraplength=790).pack(anchor='w', padx=12, pady=8)
+                            'добавит, «Итого» и «сут.» пересчитает. Присланные файлы не меняются.', wraplength=830).pack(anchor='w', padx=12, pady=8)
         row = ttk.Frame(win); row.pack(fill='x', padx=12)
         ttk.Label(row, text='Образец:').pack(side='left')
         template = tk.StringVar(value=settings.get('template', '') if Path(settings.get('template', '') or '.').is_file() else '')
@@ -436,10 +446,36 @@ class ToolsMixin:
             if path:
                 template.set(path)
         ttk.Button(row, text='Выбрать…', command=pick_template).pack(side='left')
-        ttk.Label(win, text='Присланные документы (с подсветкой изменений):').pack(anchor='w', padx=12, pady=(10, 2))
-        box = tk.Listbox(win, height=10, font=('Segoe UI', 10), selectmode='extended')
+        ttk.Label(win, text='Присланные документы:').pack(anchor='w', padx=12, pady=(10, 2))
+        box = tk.Listbox(win, height=8, font=('Segoe UI', 10), selectmode='extended')
         box.pack(fill='both', expand=True, padx=12)
         paths = []
+        bar = ttk.Frame(win); bar.pack(fill='x', padx=12, pady=4)
+        exp_row = ttk.Frame(win); exp_row.pack(fill='x', padx=12, pady=(4, 0))
+        ttk.Label(exp_row, text='Ждём от (через запятую):').pack(side='left')
+        expected = tk.StringVar(value=settings.get('expected', ''))
+        ttk.Entry(exp_row, textvariable=expected).pack(side='left', fill='x', expand=True, padx=6)
+        senders = tk.StringVar(value='')
+        ttk.Label(win, textvariable=senders, wraplength=830).pack(anchor='w', padx=12)
+        opt = ttk.Frame(win); opt.pack(fill='x', padx=12, pady=4)
+        mark = tk.BooleanVar(value=settings.get('mark', True))
+        ttk.Checkbutton(opt, text='Выделить перенесённое салатовым', variable=mark).pack(side='left')
+        days = tk.BooleanVar(value=settings.get('days', True))
+        ttk.Checkbutton(opt, text='Пересчитать «N сут. с ДАТА» на сегодня', variable=days).pack(side='left', padx=12)
+        ttk.Label(opt, text='выделить, если дольше (сут.):').pack(side='left')
+        threshold = tk.StringVar(value=str(settings.get('threshold', '') or ''))
+        ttk.Entry(opt, textvariable=threshold, width=4).pack(side='left', padx=4)
+        status = tk.StringVar(value='')
+        ttk.Label(win, textvariable=status, style='Muted.TLabel', wraplength=830).pack(anchor='w', padx=12)
+        bottom = ttk.Frame(win, padding=(12, 6, 12, 10)); bottom.pack(fill='x')
+
+        def check_senders():
+            want = iskra_pu.parse_expected(expected.get())
+            if not want:
+                senders.set(''); return [], []
+            got, missing = iskra_pu.check_senders(want, list(paths))
+            senders.set(f'Прислали {len(got)} из {len(want)}.' + (' Нет: ' + ', '.join(missing) if missing else ' Все на месте.'))
+            return got, missing
 
         def add_paths(new):
             old_format = [p for p in new if Path(p).suffix.lower() == '.doc']
@@ -449,6 +485,7 @@ class ToolsMixin:
             if old_format:
                 messagebox.showinfo('Старый формат', 'Файлы .doc не читаются — откройте их в Word и сохраните как .docx:\n' +
                                     '\n'.join(Path(p).name for p in old_format), parent=win)
+            check_senders()
 
         def add():
             add_paths(list(filedialog.askopenfilenames(parent=win, title='Присланные документы',
@@ -457,17 +494,14 @@ class ToolsMixin:
         def remove():
             for i in reversed(box.curselection()):
                 box.delete(i); paths.pop(i)
-        bar = ttk.Frame(win); bar.pack(fill='x', padx=12, pady=4)
+            check_senders()
         ttk.Button(bar, text='Добавить файлы…', command=add).pack(side='left')
         ttk.Button(bar, text='Убрать', command=remove).pack(side='left', padx=6)
-        mark = tk.BooleanVar(value=settings.get('mark', True))
-        ttk.Checkbutton(bar, text='Выделить перенесённое салатовым в итоговом документе', variable=mark).pack(side='left', padx=12)
-        status = tk.StringVar(value='')
-        ttk.Label(win, textvariable=status, style='Muted.TLabel', wraplength=790).pack(anchor='w', padx=12)
-        bottom = ttk.Frame(win, padding=(12, 6, 12, 10)); bottom.pack(fill='x')
+        ttk.Button(bar, text='История по объектам…', command=self.pu_history_window).pack(side='right')
+        expected.trace_add('write', lambda *_: check_senders())
         add_paths(list(files))
 
-        def run():
+        def run(accept=(), out_path=None):
             base = template.get().strip()
             if not base or not Path(base).is_file():
                 if paths and messagebox.askyesno('Образец', 'Образец не выбран. Взять за образец первый файл из списка?\n'
@@ -478,24 +512,29 @@ class ToolsMixin:
             sources = [p for p in paths if p != base] or paths
             if not sources:
                 status.set('Добавьте присланные документы.'); return
-            stem = Path(base).stem
-            out = filedialog.asksaveasfilename(parent=win, defaultextension='.docx', filetypes=[('Word', '*.docx')],
-                                               initialdir=str(Path(base).parent),
-                                               initialfile=f'{stem} — сводный {date.today():%d.%m.%Y}.docx')
-            if not out:
-                return
-            if Path(out).resolve() == Path(base).resolve():
-                status.set('Сохраните под другим именем — образец должен остаться как был.'); return
             try:
-                settings_path.write_text(json.dumps({'template': base, 'mark': mark.get()}, ensure_ascii=False), encoding='utf-8')
-            except OSError:
-                pass
+                limit = int(threshold.get()) if threshold.get().strip() else None
+            except ValueError:
+                status.set('Порог суток — целое число (например 3) или пусто.'); return
+            out = out_path
+            if out is None:
+                out = filedialog.asksaveasfilename(parent=win, defaultextension='.docx', filetypes=[('Word', '*.docx')],
+                                                   initialdir=str(Path(base).parent),
+                                                   initialfile=f'{Path(base).stem} — сводный {date.today():%d.%m.%Y}.docx')
+                if not out:
+                    return
+                if Path(out).resolve() == Path(base).resolve():
+                    status.set('Сохраните под другим именем — образец должен остаться как был.'); return
+            self._save_highlight_settings(template=base, mark=mark.get(), days=days.get(), threshold=limit or '',
+                                          expected=expected.get())
             status.set('Переношу изменения…')
-            marked = mark.get()                            # окно читаем здесь: из фонового потока Tk трогать нельзя
+            options = {'mark': mark.get(), 'days': days.get(), 'threshold': limit}   # окно читаем здесь, не в фоне
+            _, missing = check_senders()
 
             def work():
                 try:
-                    rep = iskra_highlight.merge(base, sources, out, mark=marked)
+                    rep = iskra_highlight.merge(base, sources, out, accept=accept, **options)
+                    iskra_pu.save_snapshot(rep.snapshot, out, sources)
                     self.events.put(('call', lambda: done(rep)))
                 except Exception as exc:                   # noqa: BLE001 — показать понятную причину
                     import iskra_bugreport
@@ -508,12 +547,115 @@ class ToolsMixin:
                 save_history(ROOT, 'Перенос подсветки', f'{len(sources)} файлов → {Path(out).name}')
                 if win.winfo_exists():
                     status.set(f'Готово: {out}')
-                show_text(win if win.winfo_exists() else self.root, 'что перенесено',
-                          f'Итоговый документ: {out}\n\n' + rep.text(), warn=bool(rep.conflicts or rep.unplaced))
-                if messagebox.askyesno('Готово', 'Документ собран. Открыть его?', parent=win if win.winfo_exists() else self.root):
-                    _open_path(out)
+                self.highlight_result(win, out, rep, missing, rerun=lambda ids: run(accept=list(accept) + ids, out_path=out))
         ttk.Button(bottom, text='Собрать в один документ', style='Accent.TButton', command=run).pack(side='left')
+        ttk.Button(bottom, text='Пересчитать сутки в документе…', command=self.recount_days_window).pack(side='left', padx=6)
         ttk.Button(bottom, text='Закрыть', command=win.destroy).pack(side='right')
+        return win
+
+    def highlight_result(self, parent, out, rep, missing=(), rerun=None):
+        """Итог сбора: отчёт и что делать дальше — открыть, доклад, напоминание, отличия без отметки."""
+        import iskra_pu
+        owner = parent if parent.winfo_exists() else self.root
+        win = _window(self, 'итог переноса изменений', '860x600')
+        win.transient(owner)
+        text = tk.Text(win, wrap='word', font=('Segoe UI', 10), background='#FFF8E1' if (rep.conflicts or rep.unplaced) else '#FAFAFA',
+                       relief='flat', height=16)
+        body = f'Итоговый документ: {out}\n\n' + rep.text()
+        if missing:
+            body += '\n\nНе прислали: ' + ', '.join(missing)
+        text.insert('1.0', body); text.configure(state='disabled')
+        text.pack(fill='both', expand=True, padx=12, pady=(10, 4))
+        chosen = {}
+        if rep.unmarked and rerun is not None:
+            ttk.Label(win, text='Отличия без зелёной отметки — выделите те, что тоже перенести (Ctrl+щелчок, Ctrl+A):',
+                      font=('Segoe UI', 10, 'bold')).pack(anchor='w', padx=12)
+            tree = ttk.Treeview(win, columns=('object', 'column', 'old', 'new', 'file'), show='headings', height=7,
+                                selectmode='extended')
+            for c, h, w in zip(('object', 'column', 'old', 'new', 'file'), ('Объект', 'Столбец', 'Было', 'Стало', 'Файл'),
+                               (170, 170, 150, 190, 130)):
+                tree.heading(c, text=h); tree.column(c, width=w)
+            for u in rep.unmarked:
+                iid = tree.insert('', 'end', values=(u['object'], u['column'], u['old'], u['new'], u['file']))
+                chosen[iid] = u['id']
+            tree.pack(fill='x', padx=12)
+            tree.bind('<Control-a>', lambda e: tree.selection_set(tree.get_children()))
+
+            def take():
+                ids = [chosen[i] for i in tree.selection()]
+                if ids:
+                    win.destroy()
+                    rerun(ids)
+            ttk.Button(win, text='Перенести выделенные', command=take).pack(anchor='w', padx=12, pady=4)
+        bar = ttk.Frame(win, padding=(12, 6, 12, 10)); bar.pack(fill='x')
+
+        def report():
+            draft = iskra_pu.report_draft(rep.changes, rep.long_stay, me=self.my_details())
+            self.telegrams(initial=draft, note='Доклад об изменениях по сводной таблице — цифры только из документов. Проверьте.')
+
+        def remind():
+            self.telegrams(initial=iskra_pu.reminder_draft(list(missing), me=self.my_details()),
+                           note='Напоминание тем, кто не прислал. Проверьте адресатов и срок.')
+        ttk.Button(bar, text='Открыть документ', style='Accent.TButton', command=lambda: _open_path(out)).pack(side='left')
+        ttk.Button(bar, text='Доклад об изменениях', command=report).pack(side='left', padx=6)
+        if missing:
+            ttk.Button(bar, text='Напоминание не приславшим', command=remind).pack(side='left')
+        ttk.Button(bar, text='Копировать отчёт', command=lambda: (win.clipboard_clear(), win.clipboard_append(body))).pack(side='left', padx=6)
+        ttk.Button(bar, text='Закрыть', command=win.destroy).pack(side='right')
+        return win
+
+    def recount_days_window(self):
+        """Пересчитать «N сут. с ДАТА» в готовом документе на сегодня (копия до пересчёта — в папке данных)."""
+        path = filedialog.askopenfilename(title='Документ, где пересчитать сутки', filetypes=[('Word', '*.docx')])
+        if not path:
+            return
+        settings = self._highlight_settings()
+        try:
+            limit = int(settings.get('threshold')) if settings.get('threshold') not in ('', None) else None
+        except ValueError:
+            limit = None
+        try:
+            import shutil
+            backup = ROOT / 'backups'
+            backup.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, backup / f'{Path(path).stem} (до пересчёта {date.today():%d.%m.%Y}).docx')
+            rep = iskra_highlight.recount_days_file(path, threshold=limit)
+        except Exception as exc:                           # noqa: BLE001 — понятная причина вместо падения
+            messagebox.showerror('Сутки', 'Не получилось: ' + friendly_error(exc)); return
+        from iskra_clipboard import show_text
+        lines = [f'Документ: {path}', f'Пересчитано: {len(rep.days)}.'] + ['  • ' + d for d in rep.days]
+        if rep.long_stay:
+            lines += ['', 'Дольше порога (выделено жёлтым):'] + ['  • ' + d for d in rep.long_stay]
+        lines += ['', 'Копия до пересчёта: папка данных → backups.']
+        show_text(self.root, 'сутки пересчитаны', '\n'.join(lines), warn=bool(rep.long_stay))
+
+    def pu_history_window(self, query=''):
+        """История по объектам: как менялись удаление, положение, старшие — по всем сборам."""
+        import iskra_pu
+        win = _window(self, 'история по объектам', '940x520')
+        top = ttk.Frame(win, padding=(12, 10, 12, 4)); top.pack(fill='x')
+        ttk.Label(top, text='Объект (часть названия или номер, пусто — все):').pack(side='left')
+        q = tk.StringVar(value=query)
+        entry = ttk.Entry(top, textvariable=q); entry.pack(side='left', fill='x', expand=True, padx=6)
+        cols = ('time', 'object', 'column', 'old', 'new')
+        tree = ttk.Treeview(win, columns=cols, show='headings')
+        for c, h, w in zip(cols, ('Когда (сбор)', 'Объект', 'Что', 'Было', 'Стало'), (120, 180, 200, 180, 220)):
+            tree.heading(c, text=h); tree.column(c, width=w)
+        tree.pack(fill='both', expand=True, padx=12)
+        info = tk.StringVar()
+        ttk.Label(win, textvariable=info, style='Muted.TLabel').pack(anchor='w', padx=12, pady=6)
+
+        def refresh(_=None):
+            tree.delete(*tree.get_children())
+            rows = iskra_pu.history(q.get())
+            for r in rows:
+                tree.insert('', 'end', values=r)
+            n = len(iskra_pu.snapshots())
+            info.set(f'Сборов в истории: {n}. Изменений: {len(rows)}. Ctrl+C — копировать выделенные строки.' if n else
+                     'История пока пуста: она копится при каждом «Собрать в один документ».')
+        entry.bind('<Return>', refresh)
+        ttk.Button(top, text='Показать', command=refresh).pack(side='left')
+        refresh()
         return win
 
     def offer_restore(self):
