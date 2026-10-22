@@ -817,7 +817,7 @@ def selftest_ai():
     check('выписка из документа (когда документов много)', lambda: iskra_ai.notes('ответ на телеграмму 154', doc[0], doc[1]),
           lambda r: '25.10.2026' in r and '154' in r)
     check('уточнение прошлого ответа', lambda: iskra_ai.revise('телеграмма-ответ в штаб округа', draft, 'поменяй срок на 30.10.2026'),
-          lambda r: '30.10.2026' in r and '25.10.2026' not in r and '154/2' in r and 'Сидоров' in r)
+          lambda r: '30.10.2026' in r and '25.10.2026' not in r and '154/2' in r and 'Начальник штаба' in r and 'Сидоров' in r)
     check('продолжение разговора', lambda: iskra_ai.followup(
         [('какой срок представления сведений по телеграмме 154?', 'До 25.10.2026.\nИсточник: тлг 154.txt')], 'а от кого она?', [doc]),
         lambda r: 'штаб' in r.lower())

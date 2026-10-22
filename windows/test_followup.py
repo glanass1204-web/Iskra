@@ -45,5 +45,23 @@ class FollowupTest(unittest.TestCase):
             ai.run = old
 
 
+class KeepUnaskedTest(unittest.TestCase):
+    PREV = ('ТЕЛЕГРАММА\n\nКому: Штаб округа\n\nТекст:\nСведения до 25.10.2026.\n\nПодпись:\nНачальник штаба\nполковник\nП.П. Сидоров')
+    BAD = ('ТЕЛЕГРАММА\n\nКому: [УТОЧНИТЬ]\n\nТекст:\nСведения до 30.10.2026.\n\nПодпись:\n[УТОЧНИТЬ: должность]\nполковник\nП.П. Сидоров')
+
+    def test_signature_and_addressee_restored(self):
+        out = ai.keep_unasked(self.PREV, self.BAD, 'поменяй срок на 30.10.2026')
+        self.assertIn('30.10.2026', out)
+        self.assertIn('Начальник штаба', out)
+        self.assertIn('Кому: Штаб округа', out)
+
+    def test_asked_changes_kept(self):
+        out = ai.keep_unasked(self.PREV, self.BAD.replace('[УТОЧНИТЬ: должность]', 'Заместитель начальника штаба'),
+                              'в подписи поставь заместителя начальника штаба')
+        self.assertIn('Заместитель начальника штаба', out)
+        out = ai.keep_unasked(self.PREV, self.BAD.replace('Кому: [УТОЧНИТЬ]', 'Кому: Начальнику госпиталя'), 'адресат — начальник госпиталя')
+        self.assertIn('Кому: Начальнику госпиталя', out)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -984,7 +984,29 @@ def revise(request, previous, change, sources=(), me=None, **kw):
     if block:
         user += '\n\nМатериалы (справка):\n\n' + block
     out = run(chat_prompt(user), max_tokens=kw.pop('max_tokens', min(1500, len(previous) // 2 + 500)), temperature=0.2, **kw)
-    return fix_dates(out, change)[0]
+    return keep_unasked(previous, fix_dates(out, change)[0], change)
+
+
+SIGN_HEAD = re.compile(r'^\s*Подпись\s*:?\s*$', re.MULTILINE | re.IGNORECASE)
+HEADS = {'кому': re.compile(r'^\s*Кому\s*:.*$', re.MULTILINE | re.IGNORECASE),
+         'от кого': re.compile(r'^\s*От кого\s*:.*$', re.MULTILINE | re.IGNORECASE)}
+
+
+def keep_unasked(previous, result, change):
+    """Части, о которых не просили (подпись, «Кому», «От кого»), остаются как были: модель иногда трогает лишнее."""
+    low = change.lower()
+    if not re.search(r'подпис|должност|звани|фамили|кто подпис', low):
+        old = SIGN_HEAD.search(previous)
+        new = SIGN_HEAD.search(result)
+        if old and new:
+            result = result[:new.start()] + previous[old.start():].rstrip() + '\n'
+    for word, rx in HEADS.items():
+        if word.split()[-1] in low or 'адресат' in low and word == 'кому':
+            continue
+        old, new = rx.search(previous), rx.search(result)
+        if old and new and old.group(0).strip() != new.group(0).strip():
+            result = result[:new.start()] + old.group(0) + result[new.end():]
+    return result.rstrip()
 
 
 def followup(history, question, sources=(), **kw):
