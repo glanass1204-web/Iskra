@@ -181,6 +181,49 @@ class Merge(unittest.TestCase):
         self.assertEqual(len(rep.added_rows), 1)
         self.assertIn('СЕВЕРОДОНЕЦКОЕ', rep.added_rows[0])
 
+    def test_full_table_many_sections_no_empty_rows(self):
+        """Реальный документ: всё заполнено, несколько направлений, одинаковые старшие/телефоны в разных строках."""
+        from docx.shared import RGBColor
+        heads = ['Наименование ПУ', 'Удаление от линии фронта', 'Старший на ПУ', 'Количество ОС/ВВСТ', 'Положение']
+        sections = {'СЕВЕРОДОНЕЦКОЕ НАПРАВЛЕНИЕ': [['КП 5447', '56 км', 'НШ Залупа В.А.', '27/2', 'ЗАЛУПИНСК'],
+                                                  ['КП 5448', '61 км', 'НШ Залупа В.А.', '12/1', 'ЛИСИЧАНСК'],
+                                                  ['ЗКП 5447', '80 км', 'ЗНШ Петров П.П.', '9/0', 'КРЕМЕННАЯ']],
+                    'ЛИМАНСКОЕ НАПРАВЛЕНИЕ': [['КП 7001', '40 км', 'НШ Сидоров С.С.', '30/5', 'ЛИМАН'],
+                                              ['КП 7002', '45 км', 'НШ Сидоров С.С.', '18/2', 'ЯМПОЛЬ']]}
+
+        def build(name, changes=(), extra=None):
+            d = Document()
+            t = d.add_table(rows=1, cols=5)
+            for k, h in enumerate(heads):
+                t.cell(0, k).text = h
+            for sec, rows in sections.items():
+                r = t.add_row(); c = r.cells[0].merge(r.cells[4]); c.text = sec
+                for row in rows + ([extra[1]] if extra and extra[0] == sec else []):
+                    cells = t.add_row().cells
+                    for k, v in enumerate(row):
+                        new = dict(changes).get((row[0], k))
+                        run = cells[k].paragraphs[0].add_run(new or v)
+                        if new or (extra and row is extra[1]):
+                            run.font.color.rgb = RGBColor(0x00, 0xB0, 0x50)
+            d.save(TMP / name)
+            return TMP / name
+        template = build('полный_образец.docx')
+        a = build('полный_1.docx', changes={('КП 5448', 1): '58 км', ('КП 7002', 4): 'ЯМПОЛЬ, СЕВЕРСК'})
+        b = build('полный_2.docx', changes={('КП 5447', 3): '27/4'},
+                  extra=('ЛИМАНСКОЕ НАПРАВЛЕНИЕ', ['КП 7003', '50 км', 'НШ Орлов О.О.', '5/1', 'ДРОБЫШЕВО']))
+        out = TMP / 'полный_итог.docx'
+        rep = H.merge(template, [a, b], out)
+        rows = [[c.text for c in r.cells] for r in Document(str(out)).tables[0].rows]
+        by = {r[0]: r for r in rows}
+        self.assertEqual(by['КП 5448'][1], '58 км')
+        self.assertEqual(by['КП 5447'][1], '56 км')                     # тот же старший — но не та строка
+        self.assertEqual(by['КП 5447'][3], '27/4')
+        self.assertEqual(by['КП 7002'][4], 'ЯМПОЛЬ, СЕВЕРСК')
+        names = [r[0] for r in rows]
+        self.assertEqual(names.index('КП 7003'), names.index('КП 7002') + 1)   # новая — в конце своего раздела
+        self.assertEqual(rep.unplaced, [])
+        self.assertEqual(len(rep.placed), 3)
+
     def test_colors(self):
         self.assertTrue(H._green_hex('92D050'))
         self.assertTrue(H._green_hex('00FF00'))
