@@ -570,14 +570,86 @@ def fix_dates(text, request='', today=None):
     return out, changed
 
 
+MONTHS = r'(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)'
+DATE_RE = rf'(?:\d{{1,2}}\.\d{{1,2}}\.\d{{2,4}}|\d{{1,2}}\s+{MONTHS}(?:\s+\d{{4}})?)(?:\s*(?:г\.|года|г(?![а-яё])))?'
+SHORT_DATE = r'\d{1,2}\.\d{1,2}(?![\d.])'
+WANT_DATES = re.compile(r'(?<![а-яё])(?:дат[аеуыо]?|срок\w*|когда|числа|числу|число|понедельник\w*|вторник\w*|среду|среда|'
+                        r'четверг\w*|пятниц\w*|суббот\w*|воскресень\w*|январ\w*|феврал\w*|март\w*|апрел\w*|ма[йя]|июн\w*|'
+                        r'июл\w*|август\w*|сентябр\w*|октябр\w*|ноябр\w*|декабр\w*|сегодня\w*|завтра\w*|вчера\w*|'
+                        r'состоянию|период\w*)(?![а-яё])|\d{1,2}\.\d{1,2}', re.IGNORECASE)
+WANT_TIME = re.compile(r'(?<![а-яё])(?:время|времени|час|часа|часов|часы|утром|утра|вечером|вечера|минут\w*)(?![а-яё])|'
+                       r'\d{1,2}:\d{2}', re.IGNORECASE)
+WANT_REFS = re.compile(r'№|номер|ссылк|реквизит|на ваш|ответ\w*\s+(?:на|в)|исх\.|вх\.|\d+/\d+', re.IGNORECASE)
+FIELD = re.compile(r'^\s*(Кому|От кого|Дата|Номер|Тема|Исх\w*|Вх\w*|Срок|Время)\s*:', re.IGNORECASE)
+
+
+def strip_unasked(text, task, keep='', sources=()):
+    """Убрать из текста документа то, о чём не просили: даты, время, номера документов, имена файлов-материалов.
+    Шапка («Кому:», «Дата:», «Номер:») и подпись не трогаются; даты, которые человек сам написал, остаются.
+    Возвращает (текст, что убрано)."""
+    asked = f'{task} {keep}'
+    want_dates, want_time, want_refs = WANT_DATES.search(asked), WANT_TIME.search(asked), WANT_REFS.search(asked)
+    own = set(re.findall(DATE_RE + '|' + SHORT_DATE, asked))
+    removed = []
+    names = []
+    for name, _ in sources:
+        base = re.sub(r'\s*\(файл от [^)]*\)', '', name).replace(' — выписка', '').strip()
+        for n in (base, Path(base).stem):
+            if len(n) >= 4 and n not in names:
+                names.append(n)
+    names.sort(key=len, reverse=True)
+
+    def cut(pattern, line, what):
+        def repl(m):
+            if any(d in m.group(0) for d in own):
+                return m.group(0)                          # дату назвал сам человек — остаётся
+            removed.append(f'{what}: {m.group(0).strip()}')
+            return ''
+        return re.sub(pattern, repl, line, flags=re.IGNORECASE)
+
+    out, in_signature = [], False
+    for line in text.split('\n'):
+        if re.match(r'^\s*Подпись\s*:?', line, re.IGNORECASE) or line.strip().startswith('--- ИСТОЧНИКИ'):
+            in_signature = True
+        if in_signature or FIELD.match(line) or re.fullmatch(r'\s*' + DATE_RE + r'\s*', line):
+            out.append(line)
+            continue
+        new = re.sub(r'\s*\(файл от [^)]*\)', '', line)
+        for n in names:
+            new = cut(r'\s*«?' + re.escape(n) + r'»?', new, 'название материала')
+        if not want_refs:
+            new = cut(r'^\s*На\s+(?:исх\.?\s*|вх\.?\s*)?№\s*[\w/.-]+(?:\s+от\s+' + DATE_RE + r')?\s*[.,:;]?\s*', new, 'ссылка')
+            new = cut(r'\s*\(?(?:исх\.?\s*|вх\.?\s*)?№\s*[\w/-]+(?:\.\d+)*(?:\s+от\s+' + DATE_RE + r')?\)?', new, 'номер документа')
+        if not want_time:
+            new = cut(r'\s*(?:(?:в|к|до|с|по|не позднее)\s+)?\d{1,2}:\d{2}(?:\s*(?:ч\.|час\w*))?', new, 'время')
+            new = cut(r'\s*(?:в|к|до|с|по|не позднее)\s+\d{1,2}(?:[.,]\d{2})?\s*(?:ч\.|час(?:а|ов)?)(?![а-яё])', new, 'время')
+        if not want_dates:
+            new = cut(r'\s*(?:по состоянию на|в срок до|не позднее|от|до|на|с|по|к)\s+(?:' + DATE_RE + '|' + SHORT_DATE + ')', new, 'дата')
+            new = cut(r'\s*\(?' + DATE_RE + r'\)?', new, 'дата')
+        if new != line:
+            # «Согласно телеграмме прошу…» — ссылку убрали, хвост без неё не нужен
+            new = re.sub(r'(?:Согласно|Во исполнение|В соответствии с|На основании|Ссылаясь на)\s+'
+                         r'(?:телеграмм\w*|приказ\w*|указани\w*|распоряжени\w*|письм\w*|документ\w*)\s*[,]?\s*'
+                         r'(?=прошу|требую|сообщаю|докладываю|приказываю|направляю|информирую|[.,;:]|$)', '', new, flags=re.IGNORECASE)
+            new = re.sub(r'\(\s*\)', '', new)
+            new = re.sub(r'\s+([,.;:])', r'\1', new)
+            new = re.sub(r'([,;:])\s*([.,;:])', r'\2', new)
+            new = re.sub(r'\s{2,}', ' ', new).strip()
+            new = re.sub(r'^[,.;:]\s*', '', new)
+            new = new[:1].upper() + new[1:] if new and line.strip()[:1].isupper() else new
+        out.append(new)
+    return '\n'.join(out), removed
+
+
 def write(task, sources=(), me=None, **kw):
     """Составить новый текст по задаче, опираясь на найденные документы."""
     block, truncated = materials(list(sources))
     user = (f'Задача: {task.strip()}\n\n' + DATE_RULES() +
             'Ты пишешь НОВЫЙ документ от имени пользователя. Не переписывай и не пересказывай материалы целиком: '
-            'возьми из них только нужные факты (номера, даты, сроки, названия) и составь именно тот текст, '
-            'который требуется в задаче. Если это ответ или доклад на входящий документ — начни со ссылки на него '
-            '(«На № … от …») и изложи по существу: что сделано или будет сделано и в какой срок.\n')
+            'возьми из них только то, что прямо нужно по задаче, и составь именно тот текст, который требуется. '
+            'Даты, время, номера документов и названия материалов (имена файлов) в текст НЕ вставляй, если задача '
+            'их не просит: не пиши «согласно телеграмме … от …», «по состоянию на …», «в 14:00». '
+            'Ссылку «На № … от …» ставь только если в задаче сказано ответить на документ или назван его номер.\n')
     keep = kw.pop('keep_dates', '')
     if TELEGRAM_WORDS.search(task):
         user += telegram_format(me) + '\n'
@@ -602,7 +674,11 @@ def write(task, sources=(), me=None, **kw):
              'Чего не хватает — [УТОЧНИТЬ: …].')
     if truncated:
         user += f'\n(Часть материалов не поместилась: {", ".join(truncated)}.)'
-    out = fix_dates(run(chat_prompt(user), max_tokens=kw.pop('max_tokens', 800), **kw), task + ' ' + keep)[0]
+    raw = run(chat_prompt(user), max_tokens=kw.pop('max_tokens', 800), **kw)
+    raw, removed = strip_unasked(raw, task, keep, sources)     # даты, время, номера, имена файлов — только если просили
+    if removed:
+        write_log('Убрано не запрошенное: ' + '; '.join(removed[:20]))
+    out = fix_dates(raw, task + ' ' + keep)[0]
     if TELEGRAM_WORDS.search(task):
         out = enforce_signature(out, me)
     return out, truncated
@@ -844,7 +920,7 @@ def retrieve(query, search_fn, read_fn, docs=25, extra=(), smart_fn=None, budget
         piece = passages(text, words, limit=limit) if len(text) > limit else text
         spare = max(0, limit - len(piece))                    # короткий документ отдаёт место следующим
         when = _file_date(p)
-        name = Path(p).name + (f' (файл от {when})' if when else '')
+        name = Path(p).name + (f' (файл от {when})' if when else '')   # для выбора более нового; в текст не переносить
         out.append((name, piece))
     return out, paths
 

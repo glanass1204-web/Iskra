@@ -51,6 +51,29 @@ class RetrieveTest(unittest.TestCase):
         self.assertNotIn('шум.txt', [r[0] for r in ranked])
         self.assertGreaterEqual(stats['found'], 1)
 
+    def test_unasked_dates_times_numbers_removed(self):
+        src = [('тлг_техника_5.docx (файл от 21.10.2026)', 'x')]
+        text = ('ТЕЛЕГРАММА\nКому: Командиру войсковой части 12345\nДата: 22.10.2026\nТекст:\n'
+                'Согласно телеграмме «тлг_техника_5» от 21.10.2026 № 154/2 прошу представить сведения о технике '
+                'по состоянию на 20.10.2026. Совещание в 14:00 в штабе.\nПодпись:\nНачальник штаба\nполковник И.И. Иванов')
+        out, removed = ai.strip_unasked(text, 'составь телеграмму командиру войсковой части 12345: запросить сведения о технике', '', src)
+        self.assertIn('Прошу представить сведения о технике.', out)
+        self.assertIn('Совещание в штабе.', out)
+        for gone in ('21.10.2026', '154/2', '20.10.2026', '14:00', 'тлг_техника'):
+            self.assertNotIn(gone, out)
+        self.assertIn('Дата: 22.10.2026', out)                       # шапка остаётся
+        self.assertIn('войсковой части 12345', out)                  # не дата и не номер документа
+        self.assertIn('И.И. Иванов', out)
+        self.assertGreaterEqual(len(removed), 5)
+
+    def test_asked_dates_and_refs_stay(self):
+        text = 'Текст:\nНа № 154/2 от 20.10.2026 докладываю: сведения будут представлены до 25.10.2026, совещание в 14:00.'
+        out, removed = ai.strip_unasked(text, 'ответ на телеграмму 154/2: сведения представим в срок, совещание в 14:00')
+        self.assertEqual(out, text)
+        self.assertEqual(removed, [])
+        own, _ = ai.strip_unasked('Текст:\nПрибыть 27.10.2026.', 'оформи телеграммой', keep='прибыть 27.10.2026')
+        self.assertIn('27.10.2026', own)                              # дату написал сам человек
+
     def test_file_date_in_name(self):
         d = Path(tempfile.mkdtemp())
         f = d / 'старая.txt'
