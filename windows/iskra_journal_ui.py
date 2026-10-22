@@ -115,6 +115,9 @@ class JournalMixin:
     def journal_button(self, parent, t, status):
         """«Присвоить номер»: запись в журнал, номер и дата — в текст телеграммы."""
         def assign():
+            from iskra_ai_ui import editor_busy
+            if editor_busy(t, status):
+                return                                   # номер не тратим, пока текст меняет нейросеть
             text = t.get('1.0', 'end-1c').split('--- ИСТОЧНИКИ')[0]
             to = jr.addressee_from_text(text)
             subject = jr.subject_from_text(text)

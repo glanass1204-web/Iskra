@@ -139,7 +139,8 @@ def put_number(text, number, when):
     """Вписать номер и дату в места для них («Номер: [НОМЕР]», «[УТОЧНИТЬ: номер]», «№ ___», «Дата: [ДАТА]»).
     Возвращает (текст, вписан ли номер)."""
     before = text
-    text = re.sub(r'(Номер\s*:\s*)(\[НОМЕР\]|\[УТОЧНИТЬ:?\s*номер\]|_+|$)', lambda m: m.group(1) + number, text,
+    text = re.sub(r'(Номер[ \t]*:[ \t]*)(\[НОМЕР\]|\[УТОЧНИТЬ:?\s*номер\]|_+|$)',
+                  lambda m: m.group(1) + ('' if m.group(1).endswith((' ', '\t')) else ' ') + number, text,
                   count=1, flags=re.MULTILINE | re.IGNORECASE)
     if text == before:
         text = re.sub(r'\[(?:НОМЕР|УТОЧНИТЬ:?\s*номер)\]|№\s*_{2,}', '№ ' + number, text, count=1, flags=re.IGNORECASE)

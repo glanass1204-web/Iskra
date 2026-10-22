@@ -39,6 +39,15 @@ def friendly_error(exc):
     return 'что-то пошло не так. Подробности — в папке данных, файл ai_log.txt.'
 
 
+def editor_busy(t, status=None):
+    """Нейросеть сейчас пишет в этот редактор — другие действия с ним подождут (иначе правка потеряется)."""
+    if getattr(t, 'iskra_busy', False):
+        if status is not None:
+            status.set('Подождите: нейросеть ещё пишет в этот текст (Esc — остановить).')
+        return True
+    return False
+
+
 class EditorStream:
     """Нейросеть пишет в редактор. Пока пишет — поле только для чтения (набранное человеком не затрётся) и без
     сотен шагов в истории отмены; в конце одна замена — Ctrl+Z возвращает прежний текст одним нажатием."""
@@ -46,6 +55,7 @@ class EditorStream:
     def __init__(self, app, win, t, status=None):
         self.app, self.win, self.t, self.status = app, win, t, status
         self.original = t.get('1.0', 'end-1c')
+        self.t.iskra_busy = True                     # кнопки редактора ждут, пока нейросеть допишет
         self.t.configure(undo=False, state='disabled')
 
     def alive(self):
@@ -69,6 +79,7 @@ class EditorStream:
         self.app.events.put(('call', put))
 
     def finish(self, final):
+        self.t.iskra_busy = False
         if not self.alive():
             return False
         self._set(self.original)                     # история отмены — от прежнего текста
@@ -84,6 +95,7 @@ class EditorStream:
         return True
 
     def fail(self, message):
+        self.t.iskra_busy = False
         if not self.alive():
             return
         self._set(self.original)
@@ -403,10 +415,13 @@ class AIMixin:
         self._bg_running = True
 
         def work():
+            yielded = False
             try:
                 result = job(self._bg_yield)
-                ok = not self._bg_yield.is_set()
+                yielded = self._bg_yield.is_set()
+                ok = not yielded
             except ai.AIError:
+                yielded = self._bg_yield.is_set()     # запомнить сейчас: к разбору итога флаг может уже сброситься
                 result, ok = None, False
             except Exception as exc:
                 ai.write_log('Фоновая задача: ' + repr(exc))
@@ -419,7 +434,7 @@ class AIMixin:
                             done(result)
                         except Exception as exc:
                             ai.write_log('Фоновая задача (итог): ' + repr(exc))
-                elif self._bg_yield.is_set():
+                elif yielded:
                     self._bg_jobs.insert(0, (job, done))   # уступила человеку — повторим потом
                 self._bg_next()
             self.events.put(('call', after))
@@ -465,8 +480,7 @@ class AIMixin:
             status.set(msg)
             save_history(ROOT, title, (sources[0][0] if sources else '')[:200])
             # Запомнить, чтобы «сделай короче» в чате правило этот черновик.
-            paths = [n for n, _ in sources if Path(n).suffix] if sources else []
-            self.remember('write', title, result, sources, paths, editor)
+            self.remember('write', title, result, sources, [], editor)
 
         self.ai_background(lambda cancel: job(cancel, stream.update), done, on_error=stream.fail, label=title)
 
@@ -516,7 +530,12 @@ class AIMixin:
             return False
 
     def ai_followup(self, text):
-        last = self.last_ai
+        last = getattr(self, 'last_ai', None)
+        if not last:
+            # Прошлый ответ не сохранился (ошибка, «Стоп» или окно без памяти) — выполняем как обычную просьбу.
+            cmd, _ = assistant.intent(text)
+            self.ask(text, routed='ask' if cmd in ('search', 'ask') else cmd)
+            return
         kind = last['kind']
         me = self.my_details()
         if kind in ('ask', 'chat') and assistant.is_question(text):
@@ -576,7 +595,7 @@ class AIMixin:
         def done(result):
             if kind == 'write':
                 editor = self.telegrams(initial=result, note='Исправленный черновик нейросети. Проверьте факты.',
-                                        source_paths=last['paths'])
+                                        source_paths=last['paths'], source_texts=[] if last['paths'] else last['sources'])
                 self.remember('write', last['request'], result, last['sources'], last['paths'], editor)
             else:
                 self.remember(kind, last['request'], result, last['sources'], last['paths'])
@@ -742,6 +761,8 @@ class AIMixin:
         mb['menu'] = menu
 
         def run(how, change=None):
+            if editor_busy(text_widget, status):
+                return
             original = text_widget.get('1.0', 'end-1c')
             if not original.strip():
                 return

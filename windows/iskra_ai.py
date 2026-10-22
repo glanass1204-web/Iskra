@@ -514,10 +514,11 @@ def fix_dates(text, request='', today=None):
         before = text[max(0, m.start() - 30):m.start()]
         if when >= today or m.group(0) in asked or not PAST_CONTEXT.search(before):
             return m.group(0)
-        sentence = text[max(0, text.rfind('.', 0, m.start() - 12) + 1):m.end() + 40]
+        tail = re.search(r'[.\n]', text[m.end():m.end() + 60])
+        sentence = text[max(0, text.rfind('.', 0, m.start() - 12) + 1):m.end() + (tail.start() if tail else 40)]
         if DONE_VERBS.search(sentence):
             return m.group(0)                     # «сведения представлены до 15.10» — это факт, а не новый срок
-        if re.search(r'Дата\s*:\s*$', before):
+        if re.search(r'Дата\s*:\s*$', before, re.IGNORECASE):
             changed.append(f'{m.group(0)} → {today.strftime("%d.%m.%Y")} (дата документа)')
             return today.strftime('%d.%m.%Y')
         changed.append(f'{m.group(0)} (срок прошёл)')
@@ -1083,7 +1084,7 @@ def revise(request, previous, change, sources=(), me=None, kind='write', **kw):
     refs = PEOPLE.context(change + ' ' + previous) if PEOPLE is not None else []
     if refs:
         user += ('\nСправочник (точные звания и должности; адресата — в дательном падеже):\n' + '\n'.join(refs) + '\n')
-    if TELEGRAM_WORDS.search(request + ' ' + previous[:200]) or TELEGRAM_TEMPLATE:
+    if TELEGRAM_WORDS.search(request + ' ' + previous[:200]):
         user += '\n' + telegram_format(me)
     if block:
         user += '\n\nМатериалы (справка):\n\n' + block

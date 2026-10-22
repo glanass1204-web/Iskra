@@ -28,7 +28,7 @@ ACCENT = '#24518A'
 
 # Команды, после которых фраза может быть уточнением прошлого ответа нейросети.
 DOC_CMDS = {'deadlines', 'dates', 'people', 'numbers', 'money', 'contacts', 'summary'}
-FOLLOW_CMDS = {'search', 'write', 'ask', 'telegram', 'reply'} | DOC_CMDS
+FOLLOW_CMDS = {'search', 'write', 'ask', 'telegram'} | DOC_CMDS
 
 
 class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin, WorkMixin, ToolsMixin):
@@ -228,6 +228,8 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
             # Уточнение к прошлому ответу нейросети («сделай короче», «поменяй срок», «а кто подписал?») —
             # правим тот же ответ, а не ищем заново.
             last = getattr(self, 'last_ai', None)
+            if last and time.monotonic() - last['time'] > 1800:
+                last = self.last_ai = None              # прошло больше 30 минут — это уже не уточнение
             if (last and last['kind'] in ('ask', 'chat') and assistant.is_question(text)
                     and not re.match(r'^(а|и|но)\b', text.lower())
                     and not assistant.related(text, last['request'] + ' ' + last['answer'])

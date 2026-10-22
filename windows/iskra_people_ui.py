@@ -124,8 +124,8 @@ class PeopleMixin:
             to = tk.Menu(menu, tearoff=False); sign = tk.Menu(menu, tearoff=False)
             for p in self.people.items:
                 label = f'{p["fio"]} — {p["position"]}'[:70]
-                to.add_command(label=label, command=lambda p=p: t.insert('insert', '\n'.join(pp.addressee(p))))
-                sign.add_command(label=label, command=lambda p=p: t.insert('insert', pp.signature(p)))
+                to.add_command(label=label, command=lambda p=p: getattr(t, 'iskra_busy', False) or t.insert('insert', '\n'.join(pp.addressee(p))))
+                sign.add_command(label=label, command=lambda p=p: getattr(t, 'iskra_busy', False) or t.insert('insert', pp.signature(p)))
             menu.add_cascade(label='Кому (адресат)', menu=to)
             menu.add_cascade(label='Подпись', menu=sign)
             menu.add_separator()

@@ -248,10 +248,16 @@ class ToolsMixin:
                     _open_path(path)
 
         def tidy():
+            from iskra_ai_ui import editor_busy
+            if editor_busy(t, status):
+                return
             t.replace('1.0', 'end', normalize_layout(t.get('1.0', 'end-1c')))
             status.set('Пробелы и пустые строки приведены к единому виду.')
 
         def prepare():
+            from iskra_ai_ui import editor_busy
+            if editor_busy(t, status):
+                return
             ix = self.selected()
             if ix is None:
                 messagebox.showinfo('Источник', 'Сначала найдите и выберите документ в главном окне.', parent=win); return
