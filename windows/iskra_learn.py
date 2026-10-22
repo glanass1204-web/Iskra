@@ -112,15 +112,19 @@ def mask(text):
     return re.sub(r'\b\d{2,}\b', '[N]', text)
 
 
-def prompt_block(max_chars=1500):
+def prompt_block(max_chars=1500, example=True):
     """Добавка к задаче нейросети. Пусто, если человек ещё ничего не правил."""
     pairs = load()
     if not pairs:
         return ''
-    out = '\nКак пользователь правит такие тексты — пиши сразу в его манере:\n'
     rs = rules(pairs)
+    if not example and not rs:
+        return ''
+    out = '\nКак пользователь правит такие тексты — пиши сразу в его манере:\n'
     if rs:
         out += '\n'.join('- ' + r for r in rs) + '\n'
+    if not example:
+        return out
     out += ('Последний текст в том виде, как его утвердил пользователь (образец манеры и порядка частей; факты, номера, '
             'даты и адресатов из него НЕ переносить):\n---\n' + mask(pairs[-1]['final'])[:max_chars] + '\n---\n')
     return out

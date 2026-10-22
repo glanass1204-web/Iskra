@@ -276,6 +276,11 @@ class ToolsMixin:
                     messagebox.showerror('Ошибка', 'Не получилось: ' + friendly_error(exc), parent=win); return
                 status.set('Сохранено: ' + path + (' (по вашему шаблону)' if template else ' (стандартное оформление: Times New Roman 14, отступ 1,25 см, поля по ГОСТ)'))
                 draft.autosave(t.get('1.0', 'end-1c'), 'сохранено в Word: ' + Path(path).name)
+                try:
+                    import iskra_memory
+                    iskra_memory.remember_sent(t.get('1.0', 'end-1c'), path)   # образец для «как в прошлый раз»
+                except OSError:
+                    pass
                 learned = getattr(t, 'iskra_ai_text', '')
                 if learned:
                     import iskra_learn

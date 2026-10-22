@@ -81,6 +81,7 @@ class SpellChecker:
         self.user_words_path = Path(user_words)
         self._dict = None
         self._lock = threading.Lock()
+        self._auto = None
         self.user_words = set()
         try:
             self.user_words = {w.strip().lower() for w in self.user_words_path.read_text(encoding='utf-8').splitlines() if w.strip()}
@@ -101,9 +102,26 @@ class SpellChecker:
     def preload(self):
         threading.Thread(target=self._dictionary, daemon=True).start()
 
-    def known(self, word):
+    @property
+    def auto_words(self):
+        """Слова, которые Искра выучила по вашим документам (iskra_harvest)."""
+        if self._auto is None:
+            try:
+                self._auto = {w.strip() for w in (self.user_words_path.parent / 'auto_words.txt').read_text(
+                    encoding='utf-8').splitlines() if w.strip()}
+            except OSError:
+                self._auto = set()
+        return self._auto
+
+    @auto_words.setter
+    def auto_words(self, words):
+        self._auto = set(words)
+
+    def known(self, word, learned=True):
         w = word.replace('ё', 'е').replace('Ё', 'Е')
         if w.lower() in self.user_words or w.lower() in OFFICE_WORDS:
+            return True
+        if learned and w.lower() in self.auto_words:
             return True
         if any(ch.isupper() for ch in w[1:]):
             return True                                # ВрИО, ВрИД, МТО — сокращения

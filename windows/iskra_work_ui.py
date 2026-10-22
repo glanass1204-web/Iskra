@@ -385,8 +385,9 @@ class WorkMixin:
                 tags.append('late')
             elif days is not None and days <= 3:
                 tags.append('soon')
+            status = it['status'] + (' · ответ готов' if it.get('ai_reply') and it['status'] != 'выполнен' else '')
             tree.insert('', 'end', iid=it['path'], tags=tags, values=(
-                it['added'], it['name'], it['kind'], it['number'].replace('№ ', ''), it['date'], it['sender'], deadline, it['status']))
+                it['added'], it['name'], it['kind'], it['number'].replace('№ ', ''), it['date'], it['sender'], deadline, status))
         for iid in keep:
             if tree.exists(iid):
                 tree.selection_add(iid)
@@ -423,6 +424,8 @@ class WorkMixin:
                 text += f'\nНейросеть: {it["ai_brief"]}'
             elif it['summary']:
                 text += f'\nКратко: {it["summary"]}'
+            if it.get('ai_reply'):
+                text += f'\nОтвет подготовлен заранее ({it.get("ai_reply_time", "")}) — «Ответ телеграммой» откроет его.'
             if it.get('note'):
                 text += f'\n{it["note"]}'
             text += f'\nПуть: {it["path"]}'
@@ -441,9 +444,47 @@ class WorkMixin:
             self.inbox.set_status(it['path'], status)
         self.refresh_inbox()
 
+    AUTO_REPLY_KINDS = ('Телеграмма', 'Приказ', 'Распоряжение', 'Указание', 'Письмо', 'Документ')
+    AUTO_REPLY_PER_DAY = 20
+
+    def inbox_auto_replies(self, items):
+        """Входящий требует ответа (в нём «представить…», «доложить…») — нейросеть готовит черновик ответа заранее,
+        в фоне, уступая место задачам человека. Готовый ответ открывается кнопкой «Ответ телеграммой»."""
+        today = date.today().strftime('%d.%m.%Y')
+        done_today = sum(1 for i in self.inbox.items() if i.get('ai_reply_time', '').startswith(today))
+        for it in items:
+            if it['kind'] not in self.AUTO_REPLY_KINDS or it.get('ai_reply') or done_today >= self.AUTO_REPLY_PER_DAY:
+                continue
+            done_today += 1
+
+            def job(cancel, it=it):
+                text = extract(Path(it['path']))
+                if not compose.instructions(text):
+                    return it, ''                          # поручений нет — отвечать не на что
+                return it, ai.reply(text, it['name'], me=self.my_details(), cancel=cancel)[0]
+
+            def done(result):
+                it, draft = result
+                if draft.strip():
+                    self.inbox.update(it['path'], ai_reply=draft, ai_reply_time=datetime.now().strftime('%d.%m.%Y %H:%M'))
+                    self.refresh_inbox()
+                    self.inbox_show()
+            self.ai_background(job, done, background=True, label='ответ на входящий')
+
     def inbox_reply(self):
         it = self.inbox_selected()
         if not it:
+            return
+        if it.get('ai_reply'):
+            def ready(text):
+                tail = '\n\n--- ИСТОЧНИКИ (НЕ ЧАСТЬ ТЕЛЕГРАММЫ) ---\n1. ' + it['name']
+                doubtful = ai.unverified(it['ai_reply'], [(it['name'], text)])
+                note = (f'Ответ на «{it["name"]}» подготовлен заранее ({it.get("ai_reply_time", "")}). Проверьте и впишите, что сделано.'
+                        + (' ПРОВЕРЬТЕ — этих чисел/дат нет во входящем: ' + ', '.join(doubtful[:8]) if doubtful else ''))
+                win, t, status = self.telegrams(initial=it['ai_reply'] + tail, source_paths=[it['path']], note=note)
+                t.iskra_ai_text = it['ai_reply'] + tail      # правки этого ответа тоже учат Искру
+                self.inbox.set_status(it['path'], 'в работе'); self.refresh_inbox()
+            self.with_text(it['path'], ready)
             return
 
         def make(text):
@@ -491,6 +532,7 @@ class WorkMixin:
             threading.Thread(target=self.journal_replies, args=(items,), daemon=True).start()
         if getattr(self, 'ai_ready', False):
             self.inbox_briefs([it for it in items if it['kind'] != 'Таблица Excel'])
+            self.inbox_auto_replies(items)
         for it in items:
             line = f'Новый файл: {it["kind"].lower()} «{it["name"]}»'
             if it['number']:

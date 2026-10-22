@@ -52,10 +52,9 @@ class RealScript(unittest.TestCase):
         """На сервере сборки Office нет: сценарий должен честно сказать об этом, а не упасть."""
         code, _, _ = v.generate('удалить пустые строки', 'excel')
         r = t.run(code, 'excel', timeout=90)
-        print('trial:', r)
+        print('trial:', ascii(r))                         # консоль сборки — не UTF-8
         self.assertFalse(r.ok)
-        self.assertTrue(r.unavailable or r.error)
-        self.assertNotIn('PowerShell не выполнил', r.unavailable)
+        self.assertIn('не найден Microsoft Excel', r.unavailable)   # сценарий дошёл до запуска Excel и честно сказал
 
 
 if __name__ == '__main__':

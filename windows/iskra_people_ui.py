@@ -6,6 +6,7 @@ from pathlib import Path
 from tkinter import ttk, filedialog, messagebox
 
 import iskra_ai as ai
+import iskra_harvest
 import iskra_people as pp
 import iskra_precheck as pc
 from iskra_index import ROOT, extract
@@ -104,6 +105,9 @@ class PeopleMixin:
         ttk.Button(buttons, text='Добавить', style='Accent.TButton', command=edit).pack(side='left')
         ttk.Button(buttons, text='Изменить', command=lambda: chosen() and edit(chosen())).pack(side='left', padx=6)
         ttk.Button(buttons, text='Удалить', command=remove).pack(side='left')
+        found = len(iskra_harvest.candidates())
+        ttk.Button(buttons, text=f'Найдено в документах ({found})…',
+                   command=lambda: self.people_found_window(on_added=lambda: win.winfo_exists() and refresh())).pack(side='left', padx=6)
         ttk.Button(buttons, text='Выгрузить в Excel', command=unload).pack(side='right')
         ttk.Button(buttons, text='Загрузить из Excel…', command=load).pack(side='right', padx=6)
         refresh()

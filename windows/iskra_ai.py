@@ -592,7 +592,10 @@ def write(task, sources=(), me=None, **kw):
         user += ('\nОбразцы документов, принятые в отделе. Возьми из них оформление, порядок частей и обороты; '
                  'факты из образцов НЕ переноси:\n\n' + '\n\n'.join(f'--- Образец: {n} ---\n{t}' for n, t in examples) + '\n')
     import iskra_learn
-    user += iskra_learn.prompt_block()                # манера пользователя по его прошлым правкам
+    import iskra_memory
+    past = iskra_memory.prompt_block(task, block)    # похожий документ, который пользователь уже отправлял
+    user += past
+    user += iskra_learn.prompt_block(example=not past)   # манера по прошлым правкам (образец — если нет похожего)
     if block:
         user += '\nМатериалы (справка; используй только факты из них):\n\n' + block + '\n'
     user += ('\nВерни только готовый текст документа, без вступлений вроде «Вот текст» и без пояснений после. '

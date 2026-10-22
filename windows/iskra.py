@@ -13,6 +13,7 @@ from iskra_hotkey_ui import HotkeyMixin
 from iskra_people_ui import PeopleMixin
 from iskra_journal_ui import JournalMixin
 from iskra_voice_ui import VoiceMixin
+from iskra_learn_ui import LearnMixin
 import iskra_ai
 import iskra_bugreport
 from iskra_formula import build_formula, explain_formula
@@ -23,7 +24,7 @@ from iskra_index import ROOT, extract, index_folder, search_docs, forget_folder,
 import iskra_assistant as assistant
 
 ROOT.mkdir(parents=True, exist_ok=True)
-VERSION = '1.9.4'
+VERSION = '1.9.5'
 ACCENT = '#24518A'
 
 
@@ -32,7 +33,7 @@ DOC_CMDS = {'deadlines', 'dates', 'people', 'numbers', 'money', 'contacts', 'sum
 FOLLOW_CMDS = {'search', 'write', 'ask', 'telegram'} | DOC_CMDS
 
 
-class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin, WorkMixin, ToolsMixin):
+class App(LearnMixin, VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin, WorkMixin, ToolsMixin):
     def __init__(self, root):
         self.root = root
         import iskra_clipboard
@@ -50,6 +51,7 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
         self.start_inbox()
         self.start_planning()
         self.start_people()
+        self.start_learning()                          # в фоне: люди и слова из документов
         self.start_journal()
         self.telegram_template_path()                    # шаблон телеграмм — и для нейросети
         self.ai_ready = iskra_ai.available()
@@ -131,7 +133,7 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
         f.add_command(label='Открыть папку данных', command=lambda: os.startfile(str(ROOT)))
         f.add_command(label='Проверить нейросеть', command=self.ai_check)
         f.add_command(label='Сообщить об ошибке…', command=lambda: iskra_bugreport.window(self, VERSION))
-        f.add_command(label='Забыть мои правки (обучение)…', command=self.forget_learned)
+        f.add_command(label='Чему научилась Искра…', command=self.learning_window)
         f.add_command(label='Справочник людей…', command=self.people_window)
         f.add_command(label='Журнал исходящих…', command=self.journal_window)
         f.add_command(label='Образцы документов отдела (папка)', command=self.samples_folder)
@@ -510,18 +512,6 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
             self.indexer.add_folder(folder)
             self.status.set('Папка добавлена. Индексирование запущено в фоне.')
 
-    def forget_learned(self):
-        import iskra_learn
-        n = iskra_learn.count()
-        if not n:
-            messagebox.showinfo('Обучение', 'Искра ещё не запомнила ни одной вашей правки.\n\nОна учится так: нейросеть пишет '
-                                'текст в редакторе, вы его правите и сохраняете в Word — правки запоминаются.')
-            return
-        if messagebox.askyesno('Обучение', f'Запомнено ваших правок: {n}.\nЗабыть их? Нейросеть снова будет писать '
-                               'по общим правилам.'):
-            iskra_learn.forget()
-            self.say('Правки забыты.', 'proof')
-
     def poll(self):
         try:
             while True:
@@ -573,6 +563,11 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
         threading.Thread(target=work, daemon=True).start()
 
     def show_results(self, q, rows, report, how=''):
+        import iskra_memory
+        rows, raised = iskra_memory.rerank(q, rows)
+        if raised:
+            how = (how + '; ' if how else '') + 'вверху — что вы уже открывали по этим словам'
+        self.last_query = q
         self.results = rows; self.listbox.delete(0, 'end')
         for path, _ in rows:
             self.listbox.insert('end', f'{Path(path).name}   —   {Path(path).parent}')
@@ -603,7 +598,14 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
     def open_selected(self):
         i = self.selected()
         if i is not None:
-            self._open(self.results[i][0])
+            path = self.results[i][0]
+            if getattr(self, 'last_query', ''):
+                import iskra_memory
+                try:
+                    iskra_memory.opened(self.last_query, path)     # поиск запоминает, что вы выбрали
+                except OSError:
+                    pass
+            self._open(path)
 
     def open_folder(self):
         i = self.selected()
