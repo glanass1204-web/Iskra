@@ -60,6 +60,7 @@ class HotkeyMixin:
             self.events.put(('call', put))
 
         def run(how, insert):
+            state['label'] = next((label for label, h, _ in ACTIONS if h == how), how)
             if state['cancel'] is not None:
                 state['cancel'].set()
             state['insert'] = insert
@@ -122,6 +123,39 @@ class HotkeyMixin:
             if state['cancel'] is not None:
                 state['cancel'].set()
             win.destroy()
+
+        fix_row = ttk.Frame(win, padding=(8, 0)); fix_row.pack(fill='x', before=bottom)
+        ttk.Label(fix_row, text='Поправить:').pack(side='left')
+        fix = tk.StringVar()
+        fix_entry = ttk.Entry(fix_row, textvariable=fix)
+        fix_entry.pack(side='left', fill='x', expand=True, padx=6)
+
+        def refine(_=None):
+            change, current = fix.get().strip(), out.get('1.0', 'end-1c').strip()
+            if not change or not current:
+                return
+            if not self.ai_ready:
+                status.set(ai_status); return
+            if state['cancel'] is not None:
+                state['cancel'].set()
+            cancel = threading.Event()
+            state['cancel'] = cancel
+            fix.set('')
+            out.edit_separator()
+            status.set(f'Поправляю: «{change}»… (Ctrl+Z в поле — вернуть)')
+
+            def work():
+                try:
+                    result = ai.revise(state.get('label', 'обработка выделенного текста'), current, change,
+                                       [('выделенный текст', text)], me=self.my_details(), on_text=show, cancel=cancel)
+                    self.events.put(('call', lambda: win.winfo_exists() and (show(result),
+                                     status.set('Поправлено. Можно уточнять дальше или вставить.'))))
+                except ai.AIError as exc:
+                    msg = str(exc)
+                    self.events.put(('call', lambda: win.winfo_exists() and status.set(msg)))
+            threading.Thread(target=work, daemon=True).start()
+        fix_entry.bind('<Return>', refine)
+        ttk.Button(fix_row, text='Поправить', command=refine).pack(side='left')
 
         paste_btn = ttk.Button(bottom, text='Вставить вместо выделенного', command=paste)
         paste_btn.pack(side='left')

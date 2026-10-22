@@ -886,3 +886,33 @@ def search_words(query, **kw):
     if not isinstance(data, list):
         return []
     return [str(w).strip() for w in data if str(w).strip()][:8]
+
+
+# ---------- уточнение предыдущего ответа ----------
+
+def revise(request, previous, change, sources=(), me=None, **kw):
+    """Поправить свой прошлый текст по просьбе: меняется только то, что просят."""
+    block, _ = materials(list(sources))
+    user = (f'Ты уже подготовил текст по задаче: «{request.strip()}».\n\nТекущий текст:\n{previous.strip()}\n\n'
+            f'Пользователь просит изменить: «{change.strip()}».\n'
+            'Внеси именно это изменение. Всё остальное оставь как есть: оформление, порядок, факты, номера, даты, подпись. '
+            'Новые факты бери только из просьбы пользователя или из материалов. '
+            'Верни полностью исправленный текст целиком, без пояснений и без слов «вот исправленный текст».')
+    if 'телеграм' in (request + previous[:40]).lower():
+        user += '\n' + telegram_format(me)
+    if block:
+        user += '\n\nМатериалы (справка):\n\n' + block
+    return run(chat_prompt(user), max_tokens=kw.pop('max_tokens', min(1500, len(previous) // 2 + 500)), temperature=0.2, **kw)
+
+
+def followup(history, question, sources=(), **kw):
+    """Продолжение разговора: новый вопрос с учётом прошлых вопросов и ответов (и тех же документов)."""
+    talk = '\n\n'.join(f'Вопрос: {q.strip()}\nОтвет: {a.strip()[:1500]}' for q, a in history[-3:])
+    block, _ = materials(list(sources))
+    user = (f'Мы уже говорили:\n\n{talk}\n\nТеперь пользователь пишет (это продолжение того же разговора): '
+            f'«{question.strip()}».\nОтветь коротко и по существу, с учётом сказанного выше.')
+    if block:
+        user += ('\n\nДокументы (отвечай только по ним; в конце с новой строки «Источник: » и имя файла; '
+                 'если ответа нет — «В документах не нашла»):\n\n' + block)
+        return run(chat_prompt(user), max_tokens=400, temperature=0.1, **kw)
+    return run(chat_prompt(user), max_tokens=500, **kw)

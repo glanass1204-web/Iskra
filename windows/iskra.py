@@ -22,7 +22,7 @@ from iskra_index import ROOT, extract, index_folder, search_docs, forget_folder,
 import iskra_assistant as assistant
 
 ROOT.mkdir(parents=True, exist_ok=True)
-VERSION = '1.9'
+VERSION = '1.9.1'
 ACCENT = '#24518A'
 
 
@@ -213,7 +213,18 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
                 cmd, arg = assistant.intent(('формула ' if cmd == 'formula' else 'макрос ') + text)
         else:
             self.say('Вы: ' + text, 'me')
+            fresh = assistant.new_topic_text(text)
+            if fresh:
+                text, self.last_ai = fresh, None          # «новое: …» — забыть прошлый ответ
             cmd, arg = assistant.intent(text)
+            # Уточнение к прошлому ответу нейросети («сделай короче», «поменяй срок», «а кто подписал?») —
+            # правим тот же ответ, а не ищем заново.
+            last = getattr(self, 'last_ai', None)
+            if (self.ai_ready and last and cmd in ('search', 'write', 'ask', 'telegram')
+                    and assistant.is_followup(text, last['kind'])):
+                self.ai_followup(text)
+                return
+            self.last_ai = None                          # новая просьба — прошлый ответ больше не уточняем
             # Не похоже ни на одну команду и это не явный поиск — пусть нейросеть поймёт, что нужно.
             if (cmd == 'search' and self.ai_ready and len(text.split()) >= 3
                     and not re.match(r'^(найди|найти|поиск|ищи|покажи|где)\b', text.lower())):
@@ -257,7 +268,7 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
             for line in self.journal.lines_for_morning()[:10]:
                 self.say('• ' + line, 'proof')
             self.journal_window()
-        elif cmd == 'people':
+        elif cmd == 'directory':
             self.people_window()
         elif cmd == 'report':
             self.morning_window()
@@ -801,6 +812,13 @@ def selftest_ai():
         ['ФИО', 'Должность'])), lambda r: 'Петров' in r)
     check('макрос VBA', lambda: (lambda c: c[0] + f'\nзамечаний проверки: {len(c[1])}')(
         iskra_ai.vba('удалить пустые строки на активном листе', 'excel')), lambda c: 'Sub ' in c and 'замечаний проверки: 0' in c)
+    draft = ('ТЕЛЕГРАММА\n\nКому: Штаб округа\n\nТекст:\nНа № 154/2 от 20.10.2026. Сведения о численности личного состава '
+             'будут представлены до 25.10.2026.\n\nПодпись:\nНачальник штаба\nполковник\nП.П. Сидоров')
+    check('уточнение прошлого ответа', lambda: iskra_ai.revise('телеграмма-ответ в штаб округа', draft, 'поменяй срок на 30.10.2026'),
+          lambda r: '30.10.2026' in r and '25.10.2026' not in r and '154/2' in r and 'Сидоров' in r)
+    check('продолжение разговора', lambda: iskra_ai.followup(
+        [('какой срок представления сведений по телеграмме 154?', 'До 25.10.2026.\nИсточник: тлг 154.txt')], 'а от кого она?', [doc]),
+        lambda r: 'штаб' in r.lower())
     lines.append(f'Режим: {iskra_ai.mode()}')
     iskra_ai.shutdown()
     (ROOT / 'selftest_ai.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')

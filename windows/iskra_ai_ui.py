@@ -2,11 +2,13 @@
 import json
 import os
 import threading
+import time
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 import iskra_addons
+import iskra_assistant as assistant
 import iskra_ai as ai
 from iskra_index import ROOT, extract, iter_documents, search_docs
 from iskra_overview import candidate_folders, folder_overview, folders_summary, render
@@ -367,6 +369,98 @@ class AIMixin:
 
     # ---------- понимание свободной фразы ----------
 
+    # ---------- память разговора: уточнения правят прошлый ответ ----------
+
+    def remember(self, kind, request, answer, sources=(), paths=(), editor=None):
+        prev = getattr(self, 'last_ai', None)
+        history = (prev['history'] if prev and kind in ('ask', 'chat') and prev['kind'] == kind else []) + [(request, answer)]
+        self.last_ai = {'kind': kind, 'request': request, 'answer': answer, 'sources': list(sources), 'paths': list(paths),
+                        'editor': editor, 'history': history[-4:], 'time': time.monotonic()}
+        hints = {'write': '«сделай короче», «поменяй срок на 30.10», «добавь пункт о …», «адресат — начальник штаба»',
+                 'ask': '«а кто подписал?», «а срок какой?», «ответь списком»',
+                 'chat': '«подробнее», «а если …», «приведи пример»',
+                 'formula': '«а если по столбцу D», «только для полигона», «без пустых»'}
+        self.say(f'Можно уточнить — поправлю этот же ответ: {hints[kind]}. Начать заново: «новое: …».', 'proof')
+
+    def _editor_alive(self, editor):
+        try:
+            return bool(editor) and editor[0].winfo_exists()
+        except tk.TclError:
+            return False
+
+    def ai_followup(self, text):
+        last = self.last_ai
+        kind = last['kind']
+        me = self.my_details()
+        if kind in ('ask', 'chat') and assistant.is_question(text):
+            self.say('Продолжаю разговор (те же документы).' if last['sources'] else 'Продолжаю разговор.', 'proof')
+
+            def job(cancel):
+                update = self._stream_to_chat('Ответ (продолжение):')
+                return ai.followup(last['history'], text, last['sources'], on_text=update, cancel=cancel)
+
+            def done(answer):
+                self.remember(kind, text, answer, last['sources'], last['paths'])
+            self.ai_background(job, done)
+            return
+        if kind == 'formula':
+            self.say('Поправляю формулу.', 'proof')
+            task = f'{last["request"]}. Уточнение: {text}. Предыдущий вариант формулы: {last["answer"]}'
+
+            def done_formula(result):
+                f, note = result
+                from iskra_formula import explain_formula
+                self.say('Исправленная формула (проверьте диапазоны):')
+                self.say(f, 'value')
+                if note:
+                    self.say(note, 'proof')
+                self.say('Из чего состоит:\n' + explain_formula(f))
+                self.remember('formula', task, f)
+            self.ai_background(lambda cancel: ai.formula(task, cancel=cancel), done_formula)
+            return
+        editor = last.get('editor')
+        if kind == 'write' and self._editor_alive(editor):
+            win, t, status = editor
+            whole = t.get('1.0', 'end-1c')
+            previous, sep, tail = whole.partition('--- ИСТОЧНИКИ')
+            self.say('Поправляю черновик в открытом редакторе (Ctrl+Z — вернуть как было).', 'proof')
+            t.edit_separator()
+            status.set(f'Нейросеть правит: «{text}»… (Esc в главном окне — остановить)')
+
+            def update(value):
+                def put():
+                    if win.winfo_exists() and value and not value.startswith('…'):
+                        t.delete('1.0', 'end'); t.insert('1.0', value)
+                self.events.put(('call', put))
+
+            def done_edit(result):
+                if win.winfo_exists():
+                    t.delete('1.0', 'end')
+                    t.insert('1.0', result + ('\n\n' + sep + tail if sep else ''))
+                    doubtful = ai.unverified(result, last['sources'] + [('просьба', text), ('прошлый текст', previous)])
+                    status.set(f'Поправлено: «{text}». Отменить — Ctrl+Z.' +
+                               (' Проверьте — этого не было ни в документах, ни в просьбе: ' + ', '.join(doubtful[:8]) if doubtful else ''))
+                    win.lift()
+                last['answer'], last['time'] = result, time.monotonic()
+                self.say('Готово — черновик в редакторе исправлен. Можно уточнять дальше.', 'proof')
+            self.ai_background(lambda cancel: ai.revise(last['request'], previous.strip(), text, last['sources'], me=me,
+                                                        on_text=update, cancel=cancel), done_edit)
+            return
+        self.say('Поправляю предыдущий ответ.', 'proof')
+
+        def job(cancel):
+            update = self._stream_to_chat('Исправленный вариант:')
+            return ai.revise(last['request'], last['answer'], text, last['sources'], me=me, on_text=update, cancel=cancel)
+
+        def done(result):
+            if kind == 'write':
+                editor = self.telegrams(initial=result, note='Исправленный черновик нейросети. Проверьте факты.',
+                                        source_paths=last['paths'])
+                self.remember('write', last['request'], result, last['sources'], last['paths'], editor)
+            else:
+                self.remember(kind, last['request'], result, last['sources'], last['paths'])
+        self.ai_background(job, done)
+
     def ai_route(self, text):
         """Фраза не похожа ни на одну команду — нейросеть решает, что сделать."""
         self.say('Понимаю, что нужно…', 'proof')
@@ -392,7 +486,11 @@ class AIMixin:
             self.events.put(('call', lambda: self.tabs.select(0)))
             update = self._stream_to_chat('Нейросеть:')
             return ai.chat(text, on_text=update, cancel=cancel)
-        self.ai_background(job, lambda result: self.say('(ответ нейросети без документов — проверьте важное)', 'proof'))
+
+        def done(result):
+            self.say('(ответ нейросети без документов — проверьте важное)', 'proof')
+            self.remember('chat', text, result)
+        self.ai_background(job, done)
 
     def _stream_to_chat(self, title):
         """Функция для фонового потока: показывает текст нейросети в чате по мере написания.
@@ -441,15 +539,16 @@ class AIMixin:
             self.events.put(('call', lambda: self.tabs.select(0)))
             update = self._stream_to_chat('Черновик (нейросеть):')
             text, _ = ai.write(task, sources, me=me, on_text=update, cancel=cancel)
-            return text, paths
+            return text, paths, sources
 
         def done(result):
-            text, paths = result
+            text, paths, sources = result
             save_history(ROOT, 'Нейросеть: текст', task[:200])
-            self.telegrams(initial=text + ('\n\n--- ИСТОЧНИКИ (НЕ ЧАСТЬ ТЕЛЕГРАММЫ) ---\n' +
+            editor = self.telegrams(initial=text + ('\n\n--- ИСТОЧНИКИ (НЕ ЧАСТЬ ТЕЛЕГРАММЫ) ---\n' +
                                            '\n'.join(f'{i}. {Path(p).name}' for i, p in enumerate(paths, 1)) if paths else ''),
                            note='Черновик нейросети. Проверьте факты по источникам, впишите [УТОЧНИТЬ…], затем «Проверить перед отправкой».',
                            source_paths=paths)
+            self.remember('write', task, text, sources, paths, editor)
         self.ai_background(job, done)
 
     def ai_ask(self, question):
@@ -462,9 +561,11 @@ class AIMixin:
             self.events.put(('call', lambda: self.tabs.select(0)))
             update = self._stream_to_chat('Ответ по документам (нейросеть):')
             text, _ = ai.answer(question, sources, on_text=update, cancel=cancel)
-            return paths
+            return text, sources, paths
 
-        def done(paths):
+        def done(result):
+            text, sources, paths = result
+            self.remember('ask', question, text, sources, paths)
             self.say('Проверить: ' + ', '.join(Path(p).name for p in paths), 'proof')
             self.results = [(p, '') for p in paths]
             self.listbox.delete(0, 'end')
@@ -485,6 +586,7 @@ class AIMixin:
             if note:
                 self.say(note, 'proof')
             self.say('Из чего состоит:\n' + explain_formula(f))
+            self.remember('formula', task, f)
         self.say('Готовой формулы в справочнике нет — спрашиваю нейросеть…', 'proof')
         self.ai_background(job, done)
 
@@ -516,6 +618,15 @@ class AIMixin:
             self.ai_background(lambda cancel: ai.edit(body, how, on_text=update, cancel=cancel), done)
         for how in ai.EDITS:
             menu.add_command(label=how, command=lambda h=how: run(h))
+
+        def own():
+            from tkinter import simpledialog
+            how = simpledialog.askstring('Поправить', 'Что изменить? Например: «поменяй срок на 30.10.2026», '
+                                         '«добавь пункт о технике», «адресат — начальник штаба»', parent=text_widget.winfo_toplevel())
+            if how and how.strip():
+                run('Внеси в текст изменение: ' + how.strip() + '. Всё остальное оставь как есть.')
+        menu.add_separator()
+        menu.add_command(label='Поправить своими словами…', command=own)
         if not self.ai_ready:
             mb.state(['disabled'])
         return mb
