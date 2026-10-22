@@ -18,6 +18,7 @@ import json
 from iskra_workflows import normalize_layout, draft_from_sources, save_history
 import iskra_vba
 import iskra_ai
+import iskra_drafts
 
 DOC_TYPES = [('Word и текст', '*.docx *.txt'), ('Все документы', '*.docx *.xlsx *.pptx *.pdf *.txt *.md *.csv')]
 
@@ -216,7 +217,7 @@ class ToolsMixin:
 
     # ---------- Телеграммы ----------
 
-    def telegrams(self, initial=None, note=None, report=None, source_paths=(), source_texts=()):
+    def telegrams(self, initial=None, note=None, report=None, source_paths=(), source_texts=(), restore=None):
         # Не «поверх главного окна»: редактор большой, главное окно должно выходить вперёд по щелчку.
         win = _window(self, 'редактор телеграмм', '1100x680', transient=False)
         win.after(50, lambda: (win.lift(), win.focus_force()))
@@ -231,7 +232,36 @@ class ToolsMixin:
             box.pack(side='bottom', fill='x', padx=12)
         t = tk.Text(win, wrap='word', font=('Segoe UI', 11), undo=True)
         t.pack(fill='both', expand=True, padx=12)
-        t.insert('1.0', self.to_template(initial) if initial else self.telegram_blank())
+        if restore is not None:
+            t.insert('1.0', restore.data.get('text', ''))       # восстановленный черновик — как был, без переделки
+        else:
+            t.insert('1.0', self.to_template(initial) if initial else self.telegram_blank())
+        t.edit_reset()
+        draft = restore or iskra_drafts.Draft()
+        draft.data['closed'] = False
+        if restore is not None or initial:
+            draft.autosave(t.get('1.0', 'end-1c'), 'открыт' if restore is None else 'восстановлен', force=True)
+        else:
+            draft.data['text'] = t.get('1.0', 'end-1c')    # пустой бланк не сохраняем, пока в нём ничего не написали
+        self._open_drafts = [x for x in getattr(self, '_open_drafts', []) if x[1].winfo_exists()] + [(draft, t)]
+        # Нейросеть заменяет текст — до и после замены откладывается версия.
+        t.iskra_on_replace = lambda text, why: draft.autosave(text, why)
+
+        def autosave_tick():
+            if not win.winfo_exists():
+                return
+            if not getattr(t, 'iskra_busy', False):
+                draft.autosave(t.get('1.0', 'end-1c'))
+            win.after(30_000, autosave_tick)
+        win.after(30_000, autosave_tick)
+
+        def on_close():
+            if not getattr(t, 'iskra_busy', False):
+                draft.close(t.get('1.0', 'end-1c'))
+            else:
+                iskra_drafts.mark_closed(draft)
+            win.destroy()
+        win.protocol('WM_DELETE_WINDOW', on_close)
 
         def check():
             self.precheck(win, t, source_paths, source_texts)
@@ -245,6 +275,15 @@ class ToolsMixin:
                 except Exception as exc:
                     messagebox.showerror('Ошибка', 'Не получилось: ' + friendly_error(exc), parent=win); return
                 status.set('Сохранено: ' + path + (' (по вашему шаблону)' if template else ' (стандартное оформление: Times New Roman 14, отступ 1,25 см, поля по ГОСТ)'))
+                draft.autosave(t.get('1.0', 'end-1c'), 'сохранено в Word: ' + Path(path).name)
+                learned = getattr(t, 'iskra_ai_text', '')
+                if learned:
+                    import iskra_learn
+                    try:
+                        if iskra_learn.remember(learned, t.get('1.0', 'end-1c')):
+                            status.set(status.get() + ' Ваши правки запомнены — следующие тексты нейросеть напишет в вашей манере.')
+                    except OSError:
+                        pass
                 if messagebox.askyesno('Готово', 'Телеграмма сохранена. Открыть?', parent=win):
                     _open_path(path)
 
@@ -281,7 +320,111 @@ class ToolsMixin:
             self.editor_ai(buttons, t, status).pack(side='left', padx=(0, 6))
         ttk.Button(buttons, text='Сохранить в Word', style='Accent.TButton', command=save).pack(side='right')
         ttk.Button(buttons, text='Шаблон оформления…', command=lambda: self.telegram_template_window(win)).pack(side='right', padx=6)
+        ttk.Button(buttons, text='Версии…', command=lambda: self.drafts_window(draft, t, status)).pack(side='right')
         return win, t, status
+
+    def drafts_window(self, current=None, editor=None, editor_status=None):
+        """Черновики и их версии. Из редактора: «Вернуть» подставляет версию в этот редактор (Ctrl+Z — обратно)."""
+        win = _window(self, 'черновики и версии', '1000x600')
+        ttk.Label(win, text='Черновики сохраняются сами каждые 30 секунд. Выберите версию — справа её текст.',
+                  style='Muted.TLabel').pack(anchor='w', padx=12, pady=(8, 4))
+        pane = ttk.Panedwindow(win, orient='horizontal'); pane.pack(fill='both', expand=True, padx=12)
+        tree = ttk.Treeview(pane, columns=('why',), show='tree headings', selectmode='browse')
+        tree.heading('#0', text='Черновик / время'); tree.heading('why', text='Что было')
+        tree.column('#0', width=330); tree.column('why', width=170)
+        pane.add(tree, weight=1)
+        view = tk.Text(pane, wrap='word', font=('Segoe UI', 10), background='#FAFAFA', relief='flat', state='disabled')
+        pane.add(view, weight=2)
+        status = tk.StringVar(value='')
+        ttk.Label(win, textvariable=status, style='Muted.TLabel').pack(anchor='w', padx=12, pady=4)
+        bar = ttk.Frame(win, padding=(12, 0, 12, 10)); bar.pack(fill='x')
+        items = {}
+        drafts = iskra_drafts.recent(40)
+        if current is not None:
+            drafts = [current] + [d for d in drafts if d.data['id'] != current.data['id']]
+        for d in drafts:
+            name = (('▶ этот редактор: ' if current is not None and d is current else '') +
+                    (d.data.get('title') or iskra_drafts.title_of(d.data.get('text', ''))))
+            parent = tree.insert('', 'end', text=f'{iskra_drafts.when(d.data.get("updated", 0))}  {name}',
+                                 values=('открыт' if not d.data.get('closed') else '',), open=d is current)
+            items[parent] = (d, d.data.get('text', ''))
+            for v in reversed(d.data.get('versions', [])):
+                iid = tree.insert(parent, 'end', text=iskra_drafts.when(v['time']), values=(v.get('why', ''),))
+                items[iid] = (d, v['text'])
+
+        def chosen():
+            sel = tree.selection()
+            return items.get(sel[0]) if sel else None
+
+        def show(_=None):
+            c = chosen()
+            view.configure(state='normal'); view.delete('1.0', 'end')
+            if c:
+                view.insert('1.0', c[1])
+            view.configure(state='disabled')
+        tree.bind('<<TreeviewSelect>>', show)
+
+        def put_back():
+            c = chosen()
+            if not c:
+                return
+            if editor is not None and editor.winfo_exists():
+                from iskra_ai_ui import editor_busy
+                if editor_busy(editor, editor_status):
+                    return
+                editor.edit_separator()
+                editor.delete('1.0', 'end'); editor.insert('1.0', c[1])
+                editor.edit_separator()
+                if editor_status is not None:
+                    editor_status.set('Версия возвращена. Ctrl+Z — отменить.')
+                win.destroy()
+            else:
+                open_new()
+
+        def open_new():
+            c = chosen()
+            if c:
+                copy = iskra_drafts.Draft()
+                copy.data['text'] = c[1]
+                self.telegrams(restore=copy, note='Открыта сохранённая версия черновика.')
+
+        def copy_text():
+            c = chosen()
+            if c:
+                win.clipboard_clear(); win.clipboard_append(c[1]); status.set('Текст скопирован.')
+        if editor is not None:
+            ttk.Button(bar, text='Вернуть в редактор', style='Accent.TButton', command=put_back).pack(side='left')
+        ttk.Button(bar, text='Открыть в новом окне', command=open_new).pack(side='left', padx=6)
+        ttk.Button(bar, text='Копировать', command=copy_text).pack(side='left')
+        ttk.Button(bar, text='Закрыть', command=win.destroy).pack(side='right')
+        first = tree.get_children()
+        if first:
+            kids = tree.get_children(first[0])
+            tree.selection_set(kids[0] if kids else first[0])
+        if not drafts:
+            status.set('Черновиков пока нет: они появляются, когда вы работаете в редакторе телеграмм.')
+        return win
+
+    def offer_restore(self):
+        """После сбоя: черновики, окно которых не закрылось, — предложить открыть."""
+        iskra_drafts.cleanup()
+        try:
+            blank = self.telegram_blank()
+        except Exception:                                  # noqa: BLE001 — шаблон недоступен: сравниваем с пустым
+            blank = ''
+        lost = iskra_drafts.unfinished(blank=blank)
+        if not lost:
+            return
+        last = lost[0].data
+        if messagebox.askyesno('Несохранённые черновики', (
+                f'В прошлый раз редактор телеграмм закрылся не как обычно (зависание или выключение).\n\n'
+                f'Черновиков: {len(lost)}. Последний — «{last.get("title", "")}», {iskra_drafts.when(last.get("updated", 0))}.\n\n'
+                'Открыть их? (Они в любом случае остаются в «Инструменты → Черновики и версии».)')):
+            for d in lost[:3]:
+                self.telegrams(restore=d, note='Восстановленный черновик. Проверьте и сохраните.')
+        else:
+            for d in lost:
+                iskra_drafts.mark_closed(d)
 
     def telegram_settings(self):
         try:
@@ -810,9 +953,100 @@ class ToolsMixin:
                 'Чтобы макрос сохранился в файле, сохраните его как .xlsm / .docm.\n'
                 'Макросы могут быть запрещены политиками организации.'), parent=win)
 
+        def trial():
+            import iskra_trial
+            text = code.get('1.0', 'end-1c')
+            if not text.strip():
+                status.set('Сначала напишите макрос.'); return
+            if not iskra_trial.supported():
+                status.set('Пробный запуск работает только в Windows с установленным Office.'); return
+            kind = app.get() if app.get() != 'auto' else iskra_vba._app_of(text)
+            program = 'Excel' if kind == 'excel' else 'Word'
+            flag = ROOT / 'trial_ok.flag'
+            if not flag.exists():
+                if not messagebox.askokcancel('Пробный запуск', (
+                        f'Искра откроет невидимый {program} и выполнит макрос на КОПИИ файла — ваш файл не меняется.\n\n'
+                        f'Чтобы вставить код в копию, на время проверки в {program} включается «Доверять доступ к объектной '
+                        'модели VBA» (только для вас) и сразу выключается обратно.\n\nПродолжить?'), parent=win):
+                    return
+                try:
+                    flag.parent.mkdir(parents=True, exist_ok=True); flag.write_text('1', encoding='utf-8')
+                except OSError:
+                    pass
+            choice = messagebox.askyesnocancel('Пробный запуск', (
+                f'Проверить на копии вашего файла?\n\nДа — выбрать файл {program} (откроется его копия).\n'
+                f'Нет — на пустой {"книге" if kind == "excel" else "документе"} (проверится, что код запускается).'), parent=win)
+            if choice is None:
+                return
+            file = ''
+            if choice:
+                types = [('Excel', '*.xlsx *.xlsm *.xls')] if kind == 'excel' else [('Word', '*.docx *.docm *.doc')]
+                file = filedialog.askopenfilename(parent=win, title='Файл для пробного запуска (откроется копия)', filetypes=types)
+                if not file:
+                    return
+            trial_btn.state(['disabled'])
+            status.set(f'Пробный запуск в {program} на копии… (до 2 минут)')
+            cancel = threading.Event()
+            win.bind('<Destroy>', lambda e: cancel.set() if e.widget is win else None, add='+')
+
+            def work():
+                try:
+                    res = iskra_trial.run(text, kind, file or None, cancel=cancel)
+                except Exception as exc:                     # noqa: BLE001 — показать человеку, а не упасть
+                    res = iskra_trial.Result(False, unavailable=friendly_error(exc))
+                self.events.put(('call', lambda: finished(res)))
+            threading.Thread(target=work, daemon=True).start()
+
+            def finished(res):
+                if not win.winfo_exists():
+                    return
+                trial_btn.state(['!disabled'])
+                status.set(res.summary())
+                if res.ok or res.unavailable:
+                    if res.ok:
+                        steps_text([('Пробный запуск: ошибок нет.', 'head'),
+                                    ('Макрос выполнился на копии' + (' вашего файла.' if file else ' пустого файла.'), 'ok'),
+                                    ('Всё равно сохраните копию перед запуском на настоящем файле.', 'warn')])
+                    return
+                title, cause, what = iskra_vba.explain_error(res.error)
+                parts = [('Пробный запуск: ошибка', 'head'), (res.error, 'bad'), ('', 'ok'),
+                         (title, 'head'), ('Почему: ' + cause, 'ok'), ('Что сделать: ' + what, 'ok')]
+                steps_text(parts)
+                if getattr(self, 'ai_ready', False) and messagebox.askyesno(
+                        'Пробный запуск', 'При пробном запуске ошибка:\n' + res.error[:400] +
+                        '\n\nИсправить макрос нейросетью? (Ctrl+Z в коде вернёт прежний вариант)', parent=win):
+                    ai_fix_trial(text, res.error, kind)
+
+        def ai_fix_trial(text, error, kind):
+            status.set('Нейросеть исправляет макрос по ошибке… «Стоп» — остановить.')
+            stop_btn.state(['!disabled']); ai_btn.state(['disabled'])
+
+            def done(res):
+                if not win.winfo_exists():
+                    return
+                stop_btn.state(['disabled']); ai_btn.state(['!disabled'] if getattr(self, 'ai_ready', False) else ['disabled'])
+                fixed, problems = res
+                if fixed.strip() == text.strip():
+                    status.set('Нейросеть не смогла исправить. Опишите задачу проще или нажмите «Была ошибка при запуске».'); return
+                code.edit_separator()
+                code.delete('1.0', 'end'); code.insert('1.0', fixed)
+                code.edit_separator()
+                mark(problems)
+                status.set('Исправлено нейросетью. Нажмите «Пробный запуск» ещё раз — проверю исправленный вариант. '
+                           'Ctrl+Z в коде — вернуть прежний.')
+
+            def failed(e):
+                if win.winfo_exists():
+                    stop_btn.state(['disabled']); ai_btn.state(['!disabled'] if getattr(self, 'ai_ready', False) else ['disabled'])
+                    status.set('Нейросеть: ' + e)
+            self.ai_background(lambda cancel: iskra_ai.vba_fix(text, error, kind, cancel=cancel), done,
+                               on_error=failed, label='исправление макроса')
+
         ttk.Button(buttons, text='Копировать код', style='Accent.TButton', command=copy).pack(side='left')
         ttk.Button(buttons, text='Сохранить .bas', command=save).pack(side='left', padx=6)
         ttk.Button(buttons, text='Проверить код', command=check).pack(side='left')
+        trial_btn = ttk.Button(buttons, text='Пробный запуск на копии…', command=trial)
+        trial_btn.pack(side='left', padx=(6, 0))
         ttk.Button(buttons, text='Исправить автоматически', command=fix).pack(side='left', padx=6)
         ttk.Button(buttons, text='Была ошибка при запуске…', command=error_help).pack(side='left')
         ttk.Button(buttons, text='Как запустить', command=how).pack(side='right')

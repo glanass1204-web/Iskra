@@ -14,6 +14,7 @@ from iskra_people_ui import PeopleMixin
 from iskra_journal_ui import JournalMixin
 from iskra_voice_ui import VoiceMixin
 import iskra_ai
+import iskra_bugreport
 from iskra_formula import build_formula, explain_formula
 from iskra_macros import MACROS, export_macro
 from iskra_workflows import compare_texts, save_history, read_history
@@ -22,7 +23,7 @@ from iskra_index import ROOT, extract, index_folder, search_docs, forget_folder,
 import iskra_assistant as assistant
 
 ROOT.mkdir(parents=True, exist_ok=True)
-VERSION = '1.9.3'
+VERSION = '1.9.4'
 ACCENT = '#24518A'
 
 
@@ -36,6 +37,8 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
         self.root = root
         import iskra_clipboard
         iskra_clipboard.install(root)                    # Ctrl+C/V и при русской раскладке, меню правой кнопкой
+        iskra_bugreport.install(root, lambda text: self.events.put(('call', lambda: self.say(
+            'Произошла ошибка, она записана в журнал. Если мешает работать — меню Файл → «Сообщить об ошибке…».'))))
         root.title(f'Искра {VERSION} — помощник по документам')
         root.geometry('1180x740'); root.minsize(860, 540)
         self.events = queue.Queue()
@@ -101,6 +104,7 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
             self.root.after(8000, lambda: threading.Thread(target=iskra_ai.warm, daemon=True).start())
         self.start_hotkey()
         self.root.after(600, self.maybe_first_run)
+        self.root.after(2500, self.offer_restore)            # после сбоя — вернуть несохранённые черновики
         # Сводку при запуске не показываем в первый запуск (сначала мастер) и не выдёргиваем фокус, если человек уже печатает.
         self.root.after(4000, self._startup_morning)
         self.root.after(100, self.poll)
@@ -126,6 +130,8 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
         f.add_command(label='Обновить индекс', command=self.indexer.scan_now)
         f.add_command(label='Открыть папку данных', command=lambda: os.startfile(str(ROOT)))
         f.add_command(label='Проверить нейросеть', command=self.ai_check)
+        f.add_command(label='Сообщить об ошибке…', command=lambda: iskra_bugreport.window(self, VERSION))
+        f.add_command(label='Забыть мои правки (обучение)…', command=self.forget_learned)
         f.add_command(label='Справочник людей…', command=self.people_window)
         f.add_command(label='Журнал исходящих…', command=self.journal_window)
         f.add_command(label='Образцы документов отдела (папка)', command=self.samples_folder)
@@ -144,6 +150,7 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
         t.add_separator()
         t.add_command(label='Составить телеграмму…', command=self.compose_window)
         t.add_command(label='Редактор телеграмм', command=self.telegrams)
+        t.add_command(label='Черновики и версии…', command=self.drafts_window)
         t.add_command(label='Мои реквизиты для телеграмм…', command=self.my_details_window)
         t.add_command(label='Объединить телеграммы…', command=self.merge_telegrams_window)
         t.add_command(label='Проверка орфографии', command=self.spell_window)
@@ -503,6 +510,18 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
             self.indexer.add_folder(folder)
             self.status.set('Папка добавлена. Индексирование запущено в фоне.')
 
+    def forget_learned(self):
+        import iskra_learn
+        n = iskra_learn.count()
+        if not n:
+            messagebox.showinfo('Обучение', 'Искра ещё не запомнила ни одной вашей правки.\n\nОна учится так: нейросеть пишет '
+                                'текст в редакторе, вы его правите и сохраняете в Word — правки запоминаются.')
+            return
+        if messagebox.askyesno('Обучение', f'Запомнено ваших правок: {n}.\nЗабыть их? Нейросеть снова будет писать '
+                               'по общим правилам.'):
+            iskra_learn.forget()
+            self.say('Правки забыты.', 'proof')
+
     def poll(self):
         try:
             while True:
@@ -517,9 +536,8 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
                         self.status.set(str(event))         # сообщения индексатора не перекрывают «Нейросеть пишет…»
                 except Exception as exc:
                     # Одна ошибка не должна останавливать всё окно: пишем в журнал и работаем дальше.
-                    import traceback
                     from iskra_ai_ui import friendly_error
-                    iskra_ai.write_log('Ошибка в окне: ' + ''.join(traceback.format_exception(exc))[-2000:])
+                    iskra_bugreport.log_crash('Ошибка в окне', type(exc), exc, exc.__traceback__)
                     try:
                         self.say('Не получилось: ' + friendly_error(exc))
                     except Exception:
@@ -615,6 +633,12 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
         self.maybe_morning()
 
     def close(self):
+        for draft, t in getattr(self, '_open_drafts', []):     # открытые редакторы — сохранить как закрытые
+            try:
+                if t.winfo_exists():
+                    draft.close(t.get('1.0', 'end-1c'))
+            except Exception:                                  # noqa: BLE001 — выход из программы не должен сорваться
+                pass
         self.stop_hotkey()
         iskra_ai.shutdown()
         self.indexer.stop()

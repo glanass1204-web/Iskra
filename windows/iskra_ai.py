@@ -591,6 +591,8 @@ def write(task, sources=(), me=None, **kw):
     if examples:
         user += ('\nОбразцы документов, принятые в отделе. Возьми из них оформление, порядок частей и обороты; '
                  'факты из образцов НЕ переноси:\n\n' + '\n\n'.join(f'--- Образец: {n} ---\n{t}' for n, t in examples) + '\n')
+    import iskra_learn
+    user += iskra_learn.prompt_block()                # манера пользователя по его прошлым правкам
     if block:
         user += '\nМатериалы (справка; используй только факты из них):\n\n' + block + '\n'
     user += ('\nВерни только готовый текст документа, без вступлений вроде «Вот текст» и без пояснений после. '
@@ -1037,6 +1039,28 @@ def vba(task, app='excel', **kw):
             return code, []
         user += '\n\nВ прошлом варианте ошибки: ' + '; '.join(f'строка {n}: {m}' for n, m in problems[:6]) + '. Исправь.'
     return code, problems
+
+
+def vba_fix(code, message, app='excel', **kw):
+    """Исправленный макрос по тексту ошибки пробного запуска. Возвращает (код, замечания проверки)."""
+    import iskra_vba
+    program = 'Excel' if app == 'excel' else 'Word'
+    user = (f'Макрос VBA для {program}:\n{code[:6000]}\n\nПри запуске в {program} ошибка: {message.strip()[:600]}\n\n'
+            'Исправь макрос, чтобы ошибки не было. Сохрани имена процедур и то, что макрос делает. '
+            'Option Explicit, все переменные объявлены, прямые кавычки ". Верни только полный исправленный код.')
+    best = code, iskra_vba.lint(code)
+    for _ in range(2):
+        out = run(chat_prompt(user, system='Ты опытный программист VBA для Microsoft Office. Исправляешь ошибки, не меняя смысл.'),
+                  max_tokens=1400, temperature=0.1, **kw)
+        fixed = iskra_vba.auto_fix(re.sub(r'^```\w*\s*|```\s*$', '', out.strip(), flags=re.MULTILINE).strip())[0]
+        if not re.search(r'^\s*(Public |Private )?Sub\s+\w+', fixed, re.MULTILINE | re.IGNORECASE):
+            continue
+        problems = iskra_vba.lint(fixed)
+        if not problems:
+            return fixed + '\n', []
+        best = fixed + '\n', problems
+        user += '\n\nВ исправленном варианте остались ошибки: ' + '; '.join(f'строка {n}: {m}' for n, m in problems[:6]) + '. Исправь.'
+    return best
 
 
 def vba_error(code, message, **kw):

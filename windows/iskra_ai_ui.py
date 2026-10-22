@@ -40,8 +40,17 @@ class EditorStream:
     def __init__(self, app, win, t, status=None):
         self.app, self.win, self.t, self.status = app, win, t, status
         self.original = t.get('1.0', 'end-1c')
+        self._versions('до нейросети', self.original)
         self.t.iskra_busy = True                     # кнопки редактора ждут, пока нейросеть допишет
         self.t.configure(undo=False, state='disabled')
+
+    def _versions(self, why, text):
+        save = getattr(self.t, 'iskra_on_replace', None)      # редактор с автосохранением — отложить версию
+        if save is not None:
+            try:
+                save(text, why)
+            except Exception:                              # noqa: BLE001 — версия не должна мешать нейросети
+                pass
 
     def alive(self):
         try:
@@ -72,6 +81,8 @@ class EditorStream:
         self.t.edit_separator()
         self.t.delete('1.0', 'end'); self.t.insert('1.0', final)
         self.t.edit_separator()
+        self.t.iskra_ai_text = final                 # с чем сравнить при сохранении: так Искра учится на правках
+        self._versions('текст нейросети', final)
         self.t.configure(autoseparators=True)
         try:
             self.win.lift()
