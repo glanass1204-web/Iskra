@@ -202,5 +202,18 @@ class AITest(unittest.TestCase):
         self.assertNotIn('что', calls[0][0].split())
 
 
+class Reference(unittest.TestCase):
+    SRC = [('t.docx', 'Телеграмма 154/2 от 20.10.2026 о численности')]
+
+    def test_reply_gets_reference_with_date(self):
+        out = ai.ensure_reference('Кому: штаб\nТекст:\n1. Сведения будут.\n', 'Составь телеграмму-ответ на телеграмму 154/2', self.SRC)
+        self.assertIn('Текст:\nНа № 154/2 от 20.10.2026\n1. Сведения', out)
+
+    def test_existing_reference_and_non_reply_untouched(self):
+        text = 'На № 154/2 от 20.10.2026 докладываю.'
+        self.assertEqual(ai.ensure_reference(text, 'ответ на 154/2', self.SRC), text)
+        self.assertEqual(ai.ensure_reference('1. Готово.', 'Составь телеграмму о 154/2', self.SRC), '1. Готово.')
+
+
 if __name__ == '__main__':
     unittest.main()

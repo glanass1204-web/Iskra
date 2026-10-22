@@ -790,6 +790,38 @@ def body_of(text):
     return '\n'.join(lines).strip()
 
 
+REF_NUM = re.compile(r'(?:№\s*)([\w-]*\d[\w/-]*)|(?<![\w./])(\d+(?:/\d+)+)(?![\w/])')
+REPLY_WORDS = re.compile(r'ответ\w*|на\s+(?:вашу|ваш|телеграмм\w*|письм\w*|запрос\w*)', re.IGNORECASE)
+
+
+def ensure_reference(text, task, sources=()):
+    """Ответ на названный в задаче документ обязан начинаться ссылкой «На № … от …».
+    Небольшая модель её иногда теряет — дописываем сами; дату берём из материалов, если она стоит рядом с номером."""
+    if not REPLY_WORDS.search(task):
+        return text
+    m = REF_NUM.search(task)
+    if not m:
+        return text
+    num = m.group(1) or m.group(2)
+    if num in text:
+        return text
+    when = ''
+    for _, body in sources:
+        d = re.search(re.escape(num) + r'\s*от\s*(\d{1,2}\.\d{1,2}\.\d{2,4})', body or '')
+        if d:
+            when = ' от ' + d.group(1)
+            break
+    ref = f'На № {num}{when}'
+    head = re.search(r'^\s*Текст\s*:\s*$\n?', text, re.MULTILINE | re.IGNORECASE)
+    if head:
+        return text[:head.end()] + ref + '\n' + text[head.end():]
+    lines = text.splitlines(keepends=True)
+    i = 0
+    while i < len(lines) and (not lines[i].strip() or re.match(r'^\s*(ТЕЛЕГРАММА|Кому|От кого|Дата|Номер|Тема)\b', lines[i], re.I)):
+        i += 1
+    return ''.join(lines[:i]) + ref + '\n' + ''.join(lines[i:])
+
+
 def expand(text, task, materials_text, need, **kw):
     """Второй круг: развернуть слишком короткий текст по тем же материалам, ничего не выдумывая."""
     user = ''
@@ -977,6 +1009,7 @@ def write(task, sources=(), me=None, **kw):
     LAST_FIXES[:] = fixes
     if fixes:
         write_log('Вычитка: ' + '; '.join(fixes[:30]))
+    out = ensure_reference(out, task, sources)            # «На № …» в ответе на названный документ
     if telegram:
         out = enforce_signature(out, me)
     return out, truncated
