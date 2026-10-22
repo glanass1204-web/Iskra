@@ -94,14 +94,20 @@ class RetrieveTest(unittest.TestCase):
         old = ai.run
         ai.run = lambda prompt, **kw: calls.append(prompt) or (short if len(calls) == 1 else full)
         try:
-            out, _ = ai.write('составь телеграмму командирам: проверить технику', [('сведения.docx', 'КамАЗ 6 ед.')])
+            facts = [('сведения.docx', 'КамАЗ-4310 — 6 ед., неисправно 2, требуется замена двигателя. Урал — 3 ед. '
+                                         'Ответственный — капитан Орлов. Акты проверки представить в отдел. ' * 4)]
+            out, _ = ai.write('составь телеграмму командирам: проверить технику', facts)
             self.assertEqual(len(calls), 2)                              # коротко — второй круг
             self.assertIn('РАЗВЁРНУТО', calls[1])
             self.assertGreater(len(ai.body_of(out)), 450)
             calls.clear()
             ai.run = lambda prompt, **kw: calls.append(prompt) or full
-            ai.write('составь телеграмму командирам: проверить технику', [('сведения.docx', 'КамАЗ 6 ед.')])
+            ai.write('составь телеграмму командирам: проверить технику', facts)
             self.assertEqual(len(calls), 1)                              # и так полно — без лишнего круга
+            calls.clear()
+            ai.run = lambda prompt, **kw: calls.append(prompt) or short
+            ai.write('составь телеграмму командирам: проверить технику', [('сведения.docx', 'КамАЗ 6 ед.')])
+            self.assertEqual(len(calls), 1)                              # материалов почти нет — не раздувать «водой»
             self.assertIn('РАЗВЁРНУТО', calls[0])                        # требование полноты в задании
         finally:
             ai.run = old
