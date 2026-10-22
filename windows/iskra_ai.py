@@ -737,45 +737,75 @@ def proofread(text, sources=(), task=''):
     return text + tail, fixes
 
 
+def best_sample(task, materials_text='', limit=2600):
+    """Один образец для подражания, самый близкий к задаче: из папки образцов отдела или из ваших отправленных
+    документов. Возвращает (откуда, текст) или None."""
+    def stems(text):
+        return {w.lower().replace('ё', 'е')[:6] for w in re.findall(r'[А-Яа-яЁё]{4,}', text)}
+    want = stems(task) | stems(materials_text[:1500])
+    candidates = []
+    for name, text in style_samples(task, limit=3, max_chars=limit):
+        candidates.append((len(want & stems(name + ' ' + text[:1500])) + 1, f'образец отдела «{name}»', text))
+    try:
+        import iskra_memory
+        for score, s in iskra_memory.similar_sent(task, materials_text, limit=2):
+            candidates.append((len(want & stems(s['text'][:1500])), 'ваш отправленный документ',
+                               iskra_memory.mask_facts(s['text'])[:limit]))
+    except Exception:                                      # noqa: BLE001 — память не обязательна
+        pass
+    want_telegram = bool(TELEGRAM_WORDS.search(task))
+    candidates = [c for c in candidates if not want_telegram or TELEGRAM_WORDS.search(c[2][:300]) or c[0] >= 3] or candidates
+    candidates.sort(key=lambda c: -c[0])
+    return (candidates[0][1], candidates[0][2]) if candidates else None
+
+
 def write(task, sources=(), me=None, **kw):
-    """Составить новый текст по задаче, опираясь на найденные документы."""
+    """Составить новый текст по задаче, опираясь на найденные документы.
+    Порядок задания важен для небольшой модели: сначала материалы и образец, в конце — задача и правила
+    (последнее она выполняет точнее всего)."""
     block, truncated = materials(list(sources))
-    user = (f'Задача: {task.strip()}\n\n' + DATE_RULES() +
-            'Ты пишешь НОВЫЙ документ от имени пользователя. Не переписывай и не пересказывай материалы целиком: '
-            'возьми из них только то, что прямо нужно по задаче, и составь именно тот текст, который требуется. '
-            'Даты, время, номера документов и названия материалов (имена файлов) в текст НЕ вставляй, если задача '
-            'их не просит: не пиши «согласно телеграмме … от …», «по состоянию на …», «в 14:00». '
-            'Ссылку «На № … от …» ставь только если в задаче сказано ответить на документ или назван его номер.\n')
     keep = kw.pop('keep_dates', '')
-    if TELEGRAM_WORDS.search(task):
-        user += telegram_format(me) + '\n'
-        user += ('Как писать текст телеграммы: коротко и по делу, официально-деловым языком; каждое поручение — '
-                 'отдельный пункт с номером («1. Представить…», «2. Обеспечить…»); глаголы в начале пункта; без вводных '
-                 'слов, повторов и пояснений; без английских слов, звёздочек и решёток; проверь падежи и согласование '
-                 '(«прошу представить сведения», «согласно приказу», «в течение суток»).\n')
-    elif me and me.get('signature', '').strip():
-        user += f'Подпись в конце: {me["signature"].strip()}\n'
+    telegram = bool(TELEGRAM_WORDS.search(task))
+    user = ''
+    if block:
+        user += 'МАТЕРИАЛЫ (справка; факты бери только отсюда):\n\n' + block + '\n\n'
     refs = PEOPLE.context(task + ' ' + block) if PEOPLE is not None else []
     if refs:
-        user += ('\nСправочник (точные звания и должности; адресата ставь в дательный падеж: «Начальнику …», '
-                 '«полковнику …», «Иванову И.И.»):\n' + '\n'.join(refs) + '\n')
-    examples = style_samples(task)
-    if examples:
-        user += ('\nОбразцы документов, принятые в отделе. Возьми из них оформление, порядок частей и обороты; '
-                 'факты из образцов НЕ переноси:\n\n' + '\n\n'.join(f'--- Образец: {n} ---\n{t}' for n, t in examples) + '\n')
+        user += ('СПРАВОЧНИК (точные звания и должности; адресата ставь в дательный падеж: «Начальнику …», '
+                 '«полковнику …», «Иванову И.И.»):\n' + '\n'.join(refs) + '\n\n')
     import iskra_learn
     import iskra_memory
-    past = iskra_memory.prompt_block(task, block)    # похожий документ, который пользователь уже отправлял
-    user += past
-    user += iskra_learn.prompt_block(example=not past)   # манера по прошлым правкам (образец — если нет похожего)
-    if block:
-        user += '\nМатериалы (справка; используй только факты из них):\n\n' + block + '\n'
-    user += ('\nВерни только готовый текст документа, без вступлений вроде «Вот текст» и без пояснений после. '
-             'Чего не хватает — [УТОЧНИТЬ: …].')
+    if iskra_memory.LAST_TIME.search(task):
+        user += iskra_memory.prompt_block(task, block) + '\n'     # «как в прошлый раз» — прошлый документ как основа
+    else:
+        sample = best_sample(task, block)
+        if sample:
+            where, text = sample
+            user += (f'ОБРАЗЕЦ — так пишут у пользователя ({where}). Повтори его построение, обороты, оформление и '
+                     'ПОЛНОТУ: столько же частей и подробностей, если их позволяют материалы. Факты, даты, номера и '
+                     'адресата из образца НЕ переноси:\n---\n' + text + '\n---\n\n')
+    user += iskra_learn.prompt_block(example=False)          # устойчивые правки пользователя
+    user += f'ЗАДАЧА: {task.strip()}\n\n'
+    user += ('ПРАВИЛА:\n'
+             '1. Напиши готовый документ целиком, полно и по существу: всё, что по задаче нужно из материалов '
+             '(что сделать, кому, в каком объёме, кто отвечает, как доложить). Не отписка из одной-двух фраз.\n'
+             '2. Официально-деловой язык, грамотно, с правильными падежами («прошу представить сведения», '
+             '«согласно приказу», «в течение суток»). Поручения — пунктами с номерами, каждый с глагола '
+             '(«1. Представить…», «2. Обеспечить…»). Без английских слов, звёздочек и решёток.\n'
+             '3. Факты (фамилии, должности, числа, названия) — только из материалов и задачи; чего нет — [УТОЧНИТЬ: …].\n'
+             '4. Даты, время, номера документов и имена файлов-материалов НЕ вставляй, если задача их не просит '
+             '(не пиши «согласно телеграмме … от …», «по состоянию на …», «в 14:00»). Ссылку «На № … от …» — только '
+             'если в задаче сказано ответить на документ или назван его номер.\n'
+             '5. ' + DATE_RULES().replace('\n', ' ').strip() + '\n')
+    if telegram:
+        user += '\n' + telegram_format(me) + '\n'
+    elif me and me.get('signature', '').strip():
+        user += f'\nПодпись в конце: {me["signature"].strip()}\n'
+    user += ('\nВерни только готовый текст документа, без вступлений вроде «Вот текст» и без пояснений после.')
     if truncated:
         user += f'\n(Часть материалов не поместилась: {", ".join(truncated)}.)'
     kw.setdefault('temperature', 0.15)                     # меньше «фантазии» — меньше ошибок и выдумок
-    raw = run(chat_prompt(user), max_tokens=kw.pop('max_tokens', 800), **kw)
+    raw = run(chat_prompt(user), max_tokens=kw.pop('max_tokens', 1300), **kw)
     raw, removed = strip_unasked(raw, task, keep, sources)     # даты, время, номера, имена файлов — только если просили
     if removed:
         write_log('Убрано не запрошенное: ' + '; '.join(removed[:20]))
@@ -784,7 +814,7 @@ def write(task, sources=(), me=None, **kw):
     LAST_FIXES[:] = fixes
     if fixes:
         write_log('Вычитка: ' + '; '.join(fixes[:30]))
-    if TELEGRAM_WORDS.search(task):
+    if telegram:
         out = enforce_signature(out, me)
     return out, truncated
 
@@ -796,10 +826,13 @@ def answer(question, sources, **kw):
         raise AIError('По вопросу не нашлось документов. Уточните слова или добавьте папки для поиска.')
     from datetime import date
     user = (f'Сегодня {date.today().strftime("%d.%m.%Y")}.\nВопрос: {question.strip()}\n\nДокументы:\n\n{block}\n\n'
-            'Ответь коротко и по существу только по этим документам. Если документы расходятся — верен более новый '
-            '(дата файла в имени материала), скажи об этом. После ответа с новой строки напиши '
-            '«Источник: » и имя файла. Если ответа в документах нет — так и напиши: «В документах не нашла».')
-    return run(chat_prompt(user), max_tokens=kw.pop('max_tokens', 400), temperature=0.1, **kw), truncated
+            'Ответь полно и по существу, только по этим документам: всё, что относится к вопросу, из ВСЕХ документов — '
+            'что требуется, кому, сроки, ответственные, цифры. Если сведений несколько — списком, по пунктам. '
+            'Если документы расходятся — верен более новый (дата файла в имени материала), скажи об этом. '
+            'После ответа с новой строки напиши «Источник: » и имена файлов, откуда взято. '
+            'Если ответа в документах нет — так и напиши: «В документах не нашла».')
+    out = run(chat_prompt(user), max_tokens=kw.pop('max_tokens', 900), temperature=0.1, **kw)
+    return proofread(out, sources, question)[0], truncated
 
 
 EDITS = {
@@ -1166,9 +1199,10 @@ def route(text, **kw):
 
 def chat(text, **kw):
     """Общий вопрос без документов."""
-    user = (f'{text.strip()}\n\nОтветь по существу, кратко, по-русски. Если вопрос о правилах оформления документов — '
+    user = (f'{text.strip()}\n\nОтветь по существу и достаточно подробно, по-русски, чтобы можно было сразу '
+            'применить: если уместно — по шагам или списком, с примером. Если вопрос о правилах оформления документов — '
             'опирайся на общепринятые нормы делопроизводства и честно говори, если не уверена.')
-    return run(chat_prompt(user), max_tokens=500, **kw)
+    return proofread(run(chat_prompt(user), max_tokens=900, **kw), (), text)[0]
 
 
 # ---------- входящие ----------
@@ -1445,9 +1479,9 @@ def followup(history, question, sources=(), **kw):
     from datetime import date
     user = (f'Сегодня {date.today().strftime("%d.%m.%Y")}.\nМы уже говорили:\n\n{talk}\n\n'
             'Теперь пользователь пишет (это продолжение того же разговора): '
-            f'«{question.strip()}».\nОтветь коротко и по существу, с учётом сказанного выше.')
+            f'«{question.strip()}».\nОтветь по существу и полно, с учётом сказанного выше.')
     if block:
         user += ('\n\nДокументы (отвечай только по ним; в конце с новой строки «Источник: » и имя файла; '
                  'если ответа нет — «В документах не нашла»):\n\n' + block)
-        return run(chat_prompt(user), max_tokens=400, temperature=0.1, **kw)
-    return run(chat_prompt(user), max_tokens=500, **kw)
+        return run(chat_prompt(user), max_tokens=800, temperature=0.1, **kw)
+    return run(chat_prompt(user), max_tokens=800, **kw)
