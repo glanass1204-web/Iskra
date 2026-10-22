@@ -16,6 +16,7 @@ from iskra_spell import fix_typical
 import json
 from iskra_workflows import normalize_layout, draft_from_sources, save_history
 import iskra_vba
+import iskra_ai
 
 DOC_TYPES = [('Word и текст', '*.docx *.txt'), ('Все документы', '*.docx *.xlsx *.pptx *.pdf *.txt *.md *.csv')]
 
@@ -224,7 +225,7 @@ class ToolsMixin:
             box.pack(side='bottom', fill='x', padx=12)
         t = tk.Text(win, wrap='word', font=('Segoe UI', 11), undo=True)
         t.pack(fill='both', expand=True, padx=12)
-        t.insert('1.0', initial or telegram_template())
+        t.insert('1.0', self.to_template(initial) if initial else self.telegram_blank())
 
         def check():
             self.precheck(win, t, source_paths)
@@ -277,7 +278,45 @@ class ToolsMixin:
 
     def telegram_template_path(self):
         p = self.telegram_settings().get('template')
-        return p if p and Path(p).is_file() else None
+        path = p if p and Path(p).is_file() else None
+        iskra_ai.TELEGRAM_TEMPLATE = path            # нейросеть пишет по тому же шаблону
+        return path
+
+    def telegram_blank(self):
+        """Пустая телеграмма: по своему шаблону отдела, если он выбран, иначе стандартная."""
+        template = self.telegram_template_path()
+        if not template:
+            return telegram_template()
+        from datetime import date
+        from iskra_telegram import has_placeholders, render_template, template_text
+        try:
+            sample = template_text(template)
+        except Exception:
+            return telegram_template()
+        if has_placeholders(sample):
+            me = self.my_details()
+            return render_template(template, {'от кого': me.get('from', ''), 'дата': date.today().strftime('%d.%m.%Y'),
+                                              'подпись': [x for x in me.get('signature', '').splitlines() if x.strip()]})
+        return sample
+
+    def to_template(self, text):
+        """Текст в стандартном виде Искры («Кому: … Текст: … Подпись:») → вид своего шаблона с метками.
+        Шаблон без меток — текст не трогаем (по образцу его переписывает нейросеть)."""
+        template = self.telegram_template_path()
+        if not template:
+            return text
+        from iskra_telegram import has_placeholders, is_labeled, render_template, split_editor_text, template_text
+        text, sep, tail = text.partition('--- ИСТОЧНИКИ')
+        tail = ('\n\n' + sep + tail) if sep else ''
+        try:
+            if not (is_labeled(text) and has_placeholders(template_text(template))):
+                return text.rstrip() + tail
+            title, header, body, signature = split_editor_text(text)
+        except Exception:
+            return text
+        fields = {k.lower(): v for k, v in header.items()}
+        fields.update({'заголовок': title, 'текст': body, 'подпись': signature})
+        return render_template(template, fields) + tail
 
     def telegram_template_window(self, parent=None):
         win = _window(self, 'шаблон оформления телеграмм', '680x300')
@@ -289,6 +328,7 @@ class ToolsMixin:
         def save(value):
             data = self.telegram_settings(); data['template'] = value
             (ROOT / 'telegram.json').write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+            self.telegram_template_path()
             state.set(value or 'Стандартное оформление: Times New Roman 14, отступ первой строки 1,25 см, поля по ГОСТ Р 7.0.97.')
 
         def choose():

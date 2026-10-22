@@ -40,6 +40,7 @@ class App(VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin
         self.start_planning()
         self.start_people()
         self.start_journal()
+        self.telegram_template_path()                    # шаблон телеграмм — и для нейросети
         self.ai_ready = iskra_ai.available()
         root.bind('<Escape>', self.ai_stop)
         root.protocol('WM_DELETE_WINDOW', self.close)
@@ -821,6 +822,25 @@ def selftest_ai():
     check('продолжение разговора', lambda: iskra_ai.followup(
         [('какой срок представления сведений по телеграмме 154?', 'До 25.10.2026.\nИсточник: тлг 154.txt')], 'а от кого она?', [doc]),
         lambda r: 'штаб' in r.lower())
+
+    def by_template():
+        import tempfile
+        from docx import Document
+        sample = Path(tempfile.mkdtemp()) / 'obrazec.docx'
+        d = Document()
+        for line in ('ТЕЛЕГРАММА', 'Командиру войсковой части 12345', '',
+                     'Во исполнение указаний штаба округа приказываю представить сведения о технике до 01.03.2024.', '',
+                     'Начальник штаба', 'полковник П.П. Сидоров'):
+            d.add_paragraph(line)
+        d.save(sample)
+        iskra_ai.TELEGRAM_TEMPLATE = str(sample)
+        try:
+            return iskra_ai.write('Составь телеграмму начальнику госпиталя: представить сведения о численности личного '
+                                  'состава до 30.10.2026', [])[0]
+        finally:
+            iskra_ai.TELEGRAM_TEMPLATE = None
+    check('телеграмма по шаблону отдела', by_template,
+          lambda r: 'Кому:' not in r and 'Сидоров' in r and '30.10.2026' in r and '01.03.2024' not in r and 'госпитал' in r.lower())
     lines.append(f'Режим: {iskra_ai.mode()}')
     iskra_ai.shutdown()
     (ROOT / 'selftest_ai.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')

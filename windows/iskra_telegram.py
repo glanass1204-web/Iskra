@@ -312,9 +312,14 @@ def split_editor_text(text):
 def save_docx(text, path, template=None):
     """Lays the telegram out in Word: the user's template with {Кому}, {Текст}, {Подпись}… or the standard one."""
     from docx import Document
-    title, header, body, signature = split_editor_text(text)
+    text = text.split('--- ИСТОЧНИКИ')[0].rstrip()
     if template:
-        return _fill_template(template, path, title, header, body, signature)
+        # Шаблон с метками и текст с «Кому: / Текст: / Подпись:» — подставляем по меткам; иначе текст уже в виде
+        # шаблона (так его пишет нейросеть) — переносим строки с оформлением шаблона.
+        if is_labeled(text) and has_placeholders(template_text(template)):
+            return _fill_template(template, path, *split_editor_text(text))
+        return save_like_template(text, path, template)
+    title, header, body, signature = split_editor_text(text)
     from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
     from docx.shared import Cm, Pt
     doc = Document()
@@ -407,6 +412,124 @@ def _fill_template(template, path, title, header, body, signature):
     return path
 
 
-TEMPLATE_HELP = ('Свой шаблон: документ Word, оформленный как нужно (шрифт, поля, отступы), где вместо данных '
-                 'написано {Кому}, {От кого}, {Дата}, {Номер}, {Тема}, а отдельными абзацами — {Текст} и {Подпись}. '
+TEMPLATE_HELP = ('Свой шаблон: документ Word, оформленный как нужно — подойдёт и обычная удачная телеграмма отдела. '
+                 'Искра и нейросеть составляют текст по нему (та же шапка, порядок, обороты, подпись), а в Word переносят его '
+                 'оформление. Ещё точнее — если вместо данных написать метки: '
+                 '{Кому}, {От кого}, {Дата}, {Номер}, {Тема}, а отдельными абзацами — {Текст} и {Подпись}. '
                  'Оформление абзаца {Текст} (отступ первой строки, выравнивание, шрифт) получат все пункты.')
+
+
+# ---------- свой шаблон: не только при сохранении в Word, но и для самого текста ----------
+
+PLACEHOLDER = re.compile(r'\{(кому|от кого|дата|номер|тема|гриф|срочность|заголовок|текст|подпись)\}', re.IGNORECASE)
+
+
+def _body_items(doc):
+    """Абзацы и таблицы документа по порядку: ('p', Paragraph) / ('t', Table)."""
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+    for child in doc.element.body.iterchildren():
+        tag = child.tag.rsplit('}', 1)[-1]
+        if tag == 'p':
+            yield 'p', Paragraph(child, doc)
+        elif tag == 'tbl':
+            yield 't', Table(child, doc)
+
+
+def template_text(template):
+    """Текст шаблона строками, как он выглядит (таблицы — строка на строку таблицы, ячейки через пробелы)."""
+    from docx import Document
+    doc = Document(template)
+    lines = []
+    for kind, item in _body_items(doc):
+        if kind == 'p':
+            lines.append(item.text)
+        else:
+            for row in item.rows:
+                cells = list(dict.fromkeys(c.text.strip() for c in row.cells if c.text.strip()))
+                lines.append('    '.join(cells))
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return '\n'.join(lines)
+
+
+def has_placeholders(text):
+    return bool(PLACEHOLDER.search(text or ''))
+
+
+def render_template(template, fields):
+    """Шаблон с метками → текст для редактора: метки заменены значениями, пустые — [УТОЧНИТЬ: …].
+    fields: кому, от кого, дата, номер, тема, текст (строки), подпись (строки)."""
+    text = template_text(template)
+
+    def value(m):
+        key = m.group(1).lower()
+        v = fields.get(key)
+        if isinstance(v, (list, tuple)):
+            v = '\n'.join(x for x in v if x)
+        return v or f'[УТОЧНИТЬ: {key}]'
+    return PLACEHOLDER.sub(value, text)
+
+
+def _similar(a, b):
+    import difflib
+    a, b = re.sub(r'\s+', ' ', a.strip().lower()), re.sub(r'\s+', ' ', b.strip().lower())
+    if not a or not b:
+        return 1.0 if a == b else 0.0
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+def save_like_template(text, path, template):
+    """Текст в Word с оформлением шаблона: каждая строка получает оформление самого похожего абзаца шаблона
+    (шапка — как шапка, пункты — как текст, подпись — как подпись). Поля, колонтитулы и стили шаблона сохраняются."""
+    from copy import deepcopy
+    from docx import Document
+    from docx.text.paragraph import Paragraph
+    doc = Document(template)
+    items = list(_body_items(doc))
+    paras = [p for kind, p in items if kind == 'p']
+    if not paras:
+        return _fill_template(template, path, *split_editor_text(text))
+    filled = [p for p in paras if p.text.strip()]
+    body_like = max(filled, key=lambda p: len(p.text)) if filled else paras[0]
+    empty_like = next((p for p in paras if not p.text.strip()), body_like)
+    lines = text.rstrip().split('\n')
+    chosen, pos = [], 0
+    for line in lines:
+        if not line.strip():
+            chosen.append(empty_like); continue
+        best, score = None, 0.0
+        for j in range(pos, len(paras)):
+            s = _similar(line, paras[j].text)
+            if s > score:
+                best, score = j, s
+        if best is not None and score >= 0.55:
+            chosen.append(paras[best]); pos = best + 1
+        elif len(line) > 60:
+            chosen.append(body_like)
+        else:
+            nxt = next((paras[j] for j in range(pos, len(paras)) if paras[j].text.strip()), body_like)
+            chosen.append(nxt)
+    anchor = items[0][1]._p if items[0][0] == 'p' else items[0][1]._tbl
+    for line, src in zip(lines, chosen):
+        new = deepcopy(src._p)
+        anchor.addprevious(new)
+        p = Paragraph(new, src._parent)
+        runs = p.runs
+        if runs:
+            runs[0].text = line
+            for r in runs[1:]:
+                r.text = ''
+        elif line:
+            p.add_run(line)
+    for kind, item in items:                          # старое содержание шаблона убираем, оформление осталось
+        el = item._p if kind == 'p' else item._tbl
+        if el.getparent() is not None and not el.tag.endswith('sectPr'):
+            el.getparent().remove(el)
+    doc.save(path)
+    return path
+
+
+def is_labeled(text):
+    """Текст в виде «Кому: … Текст: … Подпись:» (стандартный вид Искры)."""
+    return bool(re.search(r'^\s*Кому\s*:', text, re.MULTILINE)) and bool(re.search(r'^\s*(Текст|Подпись)\s*:?\s*$', text, re.MULTILINE))
