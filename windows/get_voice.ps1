@@ -24,7 +24,14 @@ if (-not $url) {
 }
 $zip = Join-Path $env:TEMP 'whisper-bin-x64.zip'
 Write-Host "Скачиваю whisper.cpp ${tag}"
-Invoke-WebRequest -Headers @{ 'User-Agent' = 'Iskra' } $url -OutFile $zip
+try {
+  Invoke-WebRequest -Headers @{ 'User-Agent' = 'Iskra' } $url -OutFile $zip
+} catch {
+  # Проверенная версия — у новых выпусков whisper.cpp сборки для Windows бывает нет
+  $tag = 'b5454'
+  Write-Host "Не скачалось ($($_.Exception.Message)) — беру проверенную версию $tag"
+  Invoke-WebRequest -Headers @{ 'User-Agent' = 'Iskra' } "https://github.com/ggml-org/whisper.cpp/releases/download/$tag/whisper-bin-x64.zip" -OutFile $zip
+}
 $unpacked = Join-Path $env:TEMP 'iskra_whisper'
 if (Test-Path $unpacked) { Remove-Item $unpacked -Recurse -Force }
 Expand-Archive $zip $unpacked

@@ -27,7 +27,14 @@ if (-not $url) {
 }
 $zip = Join-Path $env:TEMP $name
 Write-Host "Скачиваю llama.cpp ${tag}: $name"
-Invoke-WebRequest -Headers @{ 'User-Agent' = 'Iskra' } $url -OutFile $zip
+try {
+  Invoke-WebRequest -Headers @{ 'User-Agent' = 'Iskra' } $url -OutFile $zip
+} catch {
+  # Проверенная версия — если у самого свежего выпуска нет сборки для Windows
+  $tag = 'b11819'; $name = "llama-$tag-bin-win-cpu-x64.zip"; $zip = Join-Path $env:TEMP $name
+  Write-Host "Не скачалось ($($_.Exception.Message)) — беру проверенную версию $tag"
+  Invoke-WebRequest -Headers @{ 'User-Agent' = 'Iskra' } "https://github.com/ggml-org/llama.cpp/releases/download/$tag/$name" -OutFile $zip
+}
 $unpacked = Join-Path $env:TEMP 'iskra_llama'
 if (Test-Path $unpacked) { Remove-Item $unpacked -Recurse -Force }
 Expand-Archive $zip $unpacked
