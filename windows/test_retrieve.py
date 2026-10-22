@@ -20,6 +20,37 @@ class RetrieveTest(unittest.TestCase):
         sources, paths = ai.retrieve('напиши доклад о готовности техники по телеграммам о сведениях', search, docs.get)
         self.assertGreaterEqual(len(paths), 8)                  # раньше — не больше 4, обычно 1–2
 
+    def test_every_document_fits_no_truncation(self):
+        """Раньше документы по 1800 знаков — после 5-го кончалось место, остальные отрезались."""
+        docs = {f'тлг {i}.txt': ('Вступление. ' * 200) + f'Представить сведения о технике в/ч {1000 + i}: {i} ед. '
+                                + ('Окончание. ' * 200) for i in range(1, 19)}
+
+        def search(q, any_word):
+            words = q.lower().split()
+            return [(p, '') for p, t in docs.items() if (any if any_word else all)(w[:5] in t.lower() for w in words)]
+        sources, paths = ai.retrieve('доклад о сведениях о технике', search, docs.get)
+        self.assertEqual(len(paths), 18)
+        block, truncated = ai.materials(sources)
+        self.assertEqual(truncated, [])                                  # ни один не обрезан
+        for i in range(1, 19):
+            self.assertIn(f'в/ч {1000 + i}', block)                       # из каждого — нужное место
+
+    def test_rank_by_matched_words(self):
+        docs = {'общий.txt': 'сведения сведения сведения о готовности',
+                'точный.txt': 'КП 5447 переместился в Лисичанск, сведения о готовности',
+                'шум.txt': 'прочее'}
+
+        def search(q, any_word):
+            words = q.lower().split()
+            return [(p, '') for p, t in docs.items() if (any if any_word else all)(w[:4] in t.lower() for w in words)]
+        stats = {}
+        _, paths = ai.retrieve('где сейчас КП 5447, Лисичанск, сведения', search, docs.get, stats=stats)
+        self.assertEqual(paths[0] if len(paths) == 1 else sorted(paths, key=lambda p: p != 'точный.txt')[0], 'точный.txt')
+        ranked = ai.rank_documents(ai.keywords('КП 5447 Лисичанск сведения'), search)
+        self.assertEqual(ranked[0][0], 'точный.txt')
+        self.assertNotIn('шум.txt', [r[0] for r in ranked])
+        self.assertGreaterEqual(stats['found'], 1)
+
     def test_file_date_in_name(self):
         d = Path(tempfile.mkdtemp())
         f = d / 'старая.txt'

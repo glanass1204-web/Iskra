@@ -669,23 +669,24 @@ class AIMixin:
         return []
 
     @staticmethod
-    def _sources_for(text, extra):
+    def _sources_for(text, extra, stats=None):
         import iskra_smartsearch
-        return ai.retrieve(text, lambda q, any_word: search_docs(q, 20, any_word), lambda p: extract(Path(p)), extra=extra,
-                           smart_fn=lambda q: iskra_smartsearch.smart_search(q, 20, ROOT)[0])
+        return ai.retrieve(text, lambda q, any_word: search_docs(q, 200, any_word), lambda p: extract(Path(p)), extra=extra,
+                           smart_fn=lambda q: iskra_smartsearch.smart_search(q, 50, ROOT)[0], stats=stats)
 
     def _gather(self, task, extra, cancel, update):
         """Найти документы, показать какие, и если их много — выписать нужное из каждого."""
-        sources, paths = self._sources_for(task, extra)
+        stats = {}
+        sources, paths = self._sources_for(task, extra, stats)
         names = [Path(p).name for p in paths]
+        more = stats.get('found', 0) - len(names)
         self.events.put(('call', lambda: self.say(
-            (f'Беру документы ({len(names)}): ' + ', '.join(names)) if names else
+            (f'Беру документы ({len(names)}' + (f' самых подходящих из {stats["found"]}' if more > 0 else '') + '): '
+             + ', '.join(names)) if names else
             'Подходящих документов не нашла — пишу по задаче, факты помечу [УТОЧНИТЬ]. '
             'Чтобы писать по своим документам: «найди …», затем «напиши … по найденным».', 'proof')))
-        full = list(sources)
-        if len(sources) > 1:
-            sources = ai.condense(task, sources, on_progress=update, cancel=cancel)
-        return sources, full, paths
+        # Каждый документ уже получил свою долю места (выдержки вокруг слов задачи) — ни один не отбрасывается.
+        return sources, list(sources), paths
 
     def ai_write(self, task):
         if not self.ai_ready:

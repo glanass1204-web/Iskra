@@ -746,11 +746,16 @@ def passages(text, words, limit=2200):
         return text[:limit]
     keep = sorted({j for i in hits for j in (i - 1, i, i + 1) if 0 <= j < len(sentences)})
     out, size, last = [], 0, None
+    first = sentences[hits[0]]
+    if len(first) > limit:                                   # места меньше предложения — хотя бы его начало
+        return first[:limit].rsplit(' ', 1)[0] + '…'
     for j in keep:
         piece = sentences[j]
         if last is not None and j != last + 1:
             piece = '… ' + piece
         if size + len(piece) > limit:
+            if not out:
+                continue                                     # соседнее длинное — пропустить, взять само найденное
             break
         out.append(piece)
         size += len(piece) + 1
@@ -766,40 +771,81 @@ def _file_date(p):
         return ''
 
 
-def retrieve(query, search_fn, read_fn, docs=12, extra=(), smart_fn=None):
+def rank_documents(words, search_fn, query='', smart_fn=None):
+    """Документы по тому, СКОЛЬКО важных слов задачи в них есть: каждое слово ищется отдельно, редкое слово
+    («5447», «Лисичанск») весит больше частого («сведения», «часть»). Документ со всеми словами — выше.
+    Возвращает [(путь, очки, сколько слов совпало)] по убыванию."""
+    import math
+    score, matched, first_seen = {}, {}, {}
+
+    def add(path, points, word=None):
+        if path not in first_seen:
+            first_seen[path] = len(first_seen)
+        score[path] = score.get(path, 0.0) + points
+        if word is not None:
+            matched.setdefault(path, set()).add(word)
+    for w in words:
+        rows = [r[0] for r in search_fn(w, False)]
+        if not rows:
+            continue
+        weight = math.log(1 + 200 / len(rows))              # чем реже слово, тем важнее
+        for rank, path in enumerate(rows):
+            add(path, weight * (1 - 0.3 * rank / len(rows)), w)
+    if len(words) > 1:
+        for path in [r[0] for r in search_fn(' '.join(words), False)]:
+            add(path, 3.0)                                   # все слова сразу — сильный сигнал
+    if smart_fn is not None:
+        for path in [r[0] for r in smart_fn(query or ' '.join(words))]:
+            add(path, 1.5)                                   # нашлось по смыслу (синонимы)
+    need = 1 if len(words) <= 2 else 2
+    out = [(p, score[p], len(matched.get(p, ()))) for p in score
+           if len(matched.get(p, ())) >= need or score[p] >= 3.0]
+    out.sort(key=lambda x: (-x[1], first_seen[x[0]]))
+    return out
+
+
+def retrieve(query, search_fn, read_fn, docs=25, extra=(), smart_fn=None, budget=None, stats=None):
     """Документы под запрос: search_fn(запрос, any) → [(путь, …)], read_fn(путь) → текст.
-    Собирает из нескольких поисков (все слова, главные слова, по смыслу, любое слово), а не останавливается
-    на первом — иначе в работу попадали 1–2 документа. extra — выбранные пользователем документы, идут первыми.
-    Имя материала с датой файла — чтобы нейросеть видела, что документ старый."""
+    Отбираются самые подходящие (по числу совпавших важных слов), до docs штук; extra — выбранные человеком, идут первыми.
+    Каждый документ получает свою долю места — в работу попадают ВСЕ отобранные, а не первые 5–6, на которых кончалось место.
+    Имя материала с датой файла — чтобы нейросеть видела, что документ старый. stats (dict) — сколько нашлось всего."""
+    budget = budget or MAX_SOURCE_CHARS
     words = keywords(query)
-    found = []
-    if words:
-        queries = [(' '.join(words), False), (' '.join(words[:3]), False)]
-        for q, any_word in queries:
-            found += [r[0] for r in search_fn(q, any_word)]
-        if smart_fn is not None:
-            found += [r[0] for r in smart_fn(query)]
-        if len(dict.fromkeys(found)) < docs:
-            found += [r[0] for r in search_fn(' '.join(words), True)]
+    ranked = rank_documents(words, search_fn, query, smart_fn) if words else []
+    found = [p for p, _, _ in ranked]
     paths = list(dict.fromkeys(list(extra) + found))[:max(docs, len(extra))]
+    if stats is not None:
+        stats['found'] = len(dict.fromkeys(list(extra) + found))
+        stats['taken'] = len(paths)
 
     def mtime(p):
         try:
             return Path(p).stat().st_mtime
         except OSError:
             return 0
-    # Отобраны самые подходящие; в работу — сначала новые (при обрезке теряются старые, а не свежие).
+    # В работу — сначала выбранные человеком, потом новые документы.
     chosen = [p for p in paths if p in extra]
     paths = chosen + sorted((p for p in paths if p not in extra), key=mtime, reverse=True)
-    out = []
+    texts = []
     for p in paths:
         try:
-            text = read_fn(p)
+            texts.append((p, read_fn(p)))
         except Exception:
             continue
+    paths = [p for p, _ in texts]
+    n = max(1, len(texts))
+    share = max(300, (budget - 80 * n) // n)                 # место поровну; заголовок материала ~80 знаков
+    if len(chosen) == 1 and n == 1:
+        share = min(6000, budget)
+    out = []
+    spare = 0
+    for p, text in texts:
+        limit = share + spare
+        piece = passages(text, words, limit=limit) if len(text) > limit else text
+        spare = max(0, limit - len(piece))                    # короткий документ отдаёт место следующим
         when = _file_date(p)
         name = Path(p).name + (f' (файл от {when})' if when else '')
-        out.append((name, text[:6000] if p in extra else passages(text, words, limit=1800)))
+        out.append((name, piece))
     return out, paths
 
 
