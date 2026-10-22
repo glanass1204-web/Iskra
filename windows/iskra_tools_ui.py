@@ -211,7 +211,7 @@ class ToolsMixin:
 
     # ---------- Телеграммы ----------
 
-    def telegrams(self, initial=None, note=None, report=None):
+    def telegrams(self, initial=None, note=None, report=None, source_paths=()):
         win = _window(self, 'редактор телеграмм', '960x680')
         ttk.Label(win, text='Проект телеграммы · исходные документы не изменяются', font=('Segoe UI', 12, 'bold')).pack(anchor='w', padx=12, pady=8)
         buttons = ttk.Frame(win); buttons.pack(side='bottom', fill='x', padx=12, pady=8)
@@ -227,9 +227,7 @@ class ToolsMixin:
         t.insert('1.0', initial or telegram_template())
 
         def check():
-            issues = telegram_check(t.get('1.0', 'end-1c'))
-            issues = [i for i in issues if not i.startswith('Орфография и фактическая точность')]
-            messagebox.showinfo('Проверка перед отправкой', '\n'.join('• ' + x for x in issues) or 'Замечаний по оформлению нет.', parent=win)
+            self.precheck(win, t, source_paths)
 
         def save():
             path = filedialog.asksaveasfilename(parent=win, defaultextension='.docx', filetypes=[('Word', '*.docx')], initialdir=str(ROOT))
@@ -260,7 +258,8 @@ class ToolsMixin:
                 messagebox.showerror('Ошибка', str(exc), parent=win)
 
         ttk.Button(buttons, text='Орфография', style='Accent.TButton', command=lambda: self.spell_window(target=t)).pack(side='left')
-        ttk.Button(buttons, text='Проверить оформление', command=check).pack(side='left', padx=6)
+        ttk.Button(buttons, text='Проверить перед отправкой', command=check).pack(side='left', padx=6)
+        self.people_menu(buttons, t).pack(side='left', padx=(0, 6))
         ttk.Button(buttons, text='Убрать лишние пробелы', command=tidy).pack(side='left')
         ttk.Button(buttons, text='Черновик по выбранному файлу', command=prepare).pack(side='left', padx=6)
         if hasattr(self, 'editor_ai'):

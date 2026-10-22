@@ -444,7 +444,8 @@ class AIMixin:
             save_history(ROOT, 'Нейросеть: текст', task[:200])
             self.telegrams(initial=text + ('\n\n--- ИСТОЧНИКИ (НЕ ЧАСТЬ ТЕЛЕГРАММЫ) ---\n' +
                                            '\n'.join(f'{i}. {Path(p).name}' for i, p in enumerate(paths, 1)) if paths else ''),
-                           note='Черновик нейросети. Проверьте факты по источникам, впишите [УТОЧНИТЬ…], затем «Орфография».')
+                           note='Черновик нейросети. Проверьте факты по источникам, впишите [УТОЧНИТЬ…], затем «Проверить перед отправкой».',
+                           source_paths=paths)
         self.ai_background(job, done)
 
     def ai_ask(self, question):

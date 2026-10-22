@@ -407,6 +407,38 @@ def telegram_format(me=None):
             f'От кого: {me.get("from") or "[УТОЧНИТЬ: от кого]"}\n\nТекст:\n<текст>\n\nПодпись:\n{sign}')
 
 
+STYLE_DIR = None            # папка образцов отдела (data/obrazcy); задаёт окно Искры
+PEOPLE = None               # справочник людей (iskra_people.People); задаёт окно Искры
+_SAMPLES = {}
+
+
+def style_samples(task, limit=2, max_chars=1500):
+    """1–2 образца из папки отдела, ближайшие к задаче по словам (телеграмма к телеграмме, доклад к докладу)."""
+    if STYLE_DIR is None or not Path(STYLE_DIR).is_dir():
+        return []
+    from iskra_index import extract
+    def stems(text):
+        return {w.lower().replace('ё', 'е')[:6] for w in re.findall(r'[А-Яа-яЁё]{4,}', text)}
+    words = stems(task)
+    scored = []
+    for f in sorted(Path(STYLE_DIR).iterdir()):
+        if f.suffix.lower() not in ('.docx', '.txt') or f.name.startswith('~$'):
+            continue
+        try:
+            key = (f.stat().st_mtime_ns, f.stat().st_size)
+            if _SAMPLES.get(f, (None,))[0] != key:
+                _SAMPLES[f] = (key, extract(f).strip())
+            text = _SAMPLES[f][1]
+        except Exception:
+            continue
+        if not text:
+            continue
+        overlap = len(words & stems(f.stem + ' ' + text[:800]))
+        scored.append((overlap, f.stem, text[:max_chars]))
+    scored.sort(key=lambda x: -x[0])
+    return [(name, text) for _, name, text in scored[:limit]]
+
+
 def write(task, sources=(), me=None, **kw):
     """Составить новый текст по задаче, опираясь на найденные документы."""
     block, truncated = materials(list(sources))
@@ -417,6 +449,14 @@ def write(task, sources=(), me=None, **kw):
             '(«На № … от …») и изложи по существу: что сделано или будет сделано и в какой срок.\n')
     if 'телеграм' in task.lower():
         user += telegram_format(me) + '\n'
+    refs = PEOPLE.context(task + ' ' + block) if PEOPLE is not None else []
+    if refs:
+        user += ('\nСправочник (точные звания и должности; адресата ставь в дательный падеж: «Начальнику …», '
+                 '«полковнику …», «Иванову И.И.»):\n' + '\n'.join(refs) + '\n')
+    examples = style_samples(task)
+    if examples:
+        user += ('\nОбразцы документов, принятые в отделе. Возьми из них оформление, порядок частей и обороты; '
+                 'факты из образцов НЕ переноси:\n\n' + '\n\n'.join(f'--- Образец: {n} ---\n{t}' for n, t in examples) + '\n')
     if block:
         user += '\nМатериалы (справка; используй только факты из них):\n\n' + block + '\n'
     user += ('\nВерни только готовый текст документа, без вступлений вроде «Вот текст» и без пояснений после. '

@@ -9,6 +9,8 @@ from iskra_tools_ui import ToolsMixin
 from iskra_work_ui import WorkMixin
 from iskra_ai_ui import AIMixin
 from iskra_plan_ui import PlanMixin
+from iskra_hotkey_ui import HotkeyMixin
+from iskra_people_ui import PeopleMixin
 import iskra_ai
 from iskra_formula import build_formula, explain_formula
 from iskra_macros import MACROS, export_macro
@@ -22,7 +24,7 @@ VERSION = '1.8.1'
 ACCENT = '#24518A'
 
 
-class App(PlanMixin, AIMixin, WorkMixin, ToolsMixin):
+class App(PeopleMixin, HotkeyMixin, PlanMixin, AIMixin, WorkMixin, ToolsMixin):
     def __init__(self, root):
         self.root = root
         root.title(f'Искра {VERSION} — помощник по документам')
@@ -34,6 +36,7 @@ class App(PlanMixin, AIMixin, WorkMixin, ToolsMixin):
         self.indexer.start()
         self.start_inbox()
         self.start_planning()
+        self.start_people()
         self.ai_ready = iskra_ai.available()
         root.bind('<Escape>', self.ai_stop)
         root.protocol('WM_DELETE_WINDOW', self.close)
@@ -84,6 +87,7 @@ class App(PlanMixin, AIMixin, WorkMixin, ToolsMixin):
         if self.ai_ready:
             # Модель грузится в память заранее, пока человек читает сводку: первый ответ — без ожидания загрузки.
             self.root.after(8000, lambda: threading.Thread(target=iskra_ai.warm, daemon=True).start())
+        self.start_hotkey()
         self.root.after(600, self.maybe_first_run)
         self.root.after(4000, lambda: self._morning_enabled() and self.maybe_morning())
         self.root.after(100, self.poll)
@@ -109,6 +113,8 @@ class App(PlanMixin, AIMixin, WorkMixin, ToolsMixin):
         f.add_command(label='Обновить индекс', command=self.indexer.scan_now)
         f.add_command(label='Открыть папку данных', command=lambda: os.startfile(str(ROOT)))
         f.add_command(label='Проверить нейросеть', command=self.ai_check)
+        f.add_command(label='Справочник людей…', command=self.people_window)
+        f.add_command(label='Образцы документов отдела (папка)', command=self.samples_folder)
         f.add_separator(); f.add_command(label='Выход', command=self.close)
         m.add_cascade(label='Файл', menu=f)
         t = tk.Menu(m, tearoff=False)
@@ -500,6 +506,7 @@ class App(PlanMixin, AIMixin, WorkMixin, ToolsMixin):
             d.save(path); self.status.set(f'Сохранено: {path}')
 
     def close(self):
+        self.stop_hotkey()
         iskra_ai.shutdown()
         self.indexer.stop()
         self.inbox.stop()
@@ -694,6 +701,27 @@ def selftest():
     check('автосвод', autosvod)
     check('свод Excel', svod)
     check('входящие', inbox)
+
+    def people():
+        import iskra_people as pp
+        if pp.morph() is None:
+            raise RuntimeError('словарь склонений не загрузился')
+        got = pp.addressee({'fio': 'Иванов И.И.', 'rank': 'старший лейтенант', 'position': 'начальник госпиталя'})
+        assert got == ['Начальнику госпиталя', 'старшему лейтенанту', 'Иванову И.И.'], got
+        return ' / '.join(got)
+    check('справочник и падежи', people)
+
+    def precheck():
+        import iskra_precheck as pc
+        issues = pc.check('1. Представить до 01.01.2020.\n3. Доложить.', today=date(2026, 10, 22))
+        assert any('уже прошёл' in m for _, m in issues) and any('Нумерация' in m for _, m in issues), issues
+        return f'замечаний: {len(issues)}'
+    check('проверка перед отправкой', precheck)
+
+    def pdf_render():
+        import pypdfium2 as pdfium
+        return f'pdfium {pdfium.PdfDocument.__name__}'
+    check('чтение PDF для сканов', pdf_render)
     (ROOT / 'selftest.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
     return 0 if ok else 1
 

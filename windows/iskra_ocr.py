@@ -49,14 +49,33 @@ def _cache_file(path):
     return Path(os.environ.get('ISKRA_DATA_DIR', str(base_dir() / 'data'))) / 'ocr_cache' / (key + '.txt')
 
 
+def _work_dir():
+    """Временные картинки — внутри папки программы (data/ocr_tmp), чтобы путь к ним из папки ocr был относительным
+    и латиницей: Tesseract не понимает русские буквы ни в командной строке, ни в TESSDATA_PREFIX."""
+    d = Path(os.environ.get('ISKRA_DATA_DIR', str(base_dir() / 'data'))) / 'ocr_tmp'
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        return Path(tempfile.mkdtemp(prefix='ocr_', dir=d))
+    except OSError:
+        return Path(tempfile.mkdtemp(prefix='iskra_ocr_'))
+
+
+def _rel(path, start):
+    try:
+        return os.path.relpath(path, start)
+    except ValueError:
+        return str(path)
+
+
 def _tesseract(image):
-    langs = 'rus+eng' if (_tessdata() / 'eng.traineddata').is_file() else 'rus'
-    env = dict(os.environ, TESSDATA_PREFIX=str(_tessdata()), OMP_THREAD_LIMIT='2')
-    # Путь к картинке — относительный от её папки: русские буквы в пути не попадают в командную строку.
-    image = Path(image)
-    out = subprocess.run([str(_exe()), image.name, 'stdout', '-l', langs, '--psm', '3'], cwd=str(image.parent),
-                         capture_output=True, env=env, timeout=300, stdin=subprocess.DEVNULL,
-                         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    tessdata = _tessdata()
+    langs = 'rus+eng' if (tessdata / 'eng.traineddata').is_file() else 'rus'
+    home = _exe().parent
+    env = dict(os.environ, OMP_THREAD_LIMIT='2')
+    env.pop('TESSDATA_PREFIX', None)
+    out = subprocess.run([str(_exe()), _rel(image, home), 'stdout', '--tessdata-dir', _rel(tessdata, home),
+                          '-l', langs, '--psm', '3'], cwd=str(home), capture_output=True, env=env, timeout=300,
+                         stdin=subprocess.DEVNULL, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     if out.returncode != 0:
         raise RuntimeError('распознавание не удалось: ' + out.stderr.decode('utf-8', 'replace')[-300:])
     return out.stdout.decode('utf-8', 'replace')
@@ -79,7 +98,7 @@ def pdf_pages_text(path, max_pages=MAX_PAGES):
     import pypdfium2 as pdfium
     pdf = pdfium.PdfDocument(str(path))
     texts = []
-    tmp = Path(tempfile.mkdtemp(prefix='iskra_ocr_'))
+    tmp = _work_dir()
     try:
         for i in range(min(len(pdf), max_pages)):
             page = pdf[i]
@@ -113,7 +132,7 @@ def recognize(path, kind=None):
         text = pdf_pages_text(path)
     else:
         # Копия во временную папку под латинским именем — Tesseract не всегда открывает файлы с русскими именами.
-        tmp = Path(tempfile.mkdtemp(prefix='iskra_ocr_'))
+        tmp = _work_dir()
         try:
             copy = tmp / ('scan' + path.suffix.lower())
             copy.write_bytes(path.read_bytes())
