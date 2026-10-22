@@ -439,10 +439,48 @@ def style_samples(task, limit=2, max_chars=1500):
     return [(name, text) for _, name, text in scored[:limit]]
 
 
+def DATE_RULES(today=None):
+    from datetime import date
+    t = (today or date.today()).strftime('%d.%m.%Y')
+    return (f'Сегодня {t}. Дата нового документа — сегодняшняя ({t}), если в задаче не сказано иное.\n'
+            'Сроки бери из задачи. Из материалов переноси срок, только если он ещё не прошёл и относится к этой задаче. '
+            'Прошедшие даты из материалов НЕ вставляй как сроки и как дату документа; старая дата допустима только в ссылке '
+            '«На № … от …». Если срок неясен — [УТОЧНИТЬ: срок].\n')
+
+
+PAST_CONTEXT = re.compile(r'(?:до|не позднее|к|срок\w*[:\s]*(?:до)?|в срок до|Дата\s*:)\s*$', re.IGNORECASE)
+
+
+def fix_dates(text, request='', today=None):
+    """Прошедшие даты там, где они значат срок или дату документа, — в пометку [УТОЧНИТЬ]; ссылки «на № … от …» не трогаем.
+    Даты, которые пользователь сам написал в просьбе, остаются. Возвращает (текст, список замен)."""
+    from datetime import date
+    today = today or date.today()
+    asked = set(re.findall(r'\d{1,2}\.\d{1,2}\.\d{4}', request or ''))
+    changed = []
+
+    def repl(m):
+        d, mo, y = map(int, m.group(1, 2, 3))
+        try:
+            when = date(y, mo, d)
+        except ValueError:
+            return m.group(0)
+        before = text[max(0, m.start() - 30):m.start()]
+        if when >= today or m.group(0) in asked or not PAST_CONTEXT.search(before):
+            return m.group(0)
+        if re.search(r'Дата\s*:\s*$', before):
+            changed.append(f'{m.group(0)} → {today.strftime("%d.%m.%Y")} (дата документа)')
+            return today.strftime('%d.%m.%Y')
+        changed.append(f'{m.group(0)} (срок прошёл)')
+        return f'[УТОЧНИТЬ: срок — в документах было {m.group(0)}, он уже прошёл]'
+    out = re.sub(r'\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b', repl, text)
+    return out, changed
+
+
 def write(task, sources=(), me=None, **kw):
     """Составить новый текст по задаче, опираясь на найденные документы."""
     block, truncated = materials(list(sources))
-    user = (f'Задача: {task.strip()}\n\n'
+    user = (f'Задача: {task.strip()}\n\n' + DATE_RULES() +
             'Ты пишешь НОВЫЙ документ от имени пользователя. Не переписывай и не пересказывай материалы целиком: '
             'возьми из них только нужные факты (номера, даты, сроки, названия) и составь именно тот текст, '
             'который требуется в задаче. Если это ответ или доклад на входящий документ — начни со ссылки на него '
@@ -461,7 +499,7 @@ def write(task, sources=(), me=None, **kw):
         user += '\nМатериалы (справка; используй только факты из них):\n\n' + block + '\n'
     user += ('\nВерни только готовый текст документа, без вступлений вроде «Вот текст» и без пояснений после. '
              'Чего не хватает — [УТОЧНИТЬ: …].')
-    return run(chat_prompt(user), max_tokens=kw.pop('max_tokens', 800), **kw), truncated
+    return fix_dates(run(chat_prompt(user), max_tokens=kw.pop('max_tokens', 800), **kw), task)[0], truncated
 
 
 def answer(question, sources, **kw):
@@ -469,7 +507,8 @@ def answer(question, sources, **kw):
     block, truncated = materials(list(sources))
     if not block:
         raise AIError('По вопросу не нашлось документов. Уточните слова или добавьте папки для поиска.')
-    user = (f'Вопрос: {question.strip()}\n\nДокументы:\n\n{block}\n\n'
+    from datetime import date
+    user = (f'Сегодня {date.today().strftime("%d.%m.%Y")}.\nВопрос: {question.strip()}\n\nДокументы:\n\n{block}\n\n'
             'Ответь коротко и по существу только по этим документам. После ответа с новой строки напиши '
             '«Источник: » и имя файла. Если ответа в документах нет — так и напиши: «В документах не нашла».')
     return run(chat_prompt(user), max_tokens=kw.pop('max_tokens', 400), temperature=0.1, **kw), truncated
@@ -597,25 +636,67 @@ def passages(text, words, limit=2200):
     return ' '.join(out)
 
 
-def retrieve(query, search_fn, read_fn, docs=4, extra=()):
-    """Найти документы под запрос: search_fn(запрос, any) → [(путь, …)], read_fn(путь) → текст.
-    extra — уже выбранные пользователем документы, идут первыми."""
+def _file_date(p):
+    try:
+        from datetime import datetime
+        return datetime.fromtimestamp(Path(p).stat().st_mtime).strftime('%d.%m.%Y')
+    except (OSError, ValueError):
+        return ''
+
+
+def retrieve(query, search_fn, read_fn, docs=12, extra=(), smart_fn=None):
+    """Документы под запрос: search_fn(запрос, any) → [(путь, …)], read_fn(путь) → текст.
+    Собирает из нескольких поисков (все слова, главные слова, по смыслу, любое слово), а не останавливается
+    на первом — иначе в работу попадали 1–2 документа. extra — выбранные пользователем документы, идут первыми.
+    Имя материала с датой файла — чтобы нейросеть видела, что документ старый."""
     words = keywords(query)
     found = []
     if words:
-        for q, any_word in ((' '.join(words), False), (' '.join(words[:3]), False), (' '.join(words), True)):
-            found = [r[0] for r in search_fn(q, any_word)]
-            if found:
-                break
-    paths = list(dict.fromkeys(list(extra) + found))[:docs]
+        queries = [(' '.join(words), False), (' '.join(words[:3]), False)]
+        for q, any_word in queries:
+            found += [r[0] for r in search_fn(q, any_word)]
+        if smart_fn is not None:
+            found += [r[0] for r in smart_fn(query)]
+        if len(dict.fromkeys(found)) < docs:
+            found += [r[0] for r in search_fn(' '.join(words), True)]
+    paths = list(dict.fromkeys(list(extra) + found))[:max(docs, len(extra))]
     out = []
     for p in paths:
         try:
             text = read_fn(p)
         except Exception:
             continue
-        out.append((Path(p).name, passages(text, words) if p not in extra else text[:4000]))
+        when = _file_date(p)
+        name = Path(p).name + (f' (файл от {when})' if when else '')
+        out.append((name, text[:6000] if p in extra else passages(text, words, limit=1800)))
     return out, paths
+
+
+def notes(task, name, text, today=None, **kw):
+    """Выписка из одного документа под задачу (первый шаг, когда документов много и все сразу не помещаются)."""
+    from datetime import date
+    today = (today or date.today()).strftime('%d.%m.%Y')
+    user = (f'Задача: {task.strip()}\nСегодня {today}.\n\nДокумент «{name}»:\n{text[:5000]}\n\n'
+            'Выпиши из документа ТОЛЬКО то, что нужно для задачи: номер и дату документа, от кого, что требуется, '
+            'сроки, кто отвечает, цифры. Коротким списком, до 8 строк, слова документа не меняй. '
+            'Если по задаче в документе ничего нет — ответь одним словом: НЕТ.')
+    return run(chat_prompt(user), max_tokens=260, temperature=0.1, **kw)
+
+
+def condense(task, sources, budget=MAX_SOURCE_CHARS, on_progress=None, cancel=None, **kw):
+    """Если материалы не помещаются целиком — сначала выписка из КАЖДОГО документа, потом пишем по выпискам.
+    Так в работу идут все найденные документы, а не первые один-два."""
+    total = sum(len(t) for _, t in sources)
+    if total <= budget or len(sources) <= 1:
+        return list(sources)
+    out = []
+    for i, (name, text) in enumerate(sources, 1):
+        if on_progress:
+            on_progress(f'… читаю документы: {i} из {len(sources)} — {name}')
+        got = notes(task, name, text, cancel=cancel, **kw).strip()
+        if got and not re.fullmatch(r'\W*НЕТ\W*', got, re.IGNORECASE):
+            out.append((name + ' — выписка', got))
+    return out or list(sources)[:3]
 
 
 # ---------- проверка фактов: числа и даты в ответе должны быть в документах ----------
@@ -897,12 +978,13 @@ def revise(request, previous, change, sources=(), me=None, **kw):
             f'Пользователь просит изменить: «{change.strip()}».\n'
             'Внеси именно это изменение. Всё остальное оставь как есть: оформление, порядок, факты, номера, даты, подпись. '
             'Новые факты бери только из просьбы пользователя или из материалов. '
-            'Верни полностью исправленный текст целиком, без пояснений и без слов «вот исправленный текст».')
+            'Верни полностью исправленный текст целиком, без пояснений и без слов «вот исправленный текст».\n' + DATE_RULES())
     if 'телеграм' in (request + previous[:40]).lower():
         user += '\n' + telegram_format(me)
     if block:
         user += '\n\nМатериалы (справка):\n\n' + block
-    return run(chat_prompt(user), max_tokens=kw.pop('max_tokens', min(1500, len(previous) // 2 + 500)), temperature=0.2, **kw)
+    out = run(chat_prompt(user), max_tokens=kw.pop('max_tokens', min(1500, len(previous) // 2 + 500)), temperature=0.2, **kw)
+    return fix_dates(out, change)[0]
 
 
 def followup(history, question, sources=(), **kw):

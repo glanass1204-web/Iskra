@@ -158,10 +158,16 @@ class WorkMixin:
                 if pts:
                     task += '. Пункты: ' + '; '.join(pts)
                 query = ' '.join([fields['тема'], fields['основание']] + pts)
-                found, _ = ai.retrieve(query, lambda q, any_word: search_docs(q, 4, any_word), lambda p: extract(Path(p))) if query.strip() else ([], [])
                 draft = text
-                ai_job = (lambda cancel, update: ai.write(task + '\nОпирайся на черновик по шаблону:\n' + draft, found, me=me,
-                                                          on_text=update, cancel=cancel)[0], found + [('черновик', draft)])
+                checked = [('черновик', draft)]           # для проверки чисел: дополняется найденными документами
+
+                def ai_job_fn(cancel, update, task=task, query=query, draft=draft, checked=checked):
+                    # Поиск и чтение документов — в фоне, не в окне: документов может быть много.
+                    found, full, _ = self._gather(query, [], cancel, update) if query.strip() else ([], [], [])
+                    checked.extend(full)
+                    return ai.write(task + '\nОпирайся на черновик по шаблону:\n' + draft, found, me=me,
+                                    on_text=update, cancel=cancel)[0]
+                ai_job = (ai_job_fn, checked)
             save_history(ROOT, 'Черновик телеграммы', kind)
             left = compose.unfilled(text)
             win.destroy()

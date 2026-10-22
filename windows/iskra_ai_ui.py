@@ -18,6 +18,9 @@ from iskra_workflows import save_history
 SETUP = ROOT / 'setup.json'
 OVERVIEW_CHARS = 30000
 SELECTED_DOC = ('по этому документ', 'по выбранному', 'по нему', 'на него', 'на эту', 'на этот', 'этого документ')
+# «по найденным», «по всем этим» — взять все документы из списка результатов слева.
+ALL_LISTED = ('по найденн', 'по всем найденн', 'по всем этим', 'по этим документ', 'по списку слева', 'по всем документам из списка',
+              'из найденн', 'все найденн')
 
 
 class AIMixin:
@@ -513,15 +516,34 @@ class AIMixin:
         return update
 
     def _chosen_doc(self, text):
-        """Выбранный в списке документ, если в задаче сказано «по этому документу». Только в главном потоке."""
+        """Документы, которые пользователь явно указал: выбранный в списке («по этому документу») или все найденные
+        («по найденным»). Только в главном потоке."""
+        low = text.lower()
+        if self.results and any(k in low for k in ALL_LISTED):
+            return [p for p, _ in self.results[:30]]
         i = self.selected()
-        if i is not None and any(k in text.lower() for k in SELECTED_DOC):
+        if i is not None and any(k in low for k in SELECTED_DOC):
             return [self.results[i][0]]
         return []
 
     @staticmethod
     def _sources_for(text, extra):
-        return ai.retrieve(text, lambda q, any_word: search_docs(q, 6, any_word), lambda p: extract(Path(p)), extra=extra)
+        import iskra_smartsearch
+        return ai.retrieve(text, lambda q, any_word: search_docs(q, 20, any_word), lambda p: extract(Path(p)), extra=extra,
+                           smart_fn=lambda q: iskra_smartsearch.smart_search(q, 20, ROOT)[0])
+
+    def _gather(self, task, extra, cancel, update):
+        """Найти документы, показать какие, и если их много — выписать нужное из каждого."""
+        sources, paths = self._sources_for(task, extra)
+        names = [Path(p).name for p in paths]
+        self.events.put(('call', lambda: self.say(
+            (f'Беру документы ({len(names)}): ' + ', '.join(names)) if names else
+            'Подходящих документов не нашла — пишу по задаче, факты помечу [УТОЧНИТЬ]. '
+            'Чтобы писать по своим документам: «найди …», затем «напиши … по найденным».', 'proof')))
+        full = list(sources)
+        if len(sources) > 1:
+            sources = ai.condense(task, sources, on_progress=update, cancel=cancel)
+        return sources, full, paths
 
     def ai_write(self, task):
         if not self.ai_ready:
@@ -532,14 +554,11 @@ class AIMixin:
         me = self.my_details()
 
         def job(cancel):
-            sources, paths = self._sources_for(task, extra)
-            self.events.put(('call', lambda: self.say(
-                ('Взяла материалы из: ' + ', '.join(Path(p).name for p in paths)) if paths else
-                'Подходящих документов не нашла — пишу по задаче, факты помечу [УТОЧНИТЬ].', 'proof')))
             self.events.put(('call', lambda: self.tabs.select(0)))
             update = self._stream_to_chat('Черновик (нейросеть):')
+            sources, full, paths = self._gather(task, extra, cancel, update)
             text, _ = ai.write(task, sources, me=me, on_text=update, cancel=cancel)
-            return text, paths, sources
+            return text, paths, full
 
         def done(result):
             text, paths, sources = result
@@ -555,13 +574,13 @@ class AIMixin:
         extra = self._chosen_doc(question)
 
         def job(cancel):
-            sources, paths = self._sources_for(question, extra)
-            if not sources:
-                raise ai.AIError('по вопросу не нашла документов. Попробуйте другие слова или «найди …».')
             self.events.put(('call', lambda: self.tabs.select(0)))
             update = self._stream_to_chat('Ответ по документам (нейросеть):')
+            sources, full, paths = self._gather(question, extra, cancel, update)
+            if not full:
+                raise ai.AIError('по вопросу не нашла документов. Попробуйте другие слова или «найди …».')
             text, _ = ai.answer(question, sources, on_text=update, cancel=cancel)
-            return text, sources, paths
+            return text, full, paths
 
         def done(result):
             text, sources, paths = result
