@@ -86,6 +86,26 @@ class RetrieveTest(unittest.TestCase):
         self.assertNotIn('完', out)
         self.assertTrue(fixes)
 
+    def test_short_draft_is_expanded(self):
+        calls = []
+        short = 'ТЕЛЕГРАММА\nКому: Командирам\nТекст:\nПроверить технику.\nПодпись:\nНШ'
+        full = ('ТЕЛЕГРАММА\nКому: Командирам\nТекст:\n' + '1. Провести проверку технического состояния техники '
+                'подразделений с составлением актов. ' * 12 + '\nПодпись:\nНШ')
+        old = ai.run
+        ai.run = lambda prompt, **kw: calls.append(prompt) or (short if len(calls) == 1 else full)
+        try:
+            out, _ = ai.write('составь телеграмму командирам: проверить технику', [('сведения.docx', 'КамАЗ 6 ед.')])
+            self.assertEqual(len(calls), 2)                              # коротко — второй круг
+            self.assertIn('РАЗВЁРНУТО', calls[1])
+            self.assertGreater(len(ai.body_of(out)), 450)
+            calls.clear()
+            ai.run = lambda prompt, **kw: calls.append(prompt) or full
+            ai.write('составь телеграмму командирам: проверить технику', [('сведения.docx', 'КамАЗ 6 ед.')])
+            self.assertEqual(len(calls), 1)                              # и так полно — без лишнего круга
+            self.assertIn('РАЗВЁРНУТО', calls[0])                        # требование полноты в задании
+        finally:
+            ai.run = old
+
     def test_file_date_in_name(self):
         d = Path(tempfile.mkdtemp())
         f = d / 'старая.txt'

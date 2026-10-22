@@ -737,6 +737,36 @@ def proofread(text, sources=(), task=''):
     return text + tail, fixes
 
 
+MIN_BODY = 450                 # знаков в тексте документа: короче — нейросеть разворачивает ещё раз
+
+
+def body_of(text):
+    """Только текст документа: без шапки («Кому:», «Дата:») и подписи — чтобы мерить полноту."""
+    t = text or ''
+    m = re.search(r'^\s*Текст\s*:\s*$', t, re.MULTILINE | re.IGNORECASE)
+    if m:
+        t = t[m.end():]
+    t = re.split(r'^\s*Подпись\s*:?\s*$|^---', t, maxsplit=1, flags=re.MULTILINE)[0]
+    lines = [l for l in t.splitlines() if l.strip() and not re.match(r'^\s*(ТЕЛЕГРАММА|Кому|От кого|Дата|Номер|Тема)\b', l, re.I)]
+    return '\n'.join(lines).strip()
+
+
+def expand(text, task, materials_text, need, **kw):
+    """Второй круг: развернуть слишком короткий текст по тем же материалам, ничего не выдумывая."""
+    user = ''
+    if materials_text:
+        user += 'МАТЕРИАЛЫ (факты бери только отсюда):\n\n' + materials_text + '\n\n'
+    user += (f'ЗАДАЧА: {task.strip()}\n\nЧЕРНОВИК (слишком короткий):\n---\n{text.strip()}\n---\n\n'
+             f'Перепиши черновик РАЗВЁРНУТО — примерно {need}–{need * 2} знаков текста: раскрой каждый пункт по '
+             'материалам (что сделать, кто исполняет, в каком объёме и порядке, кто отвечает, как и кому доложить), '
+             'добавь недостающие пункты, которые прямо следуют из материалов и задачи. Оформление (шапку, адресата, '
+             'подпись) сохрани как в черновике. Новых фактов, дат, номеров и фамилий не выдумывай — чего нет, '
+             '[УТОЧНИТЬ: …]. Верни только готовый текст документа.')
+    kw.setdefault('temperature', 0.2)
+    out = run(chat_prompt(user), **kw)
+    return out if len(body_of(out)) > len(body_of(text)) else text
+
+
 def best_sample(task, materials_text='', limit=2600):
     """Один образец для подражания, самый близкий к задаче: из папки образцов отдела или из ваших отправленных
     документов. Возвращает (откуда, текст) или None."""
@@ -767,6 +797,7 @@ def write(task, sources=(), me=None, **kw):
     keep = kw.pop('keep_dates', '')
     telegram = bool(TELEGRAM_WORDS.search(task))
     user = ''
+    sample_len = 0
     if block:
         user += 'МАТЕРИАЛЫ (справка; факты бери только отсюда):\n\n' + block + '\n\n'
     refs = PEOPLE.context(task + ' ' + block) if PEOPLE is not None else []
@@ -781,14 +812,17 @@ def write(task, sources=(), me=None, **kw):
         sample = best_sample(task, block)
         if sample:
             where, text = sample
+            sample_len = len(body_of(text))
             user += (f'ОБРАЗЕЦ — так пишут у пользователя ({where}). Повтори его построение, обороты, оформление и '
                      'ПОЛНОТУ: столько же частей и подробностей, если их позволяют материалы. Факты, даты, номера и '
                      'адресата из образца НЕ переноси:\n---\n' + text + '\n---\n\n')
     user += iskra_learn.prompt_block(example=False)          # устойчивые правки пользователя
     user += f'ЗАДАЧА: {task.strip()}\n\n'
     user += ('ПРАВИЛА:\n'
-             '1. Напиши готовый документ целиком, полно и по существу: всё, что по задаче нужно из материалов '
-             '(что сделать, кому, в каком объёме, кто отвечает, как доложить). Не отписка из одной-двух фраз.\n'
+             '1. Пиши РАЗВЁРНУТО: готовый документ целиком, всё, что по задаче нужно из материалов. Объём — не меньше, '
+             'чем в образце; если образца нет — не меньше 5–8 пунктов или предложений. Каждый пункт раскрой: что '
+             'сделать, кто исполняет, в каком объёме и порядке, кто отвечает, как и кому доложить. Не отписка из '
+             'одной-двух фраз.\n'
              '2. Официально-деловой язык, грамотно, с правильными падежами («прошу представить сведения», '
              '«согласно приказу», «в течение суток»). Поручения — пунктами с номерами, каждый с глагола '
              '(«1. Представить…», «2. Обеспечить…»). Без английских слов, звёздочек и решёток.\n'
@@ -805,7 +839,14 @@ def write(task, sources=(), me=None, **kw):
     if truncated:
         user += f'\n(Часть материалов не поместилась: {", ".join(truncated)}.)'
     kw.setdefault('temperature', 0.15)                     # меньше «фантазии» — меньше ошибок и выдумок
-    raw = run(chat_prompt(user), max_tokens=kw.pop('max_tokens', 1300), **kw)
+    max_tokens = kw.pop('max_tokens', 1300)
+    raw = run(chat_prompt(user), max_tokens=max_tokens, **kw)
+    need = max(MIN_BODY, int(sample_len * 0.7)) if (block or sample_len) else 0
+    if need and len(body_of(raw)) < need and CUT_MARK not in raw:
+        try:
+            raw = expand(raw, task, block, need, max_tokens=max_tokens, **kw)   # вышло коротко — второй круг
+        except AIError:
+            pass
     raw, removed = strip_unasked(raw, task, keep, sources)     # даты, время, номера, имена файлов — только если просили
     if removed:
         write_log('Убрано не запрошенное: ' + '; '.join(removed[:20]))
@@ -831,7 +872,13 @@ def answer(question, sources, **kw):
             'Если документы расходятся — верен более новый (дата файла в имени материала), скажи об этом. '
             'После ответа с новой строки напиши «Источник: » и имена файлов, откуда взято. '
             'Если ответа в документах нет — так и напиши: «В документах не нашла».')
-    out = run(chat_prompt(user), max_tokens=kw.pop('max_tokens', 900), temperature=0.1, **kw)
+    max_tokens = kw.pop('max_tokens', 900)
+    out = run(chat_prompt(user), max_tokens=max_tokens, temperature=0.1, **kw)
+    if len(sources) > 1 and len(out) < 300 and 'не нашла' not in out.lower():
+        again = run(chat_prompt(user + f'\n\nТвой прошлый ответ слишком краткий:\n{out.strip()}\n'
+                                       'Ответь РАЗВЁРНУТО: перечисли по пунктам всё, что есть в документах по вопросу, '
+                                       'с указанием, из какого документа.'), max_tokens=max_tokens, temperature=0.1, **kw)
+        out = again if len(again) > len(out) else out
     return proofread(out, sources, question)[0], truncated
 
 
