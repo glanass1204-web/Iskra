@@ -11,7 +11,7 @@ from iskra_batch import discover_fields, collect_tables, mail_merge, template_fi
 from iskra_crossformat import merge_crossformat
 from iskra_formula import build_formula, explain_formula
 from iskra_index import ROOT, extract
-from iskra_services import telegram_check, telegram_template
+from iskra_services import telegram_check  # noqa: F401
 from iskra_spell import SpellChecker, summary as spell_summary
 from iskra_telegram import merge as merge_telegrams_full, save_docx as telegram_docx, TEMPLATE_HELP
 from iskra_spell import fix_typical
@@ -696,19 +696,12 @@ class ToolsMixin:
         template = self.telegram_template_path()
         from datetime import date
         if not template:
-            # Стандартный вид — но с моими реквизитами и сегодняшней датой («подставляются во все черновики»).
-            me = self.my_details()
-            text = telegram_template().replace('Дата: [ДАТА]', 'Дата: ' + date.today().strftime('%d.%m.%Y'))
-            if me.get('from'):
-                text = text.replace('От кого: [УТОЧНИТЬ]', 'От кого: ' + me['from'])
-            if me.get('signature', '').strip():
-                text = text.replace('Подпись: [ФИО]', 'Подпись:\n' + me['signature'].strip())
-            return text
+            return ''                                  # без шапки и подписи: оформление — по своему шаблону
         from iskra_telegram import has_placeholders, render_template, template_text
         try:
             sample = template_text(template)
         except Exception:
-            return telegram_template()
+            return ''
         if has_placeholders(sample):
             me = self.my_details()
             return render_template(template, {'от кого': me.get('from', ''), 'дата': date.today().strftime('%d.%m.%Y'),
@@ -720,7 +713,7 @@ class ToolsMixin:
         Шаблон без меток — текст не трогаем (по образцу его переписывает нейросеть)."""
         template = self.telegram_template_path()
         if not template:
-            return text
+            return self.plain_text(text)
         from iskra_telegram import has_placeholders, is_labeled, render_template, split_editor_text, template_text
         text, sep, tail = text.partition('--- ИСТОЧНИКИ')
         tail = ('\n\n' + sep + tail) if sep else ''
@@ -733,6 +726,18 @@ class ToolsMixin:
         fields = {k.lower(): v for k, v in header.items()}
         fields.update({'заголовок': title, 'текст': body, 'подпись': signature})
         return render_template(template, fields) + tail
+
+    def plain_text(self, text):
+        """Шаблон не выбран — только текст документа: без «ТЕЛЕГРАММА», «Кому:», «Дата:», «Номер:» и без подписи.
+        Рапорт и отпускной билет — со своей формой, их не трогаем."""
+        from iskra_telegram import is_raport
+        if is_raport(text) or 'ОТПУСКНОЙ БИЛЕТ' in text[:200]:
+            return text
+        for sep in ('--- ИСТОЧНИКИ', '--- МАТЕРИАЛЫ'):
+            if sep in text:
+                body, _, tail = text.partition(sep)
+                return iskra_ai.strip_shell(body, self.my_details()) + '\n\n' + sep + tail
+        return iskra_ai.strip_shell(text, self.my_details())
 
     def telegram_template_window(self, parent=None):
         win = _window(self, 'шаблон оформления телеграмм', '680x300')

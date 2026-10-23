@@ -26,7 +26,7 @@ from iskra_index import ROOT, extract, index_folder, search_docs, forget_folder,
 import iskra_assistant as assistant
 
 ROOT.mkdir(parents=True, exist_ok=True)
-VERSION = '1.10.4'
+VERSION = '1.10.5'
 ACCENT = '#24518A'
 
 
@@ -157,6 +157,7 @@ class App(FormsMixin, UstavMixin, LearnMixin, VoiceMixin, JournalMixin, PeopleMi
         t.add_command(label='Редактор телеграмм', command=self.telegrams)
         t.add_command(label='Черновики и версии…', command=self.drafts_window)
         t.add_command(label='Мои реквизиты для телеграмм…', command=self.my_details_window)
+        t.add_command(label='Шаблон оформления телеграмм…', command=self.telegram_template_window)
         t.add_command(label='Объединить телеграммы…', command=self.merge_telegrams_window)
         t.add_command(label='Перенести изменения (зелёная подсветка) в образец…', command=self.highlight_window)
         t.add_command(label='Пересчитать сутки в документе…', command=self.recount_days_window)

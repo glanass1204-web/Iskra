@@ -395,10 +395,16 @@ def save_docx(text, path, template=None):
     if template:
         # Шаблон с метками и текст с «Кому: / Текст: / Подпись:» — подставляем по меткам; иначе текст уже в виде
         # шаблона (так его пишет нейросеть) — переносим строки с оформлением шаблона.
-        if is_labeled(text) and has_placeholders(template_text(template)):
-            return _fill_template(template, path, *split_editor_text(text))
+        if has_placeholders(template_text(template)):
+            if is_labeled(text):
+                return _fill_template(template, path, *split_editor_text(text))
+            if not _has_shell(text):                   # только текст — встаёт на место {Текст}, шапка из шаблона
+                return _fill_template(template, path, '', {}, _body_lines(text), [])
         return save_like_template(text, path, template)
     title, header, body, signature = split_editor_text(text)
+    plain = not _has_shell(text)
+    if plain:                                          # только текст, без шапки и подписи — так и печатаем
+        title, header, body, signature = '', {}, _body_lines(text), []
     from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
     from docx.shared import Cm, Pt
     doc = Document()
@@ -424,17 +430,19 @@ def save_docx(text, path, template=None):
     for f in ('Гриф', 'Срочность'):
         if f in header:
             para(header[f], bold=True, align=WD_ALIGN_PARAGRAPH.RIGHT)
-    para(title, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER)
-    para()
-    for f in ('Кому', 'От кого', 'Дата', 'Номер', 'Тема'):
-        if f in header:
-            p = para()
-            p.add_run(f + ': ').bold = True
-            p.add_run(header[f])
-    para()
+    if not plain:
+        para(title, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER)
+        para()
+        for f in ('Кому', 'От кого', 'Дата', 'Номер', 'Тема'):
+            if f in header:
+                p = para()
+                p.add_run(f + ': ').bold = True
+                p.add_run(header[f])
+        para()
     for line in body:
         para(line, align=WD_ALIGN_PARAGRAPH.JUSTIFY, indent=Cm(1.25))
-    para()
+    if signature:
+        para()
     for i, line in enumerate(signature):
         p = para()
         m = NAME.search(line)
@@ -446,6 +454,16 @@ def save_docx(text, path, template=None):
             p.add_run(line)
     doc.save(path)
     return path
+
+
+def _has_shell(text):
+    """Есть шапка или подпись («ТЕЛЕГРАММА», «Кому:», «Текст:», «Подпись:») — иначе это только текст документа."""
+    return bool(re.search(r'^\s*(ТЕЛЕГРАММА|ШИФРТЕЛЕГРАММА|ТЕЛЕФОНОГРАММА|(Кому|От кого|Текст|Подпись)\s*:.*)$',
+                          text, re.MULTILINE | re.IGNORECASE))
+
+
+def _body_lines(text):
+    return [l.strip() for l in text.split('--- ИСТОЧНИКИ')[0].replace('\r\n', '\n').split('\n') if l.strip()]
 
 
 def _fill_template(template, path, title, header, body, signature):

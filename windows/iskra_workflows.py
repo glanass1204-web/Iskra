@@ -33,11 +33,8 @@ def draft_from_sources(subject, sources, template=''):
             excerpts.append((str(path), clean[:3000]))
     if not excerpts:
         raise ValueError('Не удалось получить текст выбранных документов.')
-    head = template.strip() if template.strip() else (
-        'ТЕЛЕГРАММА\nКому: [УТОЧНИТЬ]\nОт кого: [УТОЧНИТЬ]\n'
-        'Дата: [ДАТА]\nНомер: [НОМЕР]\n\nТема: {subject}\n\n'
-        'Текст проекта:\n[СФОРМУЛИРОВАТЬ РЕШЕНИЕ ПО МАТЕРИАЛАМ НИЖЕ]\n'
-        '\nПодпись: [ФИО]')
+    head = template.strip() if template.strip() else (       # без шапки и подписи — их даёт свой шаблон
+        '{subject}\n\n[СФОРМУЛИРОВАТЬ РЕШЕНИЕ ПО МАТЕРИАЛАМ НИЖЕ]')
     head = head.replace('{subject}', subject)
     evidence = '\n\n'.join(f'Источник {i}: {Path(path).name}\n{content}' for i, (path, content) in enumerate(excerpts, 1))
     return head + '\n\n--- МАТЕРИАЛЫ ДЛЯ ПРОВЕРКИ (НЕ ЧАСТЬ ТЕЛЕГРАММЫ) ---\n' + evidence

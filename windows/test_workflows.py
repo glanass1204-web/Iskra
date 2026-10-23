@@ -11,7 +11,8 @@ class WorkflowTests(unittest.TestCase):
     def test_draft(self):
         result=draft_from_sources('Проверка',[('пример.docx','Исходные сведения')])
         self.assertIn('пример.docx',result)
-        self.assertIn('[УТОЧНИТЬ]',result)
+        self.assertIn('[СФОРМУЛИРОВАТЬ',result)
+        self.assertNotIn('Кому:',result)   # без шапки и подписи
         self.assertIn('НЕ ЧАСТЬ ТЕЛЕГРАММЫ',result)
     def test_empty_draft(self):
         with self.assertRaises(ValueError):draft_from_sources('Тема',[])
