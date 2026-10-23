@@ -76,8 +76,59 @@ def leave_ticket_text(f):
     return '\n'.join(lines)
 
 
-def save_leave_ticket(f, path):
-    """Отпускной билет в Word: формат А5, угловой штамп воинской части, поля как в приложении 30."""
+LEAVE_LABELS = {'штамп': 'stamp', 'фио': 'who', 'кто': 'who', 'вид отпуска': 'kind_place', 'убыл': 'kind_place',
+                'сроком на': 'days', 'срок': 'days', 'с': 'start', 'по': 'end', 'фамилия': 'back_name',
+                'явиться в': 'unit', 'дата явки': 'back_date', 'впд': 'vpd', 'командир': 'commander'}
+
+
+def leave_values(f):
+    """Значения меток своего бланка: {ФИО}, {Вид отпуска}, {Сроком на}, {С}, {По}, {Фамилия}, {Явиться в},
+    {Дата явки}, {ВПД}, {Командир}, {Штамп}."""
+    out = {}
+    for label, key in LEAVE_LABELS.items():
+        v = f.get(key)
+        if key == 'days':
+            v = days_words(v) if str(v or '').strip().isdigit() else ''
+        elif key in ('start', 'end', 'back_date'):
+            v = quoted(v) if v else ''
+        out[label] = (v or '').strip() if isinstance(v, str) else (v or '')
+    return out
+
+
+def fill_docx(template, path, values):
+    """Свой бланк Word с метками {…}: метка заменяется значением, оформление абзаца/ячейки остаётся как в бланке."""
+    from docx import Document
+    doc = Document(str(template))
+
+    def paragraphs():
+        yield from doc.paragraphs
+        for t in doc.tables:
+            for row in t.rows:
+                for cell in row.cells:
+                    yield from cell.paragraphs
+        for sec in doc.sections:
+            yield from sec.header.paragraphs
+
+    def repl(m):
+        key = m.group(1).strip().lower().replace('ё', 'е')
+        return str(values.get(key, m.group(0)))
+    for p in paragraphs():
+        if '{' not in p.text or not p.runs:
+            continue
+        new = re.sub(r'\{([^{}]{1,40})\}', repl, p.text)
+        if new != p.text:
+            p.runs[0].text = new                            # шрифт первого фрагмента — как в бланке
+            for r in p.runs[1:]:
+                r.text = ''
+    doc.save(str(path))
+    return path
+
+
+def save_leave_ticket(f, path, template=None):
+    """Отпускной билет в Word: свой бланк с метками (если выбран в «Шаблонах»), иначе формат А5, угловой штамп
+    воинской части, поля как в приложении 30."""
+    if template:
+        return fill_docx(template, path, leave_values(f))
     from docx import Document
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Cm, Pt

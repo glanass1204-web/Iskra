@@ -66,7 +66,8 @@ class FormsMixin:
             path = filedialog.asksaveasfilename(parent=win, defaultextension='.docx', filetypes=[('Word', '*.docx')],
                                                 initialdir=str(ROOT), initialfile=f'Отпускной билет {name}.docx')
             if path:
-                forms.save_leave_ticket(f, path)
+                own = self.doc_templates().get('Отпускной билет') if hasattr(self, 'doc_templates') else None
+                forms.save_leave_ticket(f, path, own)
                 self.say(f'Отпускной билет сохранён: {path}', 'proof')
                 win.destroy()
 
@@ -75,6 +76,6 @@ class FormsMixin:
                            note='Отпускной билет. Для печати по форме (А5, штамп) — кнопка «Сохранить в Word» в окне билета.')
 
         bar = ttk.Frame(win, padding=(12, 0, 12, 10)); bar.pack(fill='x')
-        ttk.Button(bar, text='Сохранить в Word (А5)', style='Accent.TButton', command=save).pack(side='right')
+        ttk.Button(bar, text='Сохранить в Word', style='Accent.TButton', command=save).pack(side='right')
         ttk.Button(bar, text='Открыть в редакторе', command=to_editor).pack(side='right', padx=6)
         return win

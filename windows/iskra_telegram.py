@@ -390,7 +390,7 @@ def save_docx(text, path, template=None):
     """Lays the telegram out in Word: the user's template with {Кому}, {Текст}, {Подпись}… or the standard one."""
     from docx import Document
     text = text.split('--- ИСТОЧНИКИ')[0].rstrip()
-    if is_raport(text):
+    if is_raport(text) and not template:                 # свой шаблон рапорта — по нему, иначе форма рапорта
         return save_raport_docx(text, path)
     if template:
         # Шаблон с метками и текст с «Кому: / Текст: / Подпись:» — подставляем по меткам; иначе текст уже в виде

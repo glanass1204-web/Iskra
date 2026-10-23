@@ -271,7 +271,9 @@ class ToolsMixin:
         def save():
             path = filedialog.asksaveasfilename(parent=win, defaultextension='.docx', filetypes=[('Word', '*.docx')], initialdir=str(ROOT))
             if path:
-                template = self.telegram_template_path()
+                template = self.doc_templates().get(kind.get())
+                if template is None and kind.get() in ('Указание', 'Доклад', 'Запрос'):
+                    template = self.telegram_template_path()
                 try:
                     telegram_docx(t.get('1.0', 'end-1c'), path, template)
                 except Exception as exc:
@@ -326,7 +328,14 @@ class ToolsMixin:
         if hasattr(self, 'editor_ai'):
             self.editor_ai(buttons, t, status).pack(side='left', padx=(0, 6))
         ttk.Button(buttons, text='Сохранить в Word', style='Accent.TButton', command=save).pack(side='right')
-        ttk.Button(buttons, text='Шаблон оформления…', command=lambda: self.telegram_template_window(win)).pack(side='right', padx=6)
+        kinds = ['Телеграмма', 'Указание', 'Рапорт', 'Отпускной билет', 'Доклад', 'Запрос']
+        kinds += sorted(k for k in self.doc_templates() if k not in kinds)
+        kind = tk.StringVar(value=self.guess_kind(initial or ''))
+        box = ttk.Combobox(buttons, textvariable=kind, values=kinds, state='readonly', width=16)
+        box.pack(side='right', padx=(6, 0))
+        box.bind('<Button-1>', lambda e: box.configure(values=kinds + sorted(k for k in self.doc_templates() if k not in kinds)))
+        ttk.Label(buttons, text='Вид:').pack(side='right')
+        ttk.Button(buttons, text='Шаблоны…', command=lambda: self.telegram_template_window(win)).pack(side='right', padx=6)
         ttk.Button(buttons, text='Версии…', command=lambda: self.drafts_window(draft, t, status)).pack(side='right')
         return win, t, status
 
@@ -704,11 +713,26 @@ class ToolsMixin:
         except (OSError, ValueError):
             return {}
 
+    def doc_templates(self, existing=True):
+        """Свои шаблоны по видам документа {вид: путь}. Старый единственный шаблон — это шаблон телеграммы."""
+        data = self.telegram_settings()
+        found = dict(data.get('templates') or {})
+        if data.get('template') and 'Телеграмма' not in found:
+            found['Телеграмма'] = data['template']
+        ready = {k: v for k, v in found.items() if v and Path(v).is_file()}
+        iskra_ai.TEMPLATES = ready                     # нейросеть берёт шаблон по виду документа
+        iskra_ai.TELEGRAM_TEMPLATE = ready.get('Телеграмма')
+        return ready if existing else found
+
+    def save_doc_templates(self, found):
+        data = self.telegram_settings()
+        data['templates'] = {k: v for k, v in found.items() if k}
+        data['template'] = found.get('Телеграмма', '')
+        (ROOT / 'telegram.json').write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+        self.doc_templates()
+
     def telegram_template_path(self):
-        p = self.telegram_settings().get('template')
-        path = p if p and Path(p).is_file() else None
-        iskra_ai.TELEGRAM_TEMPLATE = path            # нейросеть пишет по тому же шаблону
-        return path
+        return self.doc_templates().get('Телеграмма')
 
     def telegram_blank(self):
         """Пустая телеграмма: по своему шаблону отдела, если он выбран, иначе стандартная."""
@@ -746,6 +770,16 @@ class ToolsMixin:
         fields.update({'заголовок': title, 'текст': body, 'подпись': signature})
         return render_template(template, fields) + tail
 
+    def guess_kind(self, text):
+        """Вид документа в редакторе — по тексту: рапорт, отпускной билет, иначе по словам; по умолчанию телеграмма."""
+        from iskra_telegram import is_raport
+        if 'ОТПУСКНОЙ БИЛЕТ' in text[:200]:
+            return 'Отпускной билет'
+        if is_raport(text):
+            return 'Рапорт'
+        self.doc_templates()
+        return iskra_ai.template_kind(text[:300]) or 'Телеграмма'
+
     def plain_text(self, text):
         """Шаблон не выбран — только текст документа: без «ТЕЛЕГРАММА», «Кому:», «Дата:», «Номер:» и без подписи.
         Рапорт и отпускной билет — со своей формой, их не трогаем."""
@@ -759,28 +793,63 @@ class ToolsMixin:
         return iskra_ai.strip_shell(text, self.my_details())
 
     def telegram_template_window(self, parent=None):
-        win = _window(self, 'шаблон оформления телеграмм', '680x300')
-        current = self.telegram_template_path()
-        state = tk.StringVar(value=current or '')
-        ttk.Label(win, text=TEMPLATE_HELP, wraplength=640).pack(anchor='w', padx=12, pady=10)
-        ttk.Label(win, textvariable=state, style='Muted.TLabel', wraplength=640).pack(anchor='w', padx=12)
+        """Шаблоны по видам документа: телеграмма, указание, рапорт, отпускной билет, доклад, запрос и свои виды.
+        «Напиши рапорт …» — Искра сама берёт шаблон рапорта."""
+        from tkinter import simpledialog
+        win = _window(self, 'шаблоны документов', '820x520')
+        ttk.Label(win, text='Для каждого вида документа — свой шаблон Word. Пишете «напиши рапорт…», «составь указание…» — '
+                            'Искра сама возьмёт нужный. Указание, доклад и запрос без своего шаблона оформляются по шаблону '
+                            'телеграммы. ' + TEMPLATE_HELP + ' В отпускном билете метки: {ФИО}, {Вид отпуска}, {Сроком на}, '
+                            '{С}, {По}, {Фамилия}, {Явиться в}, {Дата явки}, {ВПД}, {Командир}, {Штамп}.',
+                  wraplength=790).pack(anchor='w', padx=12, pady=10)
+        table = ttk.Frame(win); table.pack(fill='both', expand=True, padx=12)
+        base = ['Телеграмма', 'Указание', 'Рапорт', 'Отпускной билет', 'Доклад', 'Запрос']
 
-        def save(value):
-            data = self.telegram_settings(); data['template'] = value
-            (ROOT / 'telegram.json').write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
-            self.telegram_template_path()
-            state.set(value or 'Стандартное оформление: Times New Roman 14, отступ первой строки 1,25 см, поля по ГОСТ Р 7.0.97.')
+        def draw():
+            for w in table.winfo_children():
+                w.destroy()
+            found = self.doc_templates(existing=False)
+            kinds = base + sorted(k for k in found if k not in base)
+            for i, kind in enumerate(kinds):
+                path = found.get(kind, '')
+                ttk.Label(table, text=kind, width=18, font=('Segoe UI', 10, 'bold')).grid(row=i, column=0, sticky='w', pady=3)
+                shown = Path(path).name if path else ('— по шаблону телеграммы' if kind in ('Указание', 'Доклад', 'Запрос')
+                                                       else '— стандартное оформление')
+                if path and not Path(path).is_file():
+                    shown += '  (файл не найден)'
+                ttk.Label(table, text=shown, style='Muted.TLabel', width=52).grid(row=i, column=1, sticky='w')
+                ttk.Button(table, text='Выбрать…', command=lambda k=kind: choose(k)).grid(row=i, column=2, padx=4)
+                ttk.Button(table, text='Убрать', command=lambda k=kind: remove(k)).grid(row=i, column=3)
 
-        def choose():
-            p = filedialog.askopenfilename(parent=win, title='Шаблон телеграммы (.docx)', filetypes=[('Word', '*.docx')])
+        def choose(kind):
+            p = filedialog.askopenfilename(parent=win, title=f'Шаблон: {kind} (.docx)', filetypes=[('Word', '*.docx')])
             if p:
-                save(p)
-        if not current:
-            state.set('Стандартное оформление: Times New Roman 14, отступ первой строки 1,25 см, поля по ГОСТ Р 7.0.97.')
-        row = ttk.Frame(win); row.pack(pady=12)
-        ttk.Button(row, text='Выбрать свой шаблон…', style='Accent.TButton', command=choose).pack(side='left')
-        ttk.Button(row, text='Стандартное оформление', command=lambda: save('')).pack(side='left', padx=8)
-        ttk.Button(row, text='Закрыть', command=win.destroy).pack(side='left')
+                found = self.doc_templates(existing=False); found[kind] = p
+                self.save_doc_templates(found); draw()
+
+        def remove(kind):
+            found = self.doc_templates(existing=False)
+            if kind in found:
+                del found[kind]
+                self.save_doc_templates(found); draw()
+
+        def add_kind():
+            name = simpledialog.askstring('Свой вид документа', 'Название вида (например: Справка-доклад, Заявка):', parent=win)
+            name = (name or '').strip()
+            if not name:
+                return
+            if iskra_ai.COMBAT_ORDER.search(name):
+                messagebox.showinfo('Шаблоны', 'Боевые распоряжения нейросеть не составляет. Текст пишите сами; оформить '
+                                                'его по своему шаблону можно в редакторе — вид «' + name + '» в списке.', parent=win)
+            p = filedialog.askopenfilename(parent=win, title=f'Шаблон: {name} (.docx)', filetypes=[('Word', '*.docx')])
+            if p:
+                found = self.doc_templates(existing=False); found[name] = p
+                self.save_doc_templates(found); draw()
+        draw()
+        row = ttk.Frame(win); row.pack(fill='x', padx=12, pady=10)
+        ttk.Button(row, text='Добавить свой вид документа…', command=add_kind).pack(side='left')
+        ttk.Button(row, text='Закрыть', command=win.destroy).pack(side='right')
+        return win
 
     def merge_telegrams_window(self, files=None):
         files = files or filedialog.askopenfilenames(title='Выберите похожие телеграммы (2–10 штук, Ctrl+щелчок)', filetypes=DOC_TYPES)

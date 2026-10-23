@@ -21,7 +21,7 @@ USE_SERVER = True           # быстрый режим: модель остаё
 MAX_SOURCE_CHARS = 9000
 
 SYSTEM = ('Ты — Искра, помощник штаба воинской части Вооружённых Сил РФ по служебным документам: телеграммы, '
-          'указания, рапорты, отпускные билеты, боевые расположения. Пишешь только по-русски, '
+          'указания, рапорты, отпускные билеты, доклады, запросы. Пишешь только по-русски, '
           'официально-деловым языком, принятым в войсках, грамотно, без лишних слов. '
           'Воинские звания, должности и принятые сокращения (л/с, в/ч, ВВСТ, ГСМ, ПУ, КП, ЗКП, НШ, ВрИО, ППД, ПВД, ЛБС) '
           'пиши как в материалах — не расшифровывай и не заменяй. Время в военной записи: «06.00». '
@@ -1336,7 +1336,53 @@ def ensure_count(text, n, task, block, plan=(), **kw):
     return '\n'.join(lines[:last + 1] + new + lines[last + 1:]), len(new)
 
 
+TEMPLATES = {}               # свои шаблоны по видам документа: {'Телеграмма': путь, 'Рапорт': путь, …}; задаёт окно Искры
+DOC_KINDS = [('Отпускной билет', r'отпускн\w*\s+билет'), ('Рапорт', r'(?<![а-яё])рапорт'),
+             ('Доклад', r'доклад|донесени|доложи'), ('Запрос', r'запрос|запроси'),
+             ('Указание', r'указани|распоряжени|поручени'), ('Телеграмма', r'телеграмм|(?<![а-яё])тлг')]
+COMBAT_ORDER = re.compile(r'боев\w*\s+(?:распоряжени|приказ)|(?<![А-ЯЁа-яё])БР(?![А-ЯЁа-яё])')
+
+
+def template_kind(task):
+    """Вид документа по словам задания: сначала свои виды из «Шаблонов» («Справка-доклад»), потом обычные."""
+    low = (task or '').lower().replace('ё', 'е')
+    builtin = {k for k, _ in DOC_KINDS}
+    for name in sorted((k for k in TEMPLATES if k not in builtin), key=len, reverse=True):
+        words = [w[:max(4, len(w) - 2)] for w in re.findall(r'[а-я]{3,}', name.lower().replace('ё', 'е'))]
+        if words and all(w in low for w in words):
+            return name
+    for name, rx in DOC_KINDS:
+        if re.search(rx, low):
+            return name
+    return None
+
+
+def template_for(task):
+    """Шаблон под задание. Указание, доклад, запрос без своего шаблона — по шаблону телеграммы (это тоже
+    телеграммы); рапорт и отпускной билет — только своим, иначе по своей форме."""
+    kind = template_kind(task)
+    path = TEMPLATES.get(kind) if kind else None
+    if not path and kind not in ('Рапорт', 'Отпускной билет'):
+        path = TEMPLATES.get('Телеграмма')
+    return path if path and Path(path).is_file() else None
+
+
 def write(task, sources=(), me=None, **kw):
+    """Составить документ по задаче — по своему шаблону этого вида документа, если он задан."""
+    if COMBAT_ORDER.search(task or ''):
+        raise AIError('боевые распоряжения Искра не составляет. Текст пишите сами; оформить его по своему шаблону — '
+                      'в редакторе: вид документа в списке рядом с «Сохранить в Word».')
+    global TELEGRAM_TEMPLATE
+    saved = TELEGRAM_TEMPLATE
+    if TEMPLATES:
+        TELEGRAM_TEMPLATE = template_for(task)
+    try:
+        return _write(task, sources, me, **kw)
+    finally:
+        TELEGRAM_TEMPLATE = saved
+
+
+def _write(task, sources=(), me=None, **kw):
     """Составить новый текст по задаче, опираясь на найденные документы.
     Порядок задания важен для небольшой модели: сначала материалы и образец, в конце — задача и правила
     (последнее она выполняет точнее всего)."""
@@ -1402,9 +1448,9 @@ def write(task, sources=(), me=None, **kw):
              + ('6. Текст начинай с «Докладываю:» и далее по пунктам — положение, наличие, что выполнено (слов «доношу», '
                 '«донесение» не используй); время «по состоянию на» ставь, только если оно есть в задаче или материалах.\n'
                 if DONESENIE_WORDS.search(task) else ''))
-    if raport:
+    if raport and not has_template():
         user += '\n' + raport_format(me) + '\n'
-    elif telegram:
+    elif telegram or (raport and has_template()):        # свой шаблон рапорта — по нему
         user += '\n' + telegram_format(me) + '\n'
     elif has_template() and me and me.get('signature', '').strip():
         user += f'\nПодпись в конце: {me["signature"].strip()}\n'
@@ -1451,7 +1497,7 @@ def write(task, sources=(), me=None, **kw):
     if missed:
         write_log('Нейросеть пропустила пункты, дописаны: ' + '; '.join(missed))
     out = ensure_reference(out, task, sources)            # «На № …» в ответе на названный документ
-    if raport:
+    if raport and not has_template():
         out = fix_raport(out, me)
     if not raport and not has_template():
         out = strip_shell(out, me)                         # шапку и подпись человек оформляет по своему шаблону
