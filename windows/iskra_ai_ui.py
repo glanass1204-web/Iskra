@@ -321,7 +321,7 @@ class AIMixin:
         threading.Thread(target=work, daemon=True).start()
 
     def ai_model_window(self):
-        """Выбор нейросети, если в папке models их несколько (основная Qwen и, например, GigaChat)."""
+        """Выбор нейросети, если в папке models их несколько (основная Qwen и другие)."""
         from iskra_tools_ui import _window
         win = _window(self, 'выбрать нейросеть', '620x340')
         try:
@@ -331,9 +331,9 @@ class AIMixin:
         if moved:
             self.say(f'Перенесла части нейросети в папку models: {moved}.', 'proof')
         models = ai.all_models()
-        ttk.Label(win, text='Модели в папке models. Основная — Qwen (точнее держится фактов). GigaChat (Сбер) — '
-                            'примерно в 2,5 раза быстрее, но чаще добавляет то, чего нет в материалах: проверяйте '
-                            'подсвеченные числа и основания.', wraplength=580).pack(anchor='w', padx=12, pady=(10, 6))
+        ttk.Label(win, text='Модели в папке models. Основная — Qwen3.5-4B (проверена на задачах Искры). '
+                            'Другую модель .gguf можно положить в папку models и выбрать здесь.',
+                  wraplength=580).pack(anchor='w', padx=12, pady=(10, 6))
         current = ai.model_label(ai.local_files()[1])
         choice = tk.StringVar(value=current)
         for name, whole in models:

@@ -216,15 +216,11 @@ class Reference(unittest.TestCase):
 
 
 class ModelFormat(unittest.TestCase):
-    def test_gigachat_prompt(self):
-        p = ai.chat_prompt('Вопрос?')
-        g = ai.for_model(p, 'models/GigaChat3.1-10B-A1.8B-q4_K_M.gguf')
-        self.assertTrue(g.startswith('developer system<|role_sep|>\n'))
-        self.assertIn('user<|role_sep|>\nВопрос?<|message_sep|>\n\n', g)
-        self.assertTrue(g.endswith('assistant<|role_sep|>\n'))
-        self.assertNotIn('<think>', g)
-        self.assertEqual(ai.for_model(p, 'models/Qwen_Qwen3.5-9B-Q4_K_M.gguf'), p)
-        self.assertEqual(ai.clean('Ответ готов.<|message_sep|>\n\nuser'), 'Ответ готов.')
+    def test_family_and_messages(self):
+        self.assertEqual(ai.family('models/Qwen_Qwen3.5-4B-Q4_K_M-00001-of-00008.gguf'), 'qwen')
+        self.assertEqual(ai.family('models/gemma-4-E4B-it-Q4_0.gguf'), 'other')
+        self.assertEqual(ai.chatml_messages(ai.chat_prompt('Вопрос?'))[-1], {'role': 'user', 'content': 'Вопрос?'})
+
 
 
 class MilitaryWords(unittest.TestCase):
@@ -240,6 +236,28 @@ class MilitaryWords(unittest.TestCase):
              'Медэвакуация трехсотых через эвакогруппу.')
         self.assertEqual([t[i.start:i.end] for i in c.check(t, with_style=False)], [])
         self.assertEqual(ai.proofread(t, [], 'x')[0], t)
+
+    def test_material_name_not_cut_inside_words(self):
+        out, removed = ai.strip_unasked('По данным свода численность по своду 242 (свод.xlsx).', 'составь доклад',
+                                        sources=[('свод.xlsx', 'x')])
+        self.assertEqual(out, 'По данным свода численность по своду 242.')
+        out, _ = ai.strip_unasked('Согласно тлг 154 и тлг 1543 прошу.', 'составь', sources=[('тлг 154.docx', 'x')])
+        self.assertIn('тлг 1543', out)
+        self.assertNotIn('тлг 154 ', out)
+
+    def test_fix_raport(self):
+        raw = ('Командиру войсковой части 12345\nполковнику [Фамилия]\n\nКапитану И.И. Иванову\n23 октября 2026 г.\n\n'
+               'РАПОРТ\n\nПрошу полагать меня прибывшим из командировки.\n\nКомандир 1 роты\nкапитан И.И. Иванов\n23.10.2026')
+        out = ai.fix_raport(raw, {'signature': 'Командир 1 роты\nкапитан И.И. Иванов'})
+        self.assertNotIn('Капитану', out)
+        self.assertIn('от командира 1 роты\nкапитана И.И. Иванова\n', out)
+        self.assertTrue(out.rstrip().endswith('капитан\t\t\t\tИ.И. Иванов'))
+        self.assertEqual(out.count('Прошу полагать'), 1)
+
+    def test_builtin_samples(self):
+        where, text = ai.best_sample('Составь телеграмму командирам: провести проверку техники')
+        self.assertIn('ПРИКАЗЫВАЮ', text)
+        self.assertIsNone(ai.best_sample('Напиши рапорт на отпуск'))
 
     def test_military_time_is_not_a_date(self):
         out, removed = ai.strip_unasked('Командирам к 06.00 представить донесение.', 'составь указание')

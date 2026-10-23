@@ -62,7 +62,7 @@ def local_files(base=None):
 
 
 def model_label(model):
-    """Имя модели без номера части: «Qwen_Qwen3.5-4B-Q4_K_M», «GigaChat3.1-10B-A1.8B-q4_K_M»."""
+    """Имя модели без номера части: «Qwen_Qwen3.5-4B-Q4_K_M»."""
     return SPLIT.sub('', Path(model).name).replace('.gguf', '') if model else ''
 
 
@@ -235,22 +235,14 @@ def chat_prompt(user, system=SYSTEM):
             '<|im_start|>assistant\n<think>\n\n</think>\n\n')
 
 
-# Сбер GigaChat 3 (отечественная модель) понимает свой формат реплик, а не ChatML Qwen: задание пишется один раз
-# (в ChatML) и перед запуском переводится в формат модели.
-END_MARKS = ('<|im_end|>', '<|im_start|>', '<|message_sep|>', '</s>')
+END_MARKS = ('<|im_end|>', '<|im_start|>', '</s>')
 CHATML = re.compile(r'<\|im_start\|>(\w+)\n(.*?)(?:<\|im_end\|>\n?|$)', re.DOTALL)
-GIGA_DEV = ('Ниже будет приведён диалог. Каждая реплика начинается с названия роли и специального токена, обозначающего '
-            'конец полного наименования роли, а заканчивается специальным токеном конца реплики. Твоя задача — '
-            'продолжить диалог от последней указанной роли в соответствии с контекстом диалога.\n'
-            'Ассистент отвечает на русском языке, следует системной инструкции и запросу пользователя.')
 
 
 def family(model):
-    """Формат реплик модели: qwen (ChatML — Искра пишет сама), gigachat (свой формат — тоже сама), other —
-    формат берётся из шаблона в файле модели (Gemma и другие)."""
+    """Формат реплик модели: qwen (ChatML — Искра пишет задание сама) или other — формат берётся из шаблона
+    в файле модели."""
     name = Path(model).name.lower() if model is not None else 'qwen'
-    if 'gigachat' in name:
-        return 'gigachat'
     return 'qwen' if 'qwen' in name or not name.endswith('.gguf') else 'other'
 
 
@@ -276,21 +268,6 @@ def chatml_messages(prompt):
     return out
 
 
-def for_model(prompt, model):
-    """Задание в ChatML → формат модели (для Qwen — как есть)."""
-    if family(model) != 'gigachat' or '<|im_start|>' not in prompt:
-        return prompt
-    messages = CHATML.findall(prompt)
-    out = [f'developer system<|role_sep|>\n{GIGA_DEV}<|message_sep|>\n\n']
-    if not messages or messages[0][0] != 'system':
-        out.append('system<|role_sep|>\n<|message_sep|>\n\n')
-    for i, (role, text) in enumerate(messages):
-        if role == 'assistant' and i == len(messages) - 1 and not prompt.rstrip().endswith('<|im_end|>'):
-            return ''.join(out) + 'assistant<|role_sep|>\n' + THINK.sub('', text).lstrip()
-        out.append(f'{role}<|role_sep|>\n{text.strip()}<|message_sep|>\n\n')
-    return ''.join(out) + 'assistant<|role_sep|>\n'
-
-
 def materials(sources, limit=MAX_SOURCE_CHARS):
     """[(имя, текст)] → блок материалов в пределах лимита и список обрезанных."""
     pieces, truncated, left = [], [], limit
@@ -312,7 +289,7 @@ THINK = re.compile(r'<think>.*?</think>\s*', re.DOTALL)
 def clean(text):
     text = THINK.sub('', text)
     text = text.split('<think>')[0] if text.count('<think>') and '</think>' not in text else text
-    for marker in END_MARKS + ('[end of text]', '<|endoftext|>', '<|role_sep|>'):
+    for marker in END_MARKS + ('[end of text]', '<|endoftext|>'):
         text = text.split(marker)[0]
     text = text.replace('\r\n', '\n').replace('\r', '\n')
     text = re.sub(r'\[УТО[ЧЕ]?НИТЬ', '[УТОЧНИТЬ', text)          # «[УТОНИТЬ: …]» — опечатка модели в пометке
@@ -331,7 +308,6 @@ def run(prompt, max_tokens=700, on_text=None, cancel=None, timeout=600, base=Non
     if missing_parts(model):
         raise AIError('Не хватает частей модели (' + ', '.join(missing_parts(model)) + '). '
                       'Распакуйте все архивы Iskra-AI-chast-… (часть 2 и дальше) в ту же папку, что и часть 1.')
-    prompt = for_model(prompt, model)
     # Модель одна, процессор один: задачи (чат, входящие в фоне) идут по очереди.
     waited = False
     while not _LOCK.acquire(timeout=0.5):
@@ -763,8 +739,17 @@ def strip_unasked(text, task, keep='', sources=()):
             out.append(line)
             continue
         new = re.sub(r'\s*\(файл от [^)]*\)', '', line)
+        asked_nums = set(re.findall(r'\d+', asked))
         for n in names:
-            new = cut(r'\s*«?' + re.escape(n) + r'»?', new, 'название материала')
+            if set(re.findall(r'\d+', n)) & asked_nums:
+                continue                                   # «тлг 154», когда отвечают на 154/2, — это ссылка, её просили
+            # Только целым словом: «свод.xlsx» не должен превращать «по своду» в «поу». Обычное слово-имя
+            # («свод», «приказ») — только в кавычках; имя с цифрами/расширением («тлг 154», «план.docx») — как есть.
+            if re.fullmatch(r'[А-Яа-яЁёA-Za-z -]+', n):
+                pattern = r'\s*«' + re.escape(n) + r'»'
+            else:
+                pattern = r'\s*«?(?<![\w])' + re.escape(n) + r'(?![\w])»?'
+            new = cut(pattern, new, 'название материала')
         if not want_refs:
             new = cut(r'^\s*На\s+(?:исх\.?\s*|вх\.?\s*)?№\s*[\w/.-]+(?:\s+от\s+' + DATE_RE + r')?\s*[.,:;]?\s*', new, 'ссылка')
             new = cut(r'\s*\(?(?:исх\.?\s*|вх\.?\s*)?№\s*[\w/-]+(?:\.\d+)*(?:\s+от\s+' + DATE_RE + r')?\)?', new, 'номер документа')
@@ -938,6 +923,44 @@ REF_NUM = re.compile(r'(?:№\s*)([\w-]*\d[\w/-]*)|(?<![\w./])(\d+(?:/\d+)+)(?![
 REPLY_WORDS = re.compile(r'ответ\w*|на\s+(?:вашу|ваш|телеграмм\w*|письм\w*|запрос\w*)', re.IGNORECASE)
 
 
+def fix_raport(text, me=None):
+    """Рапорт от нейросети → форма как в войсках: адресат (что написала модель), «от …» и дата — от Искры
+    (родительный падеж из «Мои реквизиты»), текст — модели, подпись — из реквизитов («звание — подпись — фамилия»)."""
+    import iskra_compose as c
+    lines = text.split('\n')
+    try:
+        i = next(n for n, l in enumerate(lines) if l.strip().upper().strip('.') == 'РАПОРТ')
+    except StopIteration:
+        return text
+    head = [l.strip() for l in lines[:i] if l.strip()]
+    to = []
+    for l in head:                                         # адресат: «Командиру …», «полковнику …» до строки «от …»
+        if re.match(r'^(от|ОТ)\s', l) or re.fullmatch(c.DATE_LINE, l):
+            break
+        if re.match(r'^[А-ЯЁ][а-яё]+у\b|^[а-яё]+у\s+[А-ЯЁ\[]', l) or l.startswith('['):
+            to.append(l)
+    sig = [x.strip() for x in (me or {}).get('signature', '').splitlines() if x.strip()]
+    if sig:                                                # модель иногда пишет адресатом самого автора
+        own = re.findall(r'[А-ЯЁ][а-яё]{2,}', c._split_rank(sig[-1])[1])
+        to = [l for l in to if not any(re.search(r'(?<![а-яё])' + w[:-1], l) for w in own)]
+    to = to[:3] or ['Командиру войсковой части [НОМЕР]', '[звание] [Фамилия И. О.]']
+    body = lines[i + 1:]
+    if sig:                                                # подпись модели — убрать, поставить свою
+        names = {x.lower() for x in sig} | {c._split_rank(sig[-1])[1].lower()}
+        while body and (not body[-1].strip() or body[-1].strip().lower() in names
+                        or re.fullmatch(c.DATE_LINE, body[-1].strip())
+                        or re.fullmatch(r'\d{1,2}\.\d{1,2}\.\d{4}( г\.)?', body[-1].strip())):
+            body.pop()
+        position = ' '.join(sig[:-1])
+        frm = 'от ' + (c.genitive_position(position) + '\n' if position else '') + c.genitive_person(sig[-1])
+        rank, name = c._split_rank(sig[-1])
+        tail = [''] + sig[:-1] + [f'{rank}\t\t\t\t{name}' if name else sig[-1]]
+    else:
+        frm, tail = 'от [должность, звание, фамилия — в родительном падеже]', []
+    body_text = '\n'.join(body).strip()
+    return '\n'.join(to + [frm, c.word_date(), '', 'РАПОРТ', '', body_text] + tail)
+
+
 def drop_invented_basis(text, sources):
     """Строка «Основание: приказ … от 27.08.2025 …», которой нет ни в задаче, ни в материалах, — выдумка модели:
     убрать (неверное основание в рапорте хуже, чем никакого)."""
@@ -964,6 +987,8 @@ def ensure_reference(text, task, sources=()):
     when = ''
     for _, body in sources:
         d = re.search(re.escape(num) + r'\s*от\s*(\d{1,2}\.\d{1,2}\.\d{2,4})', body or '')
+        if not d and re.search(r'^\s*Номер\s*:\s*№?\s*' + re.escape(num) + r'\b', body or '', re.MULTILINE | re.IGNORECASE):
+            d = re.search(r'^\s*Дата\s*:\s*(\d{1,2}\.\d{1,2}\.\d{2,4})', body, re.MULTILINE | re.IGNORECASE)
         if d:
             when = ' от ' + d.group(1)
             break
@@ -1036,6 +1061,58 @@ _GENERIC = {w[:6] for w in ('телеграмма телеграммы теле�
                             'документа прошу приказываю').split()}
 
 
+# Встроенные образцы — если в папке образцов отдела и в отправленных нет документа того же вида. Небольшая модель
+# пишет заметно лучше, когда видит, как должен выглядеть готовый документ.
+BUILTIN_SAMPLES = {
+    'указание': """ТЕЛЕГРАММА
+
+Кому: Командирам подразделений
+От кого: Штаб войсковой части
+
+Текст:
+Во исполнение указаний штаба округа и в целях подготовки подразделений к зимнему периоду обучения ПРИКАЗЫВАЮ:
+1. Провести проверку укомплектованности подразделений личным составом, вооружением и военной техникой.
+2. Выявленные недостатки устранить силами подразделений, о невозможности устранения доложить по команде.
+3. Результаты проверки оформить актами, сведения представить в штаб части по установленной форме.
+4. Ответственность за полноту и достоверность представляемых сведений возложить на командиров подразделений.
+5. О выполнении доложить.
+
+Подпись:
+Начальник штаба войсковой части
+подполковник А.А. Смирнов""",
+    'доклад': """ТЕЛЕГРАММА
+
+Кому: Начальнику штаба войсковой части
+От кого: Командир мотострелковой роты
+
+Текст:
+Докладываю:
+1. Проверка укомплектованности роты личным составом, вооружением и военной техникой проведена в полном объёме.
+2. Личный состав по списку и в наличии — согласно прилагаемой ведомости, отсутствующие учтены по причинам.
+3. Выявленные недостатки устранены силами роты, акт проверки направлен в штаб части.
+4. Неисправная техника передана в ремонтное подразделение, срок восстановления согласован.
+
+Подпись:
+Командир мотострелковой роты
+капитан Б.Б. Петров""",
+    'запрос': """ТЕЛЕГРАММА
+
+Кому: Командирам подразделений
+От кого: Штаб войсковой части
+
+Текст:
+В целях подготовки доклада вышестоящему штабу прошу в установленный срок представить в штаб части:
+1. Сведения о наличии личного состава по установленной форме.
+2. Сведения о техническом состоянии вооружения и военной техники.
+3. Перечень недостатков, которые не могут быть устранены силами подразделения, с указанием причин.
+Ответственность за своевременное представление сведений возложить на заместителей командиров подразделений.
+
+Подпись:
+Начальник штаба войсковой части
+подполковник А.А. Смирнов""",
+}
+
+
 def best_sample(task, materials_text='', limit=2600):
     """Один образец для подражания, близкий к задаче И того же вида (ответ — по образцу ответа, а не приказа):
     из папки образцов отдела или из ваших отправленных документов. Возвращает (откуда, текст) или None."""
@@ -1057,7 +1134,11 @@ def best_sample(task, materials_text='', limit=2600):
     fit = [c for c in candidates if kinds_fit(kind, doc_kind(c[2]))
            and (not want_telegram or TELEGRAM_WORDS.search(c[2][:300]) or c[0] >= 3) and c[0] >= 2]
     fit.sort(key=lambda c: -c[0])
-    return (fit[0][1], fit[0][2]) if fit else None
+    if fit:
+        return fit[0][1], fit[0][2]
+    if kind in BUILTIN_SAMPLES and (want_telegram or kind != 'доклад'):
+        return 'типовой образец Искры', BUILTIN_SAMPLES[kind]
+    return None
 
 
 def _ratio(line, text):
@@ -1116,7 +1197,7 @@ def write(task, sources=(), me=None, **kw):
         sample = best_sample(task, block)
         if sample:
             where, text = sample
-            sample_len = len(body_of(text))
+            sample_len = 0 if where.startswith('типовой') else len(body_of(text))   # типовой — не мерило объёма
             sample_text = text
             user += (f'ОБРАЗЕЦ — так пишут у пользователя ({where}). Повтори его построение, обороты, оформление и '
                      'ПОЛНОТУ: столько же частей и подробностей, если их позволяют материалы. Факты, даты, номера и '
@@ -1177,6 +1258,8 @@ def write(task, sources=(), me=None, **kw):
         write_log('Вычитка: ' + '; '.join(fixes[:30]))
     out = drop_invented_basis(out, list(sources) + [('задача', task + ' ' + keep)])
     out = ensure_reference(out, task, sources)            # «На № …» в ответе на названный документ
+    if raport:
+        out = fix_raport(out, me)
     if telegram:
         out = enforce_signature(out, me)
     return out, truncated
