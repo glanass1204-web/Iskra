@@ -331,10 +331,67 @@ def split_editor_text(text):
     return title, header, body, signature
 
 
+def is_raport(text):
+    head = [l.strip() for l in text.splitlines()[:15]]
+    return 'РАПОРТ' in head and 'ТЕЛЕГРАММА' not in head
+
+
+def save_raport_docx(text, path):
+    """Рапорт в Word как принято: шапка (кому, от кого, дата) справа, «РАПОРТ» по центру, текст по ширине с отступом
+    первой строки, внизу должность и строка «звание — подпись — фамилия» (фамилия у правого края)."""
+    from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
+    from docx.shared import Cm, Pt
+    lines = text.splitlines()
+    i = next(n for n, l in enumerate(lines) if l.strip() == 'РАПОРТ')
+    head, rest = lines[:i], lines[i + 1:]
+    while rest and not rest[0].strip():
+        rest = rest[1:]
+    while rest and not rest[-1].strip():
+        rest = rest[:-1]
+    # подпись — последний блок после пустой строки (должность, «звание … фамилия»)
+    cut = max((n for n, l in enumerate(rest) if not l.strip()), default=len(rest))
+    body, sign = rest[:cut], [l for l in rest[cut:] if l.strip()]
+    doc = Document()
+    for sec in doc.sections:
+        sec.left_margin, sec.right_margin, sec.top_margin, sec.bottom_margin = Cm(2), Cm(1), Cm(2), Cm(2)
+    normal = doc.styles['Normal']
+    normal.font.name = 'Times New Roman'
+    normal.font.size = Pt(14)
+    normal.paragraph_format.space_before, normal.paragraph_format.space_after = Pt(0), Pt(0)
+    width = doc.sections[0].page_width - doc.sections[0].left_margin - doc.sections[0].right_margin
+    for l in head:
+        if l.strip():
+            doc.add_paragraph(l.strip()).alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    doc.add_paragraph()
+    p = doc.add_paragraph()
+    p.add_run('РАПОРТ').italic = True
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    doc.add_paragraph()
+    for l in body:
+        if l.strip():
+            p = doc.add_paragraph(l.strip())
+            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            p.paragraph_format.first_line_indent = Cm(1.25)
+    doc.add_paragraph()
+    for l in sign:
+        parts = [x.strip() for x in re.split(r'\t+', l) if x.strip()]
+        p = doc.add_paragraph()
+        if len(parts) >= 2:                                 # «майор → (подпись) → Перов В. В.»
+            p.paragraph_format.tab_stops.add_tab_stop(width, WD_TAB_ALIGNMENT.RIGHT)
+            p.add_run(parts[0] + '\t' + parts[-1])
+        else:
+            p.add_run(l.strip())
+    doc.save(path)
+    return path
+
+
 def save_docx(text, path, template=None):
     """Lays the telegram out in Word: the user's template with {Кому}, {Текст}, {Подпись}… or the standard one."""
     from docx import Document
     text = text.split('--- ИСТОЧНИКИ')[0].rstrip()
+    if is_raport(text):
+        return save_raport_docx(text, path)
     if template:
         # Шаблон с метками и текст с «Кому: / Текст: / Подпись:» — подставляем по меткам; иначе текст уже в виде
         # шаблона (так его пишет нейросеть) — переносим строки с оформлением шаблона.

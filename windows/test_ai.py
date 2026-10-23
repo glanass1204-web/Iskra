@@ -256,6 +256,21 @@ class Raport(unittest.TestCase):
         self.assertEqual(c.raport_text('что задача выполнена'), 'Настоящим докладываю, что задача выполнена')
         self.assertEqual(c.raport_text('предоставить отпуск'), 'Прошу предоставить отпуск')
         self.assertNotIn('Донесение', c.KINDS)
+        self.assertEqual(c.genitive_position('Заместитель командира 1 мотострелкового батальона'),
+                         'заместителя командира 1 мотострелкового батальона')
+        self.assertEqual(c.genitive_person('майор Перов В. В.'), 'майора Перова В. В.')
+        self.assertEqual(c.genitive_person('старший лейтенант Петров П.П.'), 'старшего лейтенанта Петрова П.П.')
+        full = c.compose('Рапорт', me={'signature': 'Командир 1 роты\nкапитан И.И. Иванов'}, to='Командиру полка',
+                         points=['убыл в отпуск'])
+        self.assertIn('от командира 1 роты\nкапитана И.И. Иванова\n', full)
+        self.assertIn('капитан\t\t\t\tИ.И. Иванов', full)
+        import iskra_telegram, tempfile, os
+        from docx import Document
+        path = os.path.join(tempfile.mkdtemp(), 'r.docx')
+        iskra_telegram.save_docx(full, path)
+        paras = [(p.alignment, p.text) for p in Document(path).paragraphs if p.text]
+        self.assertEqual(paras[0], (2, 'Командиру полка'))         # шапка справа
+        self.assertIn((1, 'РАПОРТ'), paras)                        # по центру
         text = c.compose('Рапорт', points=['прибыл из госпиталя'])
         self.assertIn('РАПОРТ', text)
         self.assertIn('Прошу полагать меня прибывшим из госпиталя.', text)

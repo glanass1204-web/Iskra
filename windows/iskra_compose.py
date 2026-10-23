@@ -142,11 +142,95 @@ def raport_text(p):
     return 'Прошу ' + low
 
 
+MONTHS_GEN = ('января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября',
+              'ноября', 'декабря')
+INITIALS = re.compile(r'^(?:[А-ЯЁ]\.\s?){1,2}$')
+_MORPH = None
+
+
+def _morph():
+    global _MORPH
+    if _MORPH is None:
+        try:
+            import pymorphy3
+            _MORPH = pymorphy3.MorphAnalyzer()
+        except Exception:                                  # noqa: BLE001 — без словаря просто не склоняем
+            _MORPH = False
+    return _MORPH
+
+
+def _gent(word, surname=False):
+    """Слово в именительном → родительный («майор» → «майора», «Перов» → «Перова»); иначе как есть."""
+    m = _morph()
+    if not m or not re.fullmatch(r'[А-Яа-яЁё-]+', word):
+        return word, None
+    parses = [x for x in m.parse(word.lower()) if x.tag.case == 'nomn' and x.tag.POS in ('NOUN', 'ADJF')
+              and ('plur' not in x.tag)]
+    if surname:
+        parses = [x for x in parses if 'Surn' in x.tag] or parses
+    parses.sort(key=lambda x: (x.tag.POS != 'ADJF', -x.score))           # «старший лейтенант»: прилагательное
+    for x in parses:
+        g = x.inflect({'gent'})
+        if g:
+            out = g.word
+            return (out[:1].upper() + out[1:] if word[:1].isupper() else out), x.tag.POS
+    return word, None
+
+
+def genitive_position(text):
+    """«Заместитель командира 1 мсб» → «заместителя командира 1 мсб»: склоняется только начало до первого
+    существительного, остальное уже стоит в родительном."""
+    out, done = [], False
+    for w in text.split():
+        if done:
+            out.append(w)
+            continue
+        g, pos = _gent(w)
+        out.append(g)
+        done = pos == 'NOUN'
+    res = ' '.join(out)
+    return res[:1].lower() + res[1:] if res[:1].isupper() and not res[:2].isupper() else res
+
+
+def genitive_person(text):
+    """«майор Перов В. В.» → «майора Перова В. В.»; «гвардии капитан И.И. Иванов» → «гвардии капитана И.И. Иванова»."""
+    out = []
+    for w in text.split():
+        if INITIALS.match(w) or not re.search('[а-яё]', w):
+            out.append(w)
+        else:
+            out.append(_gent(w, surname=w[:1].isupper())[0])
+    return ' '.join(out)
+
+
+def _split_rank(line):
+    """«капитан И.И. Иванов» → («капитан», «И.И. Иванов»): звание и имя для строки подписи."""
+    m = re.search(r'((?:[А-ЯЁ]\.\s?){1,2}\s*[А-ЯЁ][а-яё-]+|[А-ЯЁ][а-яё-]+\s+(?:[А-ЯЁ]\.\s?){1,2})\s*$', line)
+    if not m:
+        return line, ''
+    return line[:m.start()].strip(), m.group(1).strip()
+
+
+def word_date(d=None):
+    from datetime import date
+    d = d or date.today()
+    return f'{d.day} {MONTHS_GEN[d.month - 1]} {d.year} г.'
+
+
 def raport(me=None, to='', basis='', points=None, subject=''):
-    """Рапорт: адресат вверху справа, «РАПОРТ», текст от первого лица, должность, звание, подпись, дата."""
+    """Рапорт как в войсках: справа — кому, «от» кого (должность, звание, фамилия в родительном), дата словами;
+    «РАПОРТ»; текст от первого лица; внизу должность, затем звание — подпись — фамилия."""
     me = me or {}
     points = [p.strip() for p in (points or []) if p.strip()]
-    lines = [to or 'Командиру войсковой части [НОМЕР]\n[звание] [И.О. Фамилия]', '', 'РАПОРТ', '']
+    sig = [x.strip() for x in me.get('signature', '').splitlines() if x.strip()]
+    header = [to or 'Командиру войсковой части [НОМЕР]\n[звание] [Фамилия И. О.]']
+    if sig:
+        rank_line = sig[-1]
+        position = ' '.join(sig[:-1])
+        header.append('от ' + (genitive_position(position) + '\n' if position else '') + genitive_person(rank_line))
+    else:
+        header.append('от [должность, звание, фамилия — в родительном падеже]')
+    lines = header + [word_date(), '', 'РАПОРТ', '']
     if subject:
         lines += [subject, '']
     if len(points) == 1:
@@ -159,8 +243,11 @@ def raport(me=None, to='', basis='', points=None, subject=''):
         lines.append('Прошу [УТОЧНИТЬ: о чём просите].')
     if basis:
         lines.append(f'Основание: {basis}.')
-    sig = [s for s in me.get('signature', '').splitlines() if s.strip()] or NO_SIGNATURE
-    lines += [''] + sig + ['', _today()]
+    if sig:
+        rank, name = _split_rank(sig[-1])
+        lines += [''] + sig[:-1] + [f'{rank}\t\t\t\t{name}' if name else sig[-1]]
+    else:
+        lines += ['', '[должность]', '[звание]\t\t\t\t[Фамилия И. О.]']
     return '\n'.join(lines)
 
 
