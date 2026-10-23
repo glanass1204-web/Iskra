@@ -242,6 +242,9 @@ def clean(text):
     for marker in END_MARKS + ('[end of text]', '<|endoftext|>', '<|role_sep|>'):
         text = text.split(marker)[0]
     text = text.replace('\r\n', '\n').replace('\r', '\n')
+    text = re.sub(r'\[УТО[ЧЕ]?НИТЬ', '[УТОЧНИТЬ', text)          # «[УТОНИТЬ: …]» — опечатка модели в пометке
+    # Пометка, переписанная из правил дословно («[УТОЧНИТЬ: что именно]»), ничего не уточняет — убрать.
+    text = re.sub(r'[ \t]*\[УТОЧНИТЬ:\s*что именно\]\.?', '', text)
     return re.sub(r'\n\s*\n(\s*\n)+', '\n\n', text).strip()
 
 
