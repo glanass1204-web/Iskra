@@ -7,6 +7,7 @@ import json
 import math
 import re
 import shutil
+import threading
 from collections import Counter
 from pathlib import Path
 
@@ -294,11 +295,13 @@ def add_files(paths):
 
 
 _LIB = None
+_LIB_LOCK = threading.Lock()
 
 
 def library(reload=False):
     """Общая библиотека (загружается один раз; reload=True — после добавления файлов)."""
     global _LIB
-    if _LIB is None or reload:
-        _LIB = Library().load()
-    return _LIB
+    with _LIB_LOCK:                                      # окно, чат и нейросеть могут попросить одновременно
+        if _LIB is None or reload:
+            _LIB = Library().load()
+        return _LIB

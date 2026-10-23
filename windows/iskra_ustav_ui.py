@@ -89,22 +89,33 @@ class UstavMixin:
             threading.Thread(target=work, daemon=True, name='уставы').start()
 
         def find(_=None):
+            query = q.get()
+
+            def work():                                    # первый раз уставы ещё разбираются — окно не замирает
+                lib = ustav.library()
+                d = ustav.direct_ref(query)
+                found = [(1, lib.get(*d))] if d and lib.get(*d) else lib.search(query, k=40)
+                self.events.put(('call', lambda: win.winfo_exists() and fill(found)))
+            threading.Thread(target=work, daemon=True, name='уставы').start()
+
+        def fill(found):
             tree.delete(*tree.get_children()); shown.clear()
-            lib = ustav.library()
-            d = ustav.direct_ref(q.get())
-            found = [(1, lib.get(*d))] if d and lib.get(*d) else lib.search(q.get(), k=40)
             for _, a in found:
-                iid = tree.insert('', 'end', values=(ustav.ref(a), (a['chapter'] or a['text'])[:80]))
+                iid = tree.insert('', 'end', values=(ustav.ref(a), (a.get('title') or a['chapter'] or a['text'])[:80]))
                 shown[iid] = a
             if found:
                 tree.selection_set(tree.get_children()[0])
+            else:
+                text.delete('1.0', 'end')
+                text.insert('end', 'Ничего не нашла. Попробуйте другие слова.' if ustav.library().articles else
+                            'Уставы не загружены: «Добавить файлы уставов…».')
 
         def select(_=None):
             sel = tree.selection()
             if sel and sel[0] in shown:
                 a = shown[sel[0]]
                 text.delete('1.0', 'end')
-                text.insert('end', f'{ustav.ref(a)}\n' + (a['chapter'] + '\n' if a['chapter'] else '') + '\n' + a['text'])
+                text.insert('end', f'{ustav.ref(a)}\n' + ''.join(x + '\n' for x in (a['chapter'], a.get('title', '')) if x) + '\n' + a['text'])
 
         def add():
             paths = filedialog.askopenfilenames(parent=win, title='Файлы уставов',
