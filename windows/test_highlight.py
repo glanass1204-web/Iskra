@@ -446,6 +446,20 @@ class StayRestart(unittest.TestCase):
         self.assertTrue(green(t.cell(1, 1)))
         self.assertEqual(t.cell(2, 3).text, '3 сут. с 21.10.2026')     # не переезжали — пересчёт
         self.assertFalse(green(t.cell(2, 3)))
+        place = t.cell(1, 2).paragraphs                                  # старый пункт — чёрным, новый снизу — зелёным
+        self.assertFalse(any(str(r.font.color.rgb) == '00B050' for r in place[0].runs if r.font.color.rgb))
+        self.assertTrue(all(str(r.font.color.rgb) == '00B050' for r in place[1].runs))
+        # На следующий день поменялся только КП 7001 — вчерашний зелёный у КП 5447 становится чёрным.
+        today_doc = TMP / 'итог_сут.docx'
+        next_now = [now[0], ['КП 7001', '35 км', 'ЛИМАН', '3 сут. с 21.10.2026']]
+        sent2 = build('стало_сут2.docx', next_now, green={(2, 1, 0)})
+        out2 = TMP / 'итог_сут2.docx'
+        H.merge(today_doc, [sent2], out2, mark=H.FONT, base=today_doc, today=date(2026, 10, 24))
+        t2 = Document(str(out2)).tables[0]
+        self.assertFalse(green(t2.cell(1, 1)) or green(t2.cell(1, 2)) or green(t2.cell(1, 3)))
+        self.assertEqual(t2.cell(1, 3).text, '2 сут. с 23.10.2026')     # пересчёт — чёрным
+        self.assertTrue(green(t2.cell(2, 1)))
+        self.assertEqual(t2.cell(2, 1).text, '35 км')
 
 
 if __name__ == '__main__':
