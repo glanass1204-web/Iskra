@@ -186,6 +186,35 @@ def chat_prompt(user, system=SYSTEM):
             '<|im_start|>assistant\n<think>\n\n</think>\n\n')
 
 
+# Сбер GigaChat 3 (отечественная модель) понимает свой формат реплик, а не ChatML Qwen: задание пишется один раз
+# (в ChatML) и перед запуском переводится в формат модели.
+END_MARKS = ('<|im_end|>', '<|im_start|>', '<|message_sep|>', '</s>')
+CHATML = re.compile(r'<\|im_start\|>(\w+)\n(.*?)(?:<\|im_end\|>\n?|$)', re.DOTALL)
+GIGA_DEV = ('Ниже будет приведён диалог. Каждая реплика начинается с названия роли и специального токена, обозначающего '
+            'конец полного наименования роли, а заканчивается специальным токеном конца реплики. Твоя задача — '
+            'продолжить диалог от последней указанной роли в соответствии с контекстом диалога.\n'
+            'Ассистент отвечает на русском языке, следует системной инструкции и запросу пользователя.')
+
+
+def family(model):
+    return 'gigachat' if model is not None and 'gigachat' in Path(model).name.lower() else 'qwen'
+
+
+def for_model(prompt, model):
+    """Задание в ChatML → формат модели (для Qwen — как есть)."""
+    if family(model) != 'gigachat' or '<|im_start|>' not in prompt:
+        return prompt
+    messages = CHATML.findall(prompt)
+    out = [f'developer system<|role_sep|>\n{GIGA_DEV}<|message_sep|>\n\n']
+    if not messages or messages[0][0] != 'system':
+        out.append('system<|role_sep|>\n<|message_sep|>\n\n')
+    for i, (role, text) in enumerate(messages):
+        if role == 'assistant' and i == len(messages) - 1 and not prompt.rstrip().endswith('<|im_end|>'):
+            return ''.join(out) + 'assistant<|role_sep|>\n' + THINK.sub('', text).lstrip()
+        out.append(f'{role}<|role_sep|>\n{text.strip()}<|message_sep|>\n\n')
+    return ''.join(out) + 'assistant<|role_sep|>\n'
+
+
 def materials(sources, limit=MAX_SOURCE_CHARS):
     """[(имя, текст)] → блок материалов в пределах лимита и список обрезанных."""
     pieces, truncated, left = [], [], limit
@@ -207,7 +236,7 @@ THINK = re.compile(r'<think>.*?</think>\s*', re.DOTALL)
 def clean(text):
     text = THINK.sub('', text)
     text = text.split('<think>')[0] if text.count('<think>') and '</think>' not in text else text
-    for marker in ('<|im_end|>', '<|im_start|>', '[end of text]', '<|endoftext|>'):
+    for marker in END_MARKS + ('[end of text]', '<|endoftext|>', '<|role_sep|>'):
         text = text.split(marker)[0]
     text = text.replace('\r\n', '\n').replace('\r', '\n')
     return re.sub(r'\n\s*\n(\s*\n)+', '\n\n', text).strip()
@@ -223,6 +252,7 @@ def run(prompt, max_tokens=700, on_text=None, cancel=None, timeout=600, base=Non
     if missing_parts(model):
         raise AIError('Не хватает частей модели (' + ', '.join(missing_parts(model)) + '). '
                       'Распакуйте все архивы Iskra-AI-chast-… (часть 2 и дальше) в ту же папку, что и часть 1.')
+    prompt = for_model(prompt, model)
     # Модель одна, процессор один: задачи (чат, входящие в фоне) идут по очереди.
     waited = False
     while not _LOCK.acquire(timeout=0.5):
@@ -356,7 +386,7 @@ def _run_locked(binary, model, prompt, max_tokens, on_text, cancel, timeout, tem
     try:
         while proc.poll() is None:
             text = ''.join(chunks)
-            if '<|im_start|>' in text or '<|im_end|>' in text:
+            if any(m in text for m in END_MARKS):
                 proc.kill()                      # ответ закончен, модель начала новый ход
                 break
             if on_text and text != shown:

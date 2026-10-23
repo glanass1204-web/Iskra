@@ -215,5 +215,17 @@ class Reference(unittest.TestCase):
         self.assertEqual(ai.ensure_reference('1. Готово.', 'Составь телеграмму о 154/2', self.SRC), '1. Готово.')
 
 
+class ModelFormat(unittest.TestCase):
+    def test_gigachat_prompt(self):
+        p = ai.chat_prompt('Вопрос?')
+        g = ai.for_model(p, 'models/GigaChat3.1-10B-A1.8B-q4_K_M.gguf')
+        self.assertTrue(g.startswith('developer system<|role_sep|>\n'))
+        self.assertIn('user<|role_sep|>\nВопрос?<|message_sep|>\n\n', g)
+        self.assertTrue(g.endswith('assistant<|role_sep|>\n'))
+        self.assertNotIn('<think>', g)
+        self.assertEqual(ai.for_model(p, 'models/Qwen_Qwen3.5-9B-Q4_K_M.gguf'), p)
+        self.assertEqual(ai.clean('Ответ готов.<|message_sep|>\n\nuser'), 'Ответ готов.')
+
+
 if __name__ == '__main__':
     unittest.main()

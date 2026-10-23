@@ -170,7 +170,7 @@ class Server:
         """Текст ответа по мере написания. Остановка — закрытием соединения: движок сразу бросает задачу."""
         body = json.dumps({'prompt': prompt, 'n_predict': max_tokens, 'temperature': temperature, 'top_p': 0.9,
                            'repeat_penalty': 1.05, 'stream': True, 'cache_prompt': True,
-                           'stop': ['<|im_end|>', '<|im_start|>']}, ensure_ascii=False).encode('utf-8')
+                           'stop': ['<|im_end|>', '<|im_start|>', '<|message_sep|>', '</s>']}, ensure_ascii=False).encode('utf-8')
         conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=timeout)
         started, text, shown = time.monotonic(), '', ''
         self.last_cut = False
