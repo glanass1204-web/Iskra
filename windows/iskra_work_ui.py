@@ -122,8 +122,22 @@ class WorkMixin:
         if not getattr(self, 'ai_ready', False):
             ai_box.state(['disabled'])
 
+        tpl_label = ttk.Label(form, text='Типовой рапорт:')
+        tpl_var = tk.StringVar()
+        tpl_box = ttk.Combobox(form, textvariable=tpl_var, values=list(compose.RAPORT_TEMPLATES), state='readonly')
+
+        def use_template(_=None):
+            text = compose.RAPORT_TEMPLATES.get(tpl_var.get())
+            if text:
+                points.delete('1.0', 'end'); points.insert('1.0', text)
+        tpl_box.bind('<<ComboboxSelected>>', use_template)
+
         def switch(*_):
             is_reply = v['kind'].get() == 'Ответ на входящую'
+            if v['kind'].get() == 'Рапорт':
+                tpl_label.grid(row=1, column=0, sticky='w', pady=3); tpl_box.grid(row=1, column=1, sticky='we', pady=3)
+            else:
+                tpl_label.grid_remove(); tpl_box.grid_remove()
             if is_reply:
                 src_label.grid(row=1, column=0, sticky='w', pady=3); src_row.grid(row=1, column=1, sticky='we', pady=3)
             else:
@@ -162,7 +176,7 @@ class WorkMixin:
                 fields = {'кому': v['to'].get().strip(), 'основание': v['basis'].get().strip(), 'тема': v['subject'].get().strip(),
                           'срок': v['deadline'].get().strip()}
                 pts = [x.strip() for x in points.get('1.0', 'end-1c').splitlines() if x.strip()]
-                task = f'Составь телеграмму вида «{kind}». ' + '; '.join(f'{k}: {x}' for k, x in fields.items() if x)
+                task = ('Составь рапорт. ' if kind == 'Рапорт' else f'Составь телеграмму вида «{kind}». ') + '; '.join(f'{k}: {x}' for k, x in fields.items() if x)
                 if pts:
                     task += '. Пункты: ' + '; '.join(pts)
                 query = ' '.join([fields['тема'], fields['основание']] + pts)

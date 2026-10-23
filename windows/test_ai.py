@@ -271,6 +271,11 @@ class Raport(unittest.TestCase):
         paras = [(p.alignment, p.text) for p in Document(path).paragraphs if p.text]
         self.assertEqual(paras[0], (2, 'Командиру полка'))         # шапка справа
         self.assertIn((1, 'РАПОРТ'), paras)                        # по центру
+        for name, tpl in c.RAPORT_TEMPLATES.items():               # каждый типовой рапорт начинается как принято
+            first = c.raport_text(tpl)
+            self.assertRegex(first, r'^(Прошу|Настоящим докладываю)', name)
+            self.assertNotIn('меня меня', first, name)
+        self.assertTrue(c.raport_text(c.RAPORT_TEMPLATES['Ходатайство о награждении']).startswith('Прошу Вашего ходатайства'))
         text = c.compose('Рапорт', points=['прибыл из госпиталя'])
         self.assertIn('РАПОРТ', text)
         self.assertIn('Прошу полагать меня прибывшим из госпиталя.', text)
