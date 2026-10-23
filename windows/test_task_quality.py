@@ -80,5 +80,46 @@ class Documents(unittest.TestCase):
         self.assertIn('номер части: 54321', removed)
 
 
+class SelftestCases(unittest.TestCase):
+    """Случаи самопроверки на настоящей модели: правка ответа и телеграмма по шаблону отдела."""
+
+    def test_revise_keeps_signature_rules_without_template(self):
+        prompts = []
+        old = ai.run
+        ai.run = lambda prompt, **kw: prompts.append(prompt) or 'На № 154/2. Срок 30.10.2026.\n\nНачальник штаба\nполковник П.П. Сидоров'
+        try:
+            ai.revise('телеграмма-ответ в штаб округа', 'ТЕЛЕГРАММА\nТекст:\nСрок 25.10.2026.\nПодпись:\nНачальник штаба', 'поменяй срок')
+        finally:
+            ai.run = old
+        self.assertNotIn('без подписи', prompts[0])           # «оставь подпись» и «без подписи» сразу — сбивает модель
+
+    def test_department_template_replaces_builtin_sample_and_copy_is_redone(self):
+        import tempfile
+        from pathlib import Path
+        from docx import Document
+        d = Document()
+        for line in ('ТЕЛЕГРАММА', 'Командиру войсковой части 12345', 'Текст телеграммы.', 'Начальник штаба'):
+            d.add_paragraph(line)
+        path = Path(tempfile.mkdtemp()) / 'obrazec.docx'
+        d.save(path)
+        old_t, old_run = ai.TELEGRAM_TEMPLATE, ai.run
+        ai.TELEGRAM_TEMPLATE = str(path)
+        try:
+            self.assertIsNone(ai.best_sample('Составь телеграмму начальнику госпиталя: представить сведения'))
+        finally:
+            ai.TELEGRAM_TEMPLATE = old_t
+        calls = []
+        copy = ai.BUILTIN_SAMPLES['запрос']
+        answers = [copy, 'Прошу представить сведения о численности личного состава до 30.10.2026.']
+        ai.run = lambda prompt, **kw: calls.append(prompt) or answers[min(len(calls) - 1, 1)]
+        try:
+            out, _ = ai.write('Составь телеграмму начальнику госпиталя: представить сведения о численности личного '
+                              'состава до 30.10.2026', [])
+        finally:
+            ai.run = old_run
+        self.assertEqual(len(calls), 2)                        # переписала образец без даты задачи — заново
+        self.assertIn('30.10.2026', out)
+
+
 if __name__ == '__main__':
     unittest.main()

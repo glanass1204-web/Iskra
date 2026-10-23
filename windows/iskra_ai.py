@@ -1209,7 +1209,8 @@ def best_sample(task, materials_text='', limit=2600):
     fit.sort(key=lambda c: -c[0])
     if fit:
         return fit[0][1], fit[0][2]
-    if kind in BUILTIN_SAMPLES and (want_telegram or kind != 'доклад'):
+    if kind in BUILTIN_SAMPLES and (want_telegram or kind != 'доклад') and not has_template():
+        # свой шаблон отдела — уже образец; типовой рядом с ним сбивает небольшую модель
         return 'типовой образец Искры', BUILTIN_SAMPLES[kind]
     return None
 
@@ -1417,7 +1418,9 @@ def write(task, sources=(), me=None, **kw):
     if count:
         max_tokens = max(max_tokens, min(2400, 110 * count + 300))   # 15 пунктов в 1300 токенов не помещаются
     raw = run(chat_prompt(user), max_tokens=max_tokens, **kw)
-    if sample_text and copied_from(raw, sample_text) > 0.5 and task_coverage(raw, task) < 0.6:
+    own_facts = set(re.findall(r'\d{1,2}\.\d{1,2}\.\d{2,4}|\d+(?:/\d+)?', own_task))
+    lost_facts = sample_text and own_facts and not all(f in raw for f in own_facts)
+    if sample_text and copied_from(raw, sample_text) > 0.5 and (task_coverage(raw, task) < 0.6 or lost_facts):
         # Переписала образец, а задачу не раскрыла — заново, без образца (по задаче и материалам).
         write_log('Нейросеть переписала образец вместо задачи — пишу заново без образца.')
         user = no_sample_user + iskra_learn.prompt_block(example=False) + user[user.index('ЗАДАЧА:'):].replace(
@@ -2165,8 +2168,8 @@ def revise(request, previous, change, sources=(), me=None, kind='write', **kw):
     refs = PEOPLE.context(change + ' ' + previous) if PEOPLE is not None else []
     if refs:
         user += ('\nСправочник (точные звания и должности; адресата — в дательном падеже):\n' + '\n'.join(refs) + '\n')
-    if TELEGRAM_WORDS.search(request + ' ' + previous[:200]):
-        user += '\n' + telegram_format(me)
+    if TELEGRAM_WORDS.search(request + ' ' + previous[:200]) and has_template():
+        user += '\n' + telegram_format(me)              # без своего шаблона — вид текста не трогаем, как просили
     if block:
         user += '\n\nМатериалы (справка):\n\n' + block
     out = run(chat_prompt(user), max_tokens=kw.pop('max_tokens', min(4000, len(previous) // 2 + 600)), temperature=0.2, **kw)
