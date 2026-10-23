@@ -13,7 +13,8 @@ from iskra_workflows import save_history  # noqa: E402
 
 class Report(unittest.TestCase):
     def test_report_has_facts_but_no_private_text(self):
-        save_history(TMP, 'Телеграмма', 'СЕКРЕТНЫЙ ТЕКСТ ТЕЛЕГРАММЫ про Иванова')
+        # папка данных — та, что уже выбрал iskra_index (в общем прогоне его импортирует раньше другой тест)
+        save_history(br._root(), 'Телеграмма', 'СЕКРЕТНЫЙ ТЕКСТ ТЕЛЕГРАММЫ про Иванова')
         try:
             raise ValueError('проверка')
         except ValueError:
