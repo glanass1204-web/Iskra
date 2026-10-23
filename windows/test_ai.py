@@ -233,6 +233,14 @@ class MilitaryWords(unittest.TestCase):
         out, fixes = ai.proofread(t, [], 'составь указание')
         self.assertEqual(out, t, fixes)
 
+    def test_svo_terms_known(self):
+        import iskra_spell
+        c = iskra_spell.SpellChecker()
+        t = ('Мобики и контрактники прибыли на опорник. Мавики и фпвшники работают, мотолыгу эвакуировали. '
+             'Медэвакуация трехсотых через эвакогруппу.')
+        self.assertEqual([t[i.start:i.end] for i in c.check(t, with_style=False)], [])
+        self.assertEqual(ai.proofread(t, [], 'x')[0], t)
+
     def test_military_time_is_not_a_date(self):
         out, removed = ai.strip_unasked('Командирам к 06.00 представить донесение.', 'составь указание')
         self.assertEqual(removed, ['время: к 06.00'])
