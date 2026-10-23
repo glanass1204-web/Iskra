@@ -187,7 +187,9 @@ def search_docs(q, limit=100, any_word=False):
     tokens = re.findall(r'[^\W_]+', fold(q.lower()), re.UNICODE)
     if not tokens:
         return []
-    expression = (' OR ' if any_word else ' AND ').join('"' + stem(x).replace('"', '') + '"*' for x in tokens[:12])
+    # Короткое слово (сокращение «ПУ», «КП», «БР») — точно, а не как начало слова: иначе «пу*» найдёт «пункт», «путь».
+    expression = (' OR ' if any_word else ' AND ').join(
+        '"' + x.replace('"', '') + '"' if len(x) <= 2 else '"' + stem(x).replace('"', '') + '"*' for x in tokens[:12])
     c = connect()
     try:
         return c.execute(

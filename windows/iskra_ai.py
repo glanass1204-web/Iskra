@@ -747,6 +747,23 @@ WANT_REFS = re.compile(r'№|номер|ссылк|реквизит|на ваш|
 FIELD = re.compile(r'^\s*(Кому|От кого|Дата|Номер|Тема|Исх\w*|Вх\w*|Срок|Время)\s*:', re.IGNORECASE)
 
 
+UNIT_NUM = re.compile(r'((?:в/ч|ВЧ|войсков\w+\s+част\w*)\s*)№?\s*(\d{4,5})(?!\d)', re.IGNORECASE)
+
+
+def drop_unit_numbers(text, task=''):
+    """«в/ч 12345», «войсковой части 54321» — номер убирается, если в задаче его нет (не тянуть части из старых
+    телеграмм). Возвращает (текст, убранные номера)."""
+    asked = set(re.findall(r'\d{4,5}', task or ''))
+    gone = []
+
+    def repl(m):
+        if m.group(2) in asked:
+            return m.group(0)
+        gone.append(m.group(2))
+        return m.group(1).rstrip()
+    return UNIT_NUM.sub(repl, text), gone
+
+
 def strip_unasked(text, task, keep='', sources=()):
     """Убрать из текста документа то, о чём не просили: даты, время, номера документов, имена файлов-материалов.
     Шапка («Кому:», «Дата:», «Номер:») и подпись не трогаются; даты, которые человек сам написал, остаются.
@@ -785,6 +802,8 @@ def strip_unasked(text, task, keep='', sources=()):
             out.append(line)
             continue
         new = re.sub(r'\s*\(файл от [^)]*\)', '', line)
+        new, units = drop_unit_numbers(new, asked)
+        removed += [f'номер части: {u}' for u in units]
         asked_nums = set(re.findall(r'\d+', asked))
         for n in names:
             if set(re.findall(r'\d+', n)) & asked_nums:
@@ -1225,12 +1244,104 @@ def task_coverage(text, task):
     return sum(1 for w in words if w in low) / len(words)
 
 
+COUNT_WORDS = {'три': 3, 'четыре': 4, 'пять': 5, 'шесть': 6, 'семь': 7, 'восемь': 8, 'девять': 9, 'десять': 10,
+               'одиннадцать': 11, 'двенадцать': 12, 'тринадцать': 13, 'четырнадцать': 14, 'пятнадцать': 15,
+               'шестнадцать': 16, 'семнадцать': 17, 'восемнадцать': 18, 'девятнадцать': 19, 'двадцать': 20}
+POINT_LINE = re.compile(r'^\s*(\d{1,2})[.)]\s+\S')
+
+
+def wanted_count(task):
+    """Сколько пунктов просит человек: «15 пунктов», «из 10 мероприятий», «пятнадцать пунктов». 0 — не сказано."""
+    unit = r'(?:пункт(?!\w*\s+(?:управлени|постоянн|временн|сбора|дислокац|питани|приема|приёма))|мероприят|поручени|требовани|мер(?:ы|ам)?\b|позици)'
+    m = re.search(r'(?<![\d.])(\d{1,2})\s*(?:-?(?:ти|и|х|ми|ть))?\s+(?:\w+\s+)?' + unit, task or '', re.IGNORECASE)
+    if m:
+        n = int(m.group(1))
+    else:
+        m = re.search(r'(?<![а-яё])(' + '|'.join(COUNT_WORDS) + r')\w*\s+(?:\w+\s+)?' + unit, (task or '').lower())
+        n = COUNT_WORDS.get(m.group(1), 0) if m else 0
+    return n if 3 <= n <= 40 else 0
+
+
+def numbered(text):
+    return [l for l in (text or '').splitlines() if POINT_LINE.match(l)]
+
+
+def _same_point(a, b):
+    sa = {w.lower().replace('ё', 'е')[:5] for w in re.findall(r'[А-Яа-яЁё]{4,}', a)}
+    sb = {w.lower().replace('ё', 'е')[:5] for w in re.findall(r'[А-Яа-яЁё]{4,}', b)}
+    return bool(sa and sb) and len(sa & sb) / max(len(sa), len(sb)) >= 0.7
+
+
+def plan_points(task, block, n, **kw):
+    """Сначала разбор: что по существу нужно сделать по задаче — перечень из n разных мероприятий одной строкой
+    каждое. Так небольшая модель не теряет пункты и не уходит в пересказ старых телеграмм."""
+    user = ''
+    if block:
+        user += 'МАТЕРИАЛЫ (для понимания темы; даты, номера, названия подразделений оттуда не бери):\n\n' + block[:5000] + '\n\n'
+    user += (f'ЗАДАЧА: {task.strip()}\n\nРазбери задачу: что по существу нужно сделать, чтобы её выполнить (по теме '
+             f'задачи, с учётом материалов). Составь перечень ровно из {n} РАЗНЫХ мероприятий — каждое одной строкой, '
+             'с глагола в неопределённой форме («Провести…», «Обеспечить…», «Организовать…»), конкретно и по теме. '
+             'Не повторяйся, не пиши общих слов. Без дат, номеров документов, номеров и названий подразделений и частей. '
+             f'Верни только список «1. …» — «{n}. …».')
+    kw = {k: v for k, v in kw.items() if k not in ('on_text', 'temperature', 'max_tokens')}   # план в чат не выводим
+    out = run(chat_prompt(user), max_tokens=min(1400, 55 * n + 120), temperature=0.3, **kw)
+    items = []
+    for line in numbered(out):
+        item = re.sub(r'^\s*\d{1,2}[.)]\s*', '', line).strip()
+        if item and not any(_same_point(item, x) for x in items):
+            items.append(item)
+    return items[:n]
+
+
+def ensure_count(text, n, task, block, plan=(), **kw):
+    """Просили n пунктов, а вышло меньше — дописать недостающие (нейросеть продолжает, не повторяя написанное;
+    если и так мало — пункты из плана). Новые пункты встают после последнего пункта, с номерами по порядку."""
+    have = numbered(text)
+    if not n or len(have) >= n:
+        return text, 0
+    added = []
+    try:
+        user = ''
+        if block:
+            user += 'МАТЕРИАЛЫ (для понимания темы):\n\n' + block[:4000] + '\n\n'
+        user += (f'ЗАДАЧА: {task.strip()}\n\nДОКУМЕНТ (в нём {len(have)} пунктов, а нужно {n}):\n---\n{text.strip()}\n---\n\n'
+                 f'Допиши пункты с {len(have) + 1} по {n}: новые мероприятия по существу задачи, не повторяя уже '
+                 'написанные, каждый с глагола. Без дат, номеров документов и названий подразделений. '
+                 'Верни ТОЛЬКО эти пункты с номерами, по одному на строке.')
+        kw = {k: v for k, v in kw.items() if k not in ('on_text', 'temperature', 'max_tokens')}
+        more = run(chat_prompt(user), max_tokens=min(1600, 90 * (n - len(have)) + 100), temperature=0.25, **kw)
+        for line in numbered(more):
+            item = re.sub(r'^\s*\d{1,2}[.)]\s*', '', line).strip()
+            if item and not any(_same_point(item, h) for h in have + added):
+                added.append(item)
+    except AIError:
+        pass
+    for item in plan:
+        if len(have) + len(added) >= n:
+            break
+        if not any(_same_point(item, h) for h in have + added):
+            added.append(item)
+    added = added[:n - len(have)]
+    if not added:
+        return text, 0
+    lines = text.split('\n')
+    last = max(i for i, l in enumerate(lines) if POINT_LINE.match(l)) if have else len(lines) - 1
+    # у пункта могут быть подпункты («– …», «а) …») и перенос со строчной буквы — вставляем после них;
+    # «О выполнении доложить.» и подпись остаются в конце
+    while last + 1 < len(lines) and re.match(r'^\s*(?:[-–—•]|[а-я]\)|[а-яё])', lines[last + 1]):
+        last += 1
+    start = len(have)
+    new = [f'{start + i}. {a[:1].upper()}{a[1:].rstrip(".;")}.' for i, a in enumerate(added, 1)]
+    return '\n'.join(lines[:last + 1] + new + lines[last + 1:]), len(new)
+
+
 def write(task, sources=(), me=None, **kw):
     """Составить новый текст по задаче, опираясь на найденные документы.
     Порядок задания важен для небольшой модели: сначала материалы и образец, в конце — задача и правила
     (последнее она выполняет точнее всего)."""
     block, truncated = materials(list(sources))
     keep = kw.pop('keep_dates', '')
+    block = drop_unit_numbers(block, task + ' ' + keep)[0]     # номера частей из материалов — только если их назвали
     raport = bool(RAPORT_WORDS.search(task))
     telegram = bool(TELEGRAM_WORDS.search(task)) and not raport
     user = ''
@@ -1257,7 +1368,19 @@ def write(task, sources=(), me=None, **kw):
                      'ПОЛНОТУ: столько же частей и подробностей, если их позволяют материалы. Факты, даты, номера и '
                      'адресата из образца НЕ переноси:\n---\n' + text + '\n---\n\n')
     user += iskra_learn.prompt_block(example=False)          # устойчивые правки пользователя
+    own_task = task.split('\nОпирайся на черновик')[0]       # что просил человек — без шаблонного черновика
+    count = wanted_count(own_task)
+    plan = []
+    if count:
+        try:
+            plan = plan_points(own_task, block, count, **kw)  # сначала разбор задачи, потом текст
+        except AIError:
+            plan = []
     user += f'ЗАДАЧА: {task.strip()}\n\n'
+    if count:
+        user += (f'НУЖНО РОВНО {count} ПУНКТОВ (с номерами от 1 до {count}).'
+                 + (' Разбор задачи — раскрой КАЖДУЮ строку отдельным пунктом:\n' + '\n'.join(
+                     f'{i}. {p}' for i, p in enumerate(plan, 1)) if plan else '') + '\n\n')
     user += ('ПРАВИЛА:\n'
              '1. Пиши РАЗВЁРНУТО и по существу: готовый документ целиком, всё, что по задаче есть в материалах, — '
              'каждое требование, цифру, ответственного, порядок доклада, если они там есть (если их нет и задача '
@@ -1291,6 +1414,8 @@ def write(task, sources=(), me=None, **kw):
         user += f'\n(Часть материалов не поместилась: {", ".join(truncated)}.)'
     kw.setdefault('temperature', 0.15)                     # меньше «фантазии» — меньше ошибок и выдумок
     max_tokens = kw.pop('max_tokens', 1300)
+    if count:
+        max_tokens = max(max_tokens, min(2400, 110 * count + 300))   # 15 пунктов в 1300 токенов не помещаются
     raw = run(chat_prompt(user), max_tokens=max_tokens, **kw)
     if sample_text and copied_from(raw, sample_text) > 0.5 and task_coverage(raw, task) < 0.6:
         # Переписала образец, а задачу не раскрыла — заново, без образца (по задаче и материалам).
@@ -1306,7 +1431,10 @@ def write(task, sources=(), me=None, **kw):
             raw = expand(raw, task, block, need, max_tokens=max_tokens, **kw)   # вышло коротко — второй круг
         except AIError:
             pass
-    own_task = task.split('\nОпирайся на черновик')[0]       # что просил человек — без шаблонного черновика
+    if count:
+        raw, added = ensure_count(raw, count, own_task, block, plan, **kw)
+        if added:
+            write_log(f'Пунктов было меньше {count} — дописано {added}.')
     raw, removed = strip_unasked(raw, own_task, keep, sources)  # даты, время, номера, имена файлов — только если просили
     if removed:
         write_log('Убрано не запрошенное: ' + '; '.join(removed[:20]))
@@ -1496,16 +1624,27 @@ QUESTION_WORDS = set('что как какой какая какие каком 
                      'документам документах всем всех этим этих эту этот найденным'.split())
 
 
+def _mil_words():
+    try:
+        from iskra_spell import MIL_WORDS
+        return MIL_WORDS
+    except Exception:                                      # noqa: BLE001 — без словаря: только заглавные сокращения
+        return set()
+
+
 def keywords(text):
     """Слова для поиска: номера («№ 7», «154/2»), даты, содержательные слова. Если слов много — самые длинные
     (в длинной задаче тема обычно не в первых словах)."""
-    tokens = re.findall(r'№\s*\d+(?:/\d+)?|\d{1,2}\.\d{1,2}(?:\.\d{2,4})?|[А-Яа-яЁёA-Za-z0-9/-]{3,}', text)
+    tokens = re.findall(r'№\s*\d+(?:/\d+)?|\d{1,2}\.\d{1,2}(?:\.\d{2,4})?|[А-Яа-яЁёA-Za-z0-9/-]{3,}|'
+                        r'(?<![А-Яа-яЁё])[А-Яа-яЁё]{2}(?![А-Яа-яЁё])', text)
     out = []
     for w in tokens:
         numbered = w.startswith('№')
         w = re.sub(r'^№\s*', '', w)
         if w.lower().replace('ё', 'е') in QUESTION_WORDS or (w.isdigit() and len(w) < 2 and not numbered):
             continue
+        if len(w) == 2 and not (w.isupper() or w.lower() in _mil_words()):
+            continue                                       # двухбуквенное — только сокращение («ПУ», «КП»), не «по», «на»
         if w not in out:
             out.append(w)
     if len(out) > 10:
@@ -1562,35 +1701,77 @@ def rank_documents(words, search_fn, query='', smart_fn=None):
         score[path] = score.get(path, 0.0) + points
         if word is not None:
             matched.setdefault(path, set()).add(word)
+    weights, together = {}, set()
     for w in words:
         rows = [r[0] for r in search_fn(w, False)]
         if not rows:
             continue
         weight = math.log(1 + 200 / len(rows))              # чем реже слово, тем важнее
+        weights[w] = weight
         for rank, path in enumerate(rows):
             add(path, weight * (1 - 0.3 * rank / len(rows)), w)
     if len(words) > 1:
         for path in [r[0] for r in search_fn(' '.join(words), False)]:
             add(path, 3.0)                                   # все слова сразу — сильный сигнал
+            together.add(path)
     if smart_fn is not None:
         for path in [r[0] for r in smart_fn(query or ' '.join(words))]:
             add(path, 1.5)                                   # нашлось по смыслу (синонимы)
+    # Документ должен совпасть по ГЛАВНЫМ словам задачи: по одному частому слову («повышение», «обеспечение»)
+    # в работу шли любые телеграммы. Нужно не меньше половины «веса» слов задачи (редкое слово весит больше).
+    total = sum(weights.values())
     need = 1 if len(words) <= 2 else 2
+
+    def topical(p):
+        got = sum(weights.get(w, 0) for w in matched.get(p, ()))
+        return got >= 0.5 * total if total else True
     out = [(p, score[p], len(matched.get(p, ()))) for p in score
-           if len(matched.get(p, ())) >= need or score[p] >= 3.0]
+           if (len(matched.get(p, ())) >= need or score[p] >= 3.0) and (topical(p) or p in together)]
     out.sort(key=lambda x: (-x[1], first_seen[x[0]]))
     return out
 
 
-def retrieve(query, search_fn, read_fn, docs=25, extra=(), smart_fn=None, budget=None, stats=None):
+FOLDER_HINT = re.compile(r'\s*,?\s*(?i:по|в|во|из|с)\s+(?i:папк(?:е|и|у|ам|ах))\s+(?:«([^»]+)»|"([^"]+)"|([^\s,.;:]+(?:\s+(?:[A-ZА-ЯЁ]|\d{4}(?!\d))[^\s,.;:]*)*))',
+                         )
+
+
+def folder_hint(task):
+    """«…по документам из папки «ПУ»…» → ('пу', задача без этих слов). Нет указания — ('', задача)."""
+    m = FOLDER_HINT.search(task or '')
+    if not m:
+        return '', task
+    name = next(g for g in m.groups() if g).strip(' .,;:«»"').lower().replace('ё', 'е')
+    return name, (task[:m.start()] + task[m.end():]).strip()
+
+
+def in_folders(path, folders=(), hint=''):
+    """Документ из папок поиска (если они заданы) и из названной папки (имя папки в пути)."""
+    low = str(path).replace('\\', '/').lower().replace('ё', 'е')
+    if folders and not any(low.startswith(str(f).replace('\\', '/').lower().replace('ё', 'е').rstrip('/') + '/')
+                           for f in folders):
+        return False
+    if hint:
+        parts = low.split('/')[:-1]
+        return any(hint == part or (len(hint) > 3 and hint in part) for part in parts)
+    return True
+
+
+def retrieve(query, search_fn, read_fn, docs=25, extra=(), smart_fn=None, budget=None, stats=None,
+             folders=(), list_fn=None):
     """Документы под запрос: search_fn(запрос, any) → [(путь, …)], read_fn(путь) → текст.
     Отбираются самые подходящие (по числу совпавших важных слов), до docs штук; extra — выбранные человеком, идут первыми.
     Каждый документ получает свою долю места — в работу попадают ВСЕ отобранные, а не первые 5–6, на которых кончалось место.
     Имя материала с датой файла — чтобы нейросеть видела, что документ старый. stats (dict) — сколько нашлось всего."""
     budget = budget or MAX_SOURCE_CHARS
+    hint, query = folder_hint(query)
     words = keywords(query)
     ranked = rank_documents(words, search_fn, query, smart_fn) if words else []
-    found = [p for p, _, _ in ranked]
+    # Только из папок поиска (не из старых записей индекса и не из чужих мест) и из папки, названной в задаче.
+    found = [p for p, _, _ in ranked if in_folders(p, folders, hint)]
+    if hint and not found and list_fn is not None:
+        found = [p for p in list_fn() if in_folders(p, folders, hint)]   # по теме ничего — берём документы этой папки
+    if stats is not None:
+        stats['folder'] = hint
     paths = list(dict.fromkeys(list(extra) + found))[:max(docs, len(extra))]
     if stats is not None:
         stats['found'] = len(dict.fromkeys(list(extra) + found))

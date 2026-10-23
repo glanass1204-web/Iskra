@@ -703,11 +703,26 @@ class AIMixin:
             return [self.results[i][0]]
         return []
 
-    @staticmethod
-    def _sources_for(text, extra, stats=None):
+    def _search_folders(self):
+        """Папки, где искать материалы: папки поиска и папки входящих (что задал человек)."""
+        out = []
+        for owner in ('indexer', 'inbox'):
+            try:
+                out += list(getattr(self, owner).folders())
+            except Exception:                              # noqa: BLE001 — нет такой службы: без неё
+                pass
+        return out
+
+    def _sources_for(self, text, extra, stats=None):
         import iskra_smartsearch
+        from iskra_index import iter_documents
+
+        def by_date():
+            paths = [p for p, _ in iter_documents(max_chars=1)]
+            return sorted(paths, key=lambda p: Path(p).stat().st_mtime if Path(p).exists() else 0, reverse=True)
         return ai.retrieve(text, lambda q, any_word: search_docs(q, 200, any_word), lambda p: extract(Path(p)), extra=extra,
-                           smart_fn=lambda q: iskra_smartsearch.smart_search(q, 50, ROOT)[0], stats=stats)
+                           smart_fn=lambda q: iskra_smartsearch.smart_search(q, 50, ROOT)[0], stats=stats,
+                           folders=self._search_folders(), list_fn=by_date)
 
     @staticmethod
     def _ustav_extra(task, sources):
@@ -732,8 +747,10 @@ class AIMixin:
         names = [Path(p).name for p in paths] + [n.replace('Устав: ', '') for n, _ in ust]
         more = stats.get('found', 0) - len(names)
         self.events.put(('call', lambda: self.say(
-            (f'Беру документы ({len(names)}' + (f' самых подходящих из {stats["found"]}' if more > 0 else '') + '): '
-             + ', '.join(names)) if names else
+            (f'Беру документы ({len(names)}' + (f' самых подходящих из {stats["found"]}' if more > 0 else '') +
+             (f', папка «{stats["folder"]}»' if stats.get('folder') else '') + '): ' + ', '.join(names)) if names else
+            f'В папке «{stats["folder"]}» подходящих документов не нашла — проверьте, что она добавлена в «Папки для поиска». '
+            'Пишу по задаче, факты помечу [УТОЧНИТЬ].' if stats.get('folder') else
             'Подходящих документов не нашла — пишу по задаче, факты помечу [УТОЧНИТЬ]. '
             'Чтобы писать по своим документам: «найди …», затем «напиши … по найденным».', 'proof')))
         # Каждый документ уже получил свою долю места (выдержки вокруг слов задачи) — ни один не отбрасывается.
