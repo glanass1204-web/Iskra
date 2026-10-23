@@ -25,7 +25,7 @@ class PU(unittest.TestCase):
         self.assertEqual(points[1], 'Новый: КП 101 мсп (ЛИМАНСКОЕ НАПРАВЛЕНИЕ): удаление от линии фронта — 30 км')
         self.assertIn('дольше', points[2])
         draft = P.report_draft(changes, me={'from': 'Штаб', 'signature': 'НШ\nполковник И.И. Иванов'})
-        self.assertIn('Докладываю', draft)
+        self.assertIn('Доношу', draft)
         self.assertIn('1. КП 5447 обр СпН: удаление', draft)
         self.assertIn('И.И. Иванов', draft)
 

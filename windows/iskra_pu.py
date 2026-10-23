@@ -53,13 +53,13 @@ def report_points(changes, long_stay=()):
 
 
 def report_draft(changes, long_stay=(), me=None, to='', subject=''):
-    """Телеграмма-доклад об изменениях (черновик для редактора)."""
+    """Телеграмма-донесение об изменениях (черновик для редактора)."""
     import iskra_compose as compose
     from datetime import date
     points = report_points(changes, long_stay)
     if not points:
         points = ['изменений нет']
-    return compose.compose('Доклад', me=me, to=to, subject=subject or f'Об изменениях по состоянию на {date.today():%d.%m.%Y}',
+    return compose.compose('Донесение', me=me, to=to, subject=subject or f'Об изменениях по состоянию на {date.today():%d.%m.%Y}',
                            points=[p if p.endswith('.') else p + '.' for p in points])
 
 

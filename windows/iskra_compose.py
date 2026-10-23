@@ -9,7 +9,7 @@ from iskra_telegram import INSTRUCTION, INTRO_PREFIX, parse, tidy
 PLACEHOLDER = re.compile(r'\[(УТОЧНИТЬ|ФИО|ДАТА|НОМЕР|ДОЛЖНОСТЬ|ОСНОВАНИЕ|звание)[^\]]*\]', re.IGNORECASE)
 NO_SIGNATURE = ['[ДОЛЖНОСТЬ]', '[звание] [И.О. Фамилия]']
 
-KINDS = ['Ответ на входящую', 'Доклад', 'Указание', 'Запрос сведений', 'Напоминание о сроке']
+KINDS = ['Ответ на входящую', 'Указание', 'Рапорт', 'Донесение', 'Запрос сведений', 'Напоминание о сроке']
 
 
 def _today():
@@ -121,9 +121,33 @@ def reminder(item, me=None):
     return '\n'.join(lines)
 
 
+def raport(me=None, to='', basis='', points=None, subject=''):
+    """Рапорт: адресат вверху справа, «РАПОРТ», «Прошу…» от первого лица, должность, звание, подпись, дата."""
+    me = me or {}
+    points = [p.strip() for p in (points or []) if p.strip()]
+    lines = [to or 'Командиру войсковой части [НОМЕР]\n[звание] [И.О. Фамилия]', '', 'РАПОРТ', '']
+    if subject:
+        lines += [subject, '']
+    if len(points) == 1:
+        p = tidy(points[0])
+        lines.append(p if re.match(r'^(прошу|докладываю|ходатайствую)', p, re.IGNORECASE) else 'Прошу ' + p[:1].lower() + p[1:])
+    elif points:
+        lines.append('Прошу:')
+        lines += [f'{i}. {tidy(p)}' for i, p in enumerate(points, 1)]
+    else:
+        lines.append('Прошу [УТОЧНИТЬ: о чём просите].')
+    if basis:
+        lines.append(f'Основание: {basis}.')
+    sig = [s for s in me.get('signature', '').splitlines() if s.strip()] or NO_SIGNATURE
+    lines += [''] + sig + ['', _today()]
+    return '\n'.join(lines)
+
+
 def compose(kind, me=None, to='', basis='', subject='', points=None, deadline=''):
     """Новый черновик по виду телеграммы."""
     me = me or {}
+    if kind == 'Рапорт':
+        return raport(me, to, basis, points, subject)
     points = [p for p in (points or []) if p.strip()]
     lines = _lines(to=to, frm=me.get('from', ''), subject=subject)
     due = deadline or '[ДАТА]'
@@ -140,7 +164,10 @@ def compose(kind, me=None, to='', basis='', subject='', points=None, deadline=''
         lines.append(f'Напоминаю, что срок {basis or "[УТОЧНИТЬ: по какому документу]"} истекает {due}.')
         lines += items
         lines.append('Прошу обеспечить выполнение в установленный срок, о результатах доложить.')
-    else:  # Доклад
+    elif kind == 'Донесение':
+        lines.append(f'{"Во исполнение " + basis + " д" if basis else "Д"}оношу:')
+        lines += items or ['1. [УТОЧНИТЬ: что доносите].']
+    else:  # Доклад (по старым вызовам)
         lines.append(f'{"Во исполнение " + basis + " д" if basis else "Д"}окладываю:')
         lines += items or ['1. [УТОЧНИТЬ: суть доклада].']
         if deadline:

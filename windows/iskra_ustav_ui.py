@@ -25,7 +25,9 @@ class UstavMixin:
                 a = lib.get(*direct)
                 if a:
                     return 'article', a
-            found = lib.search(question, k=6)
+            found = lib.search(question, k=5)
+            if found:                                      # заметно слабее лучшей — не по теме, только замедлит ответ
+                found = [(sc, a) for sc, a in found if sc >= found[0][0] * 0.6][:4]
             if not found:
                 return 'notfound', None
             if not self.ai_ready:

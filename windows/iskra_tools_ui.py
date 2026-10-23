@@ -591,13 +591,13 @@ class ToolsMixin:
 
         def report():
             draft = iskra_pu.report_draft(rep.changes, rep.long_stay, me=self.my_details())
-            self.telegrams(initial=draft, note='Доклад об изменениях по сводной таблице — цифры только из документов. Проверьте.')
+            self.telegrams(initial=draft, note='Донесение об изменениях по сводной таблице — цифры только из документов. Проверьте.')
 
         def remind():
             self.telegrams(initial=iskra_pu.reminder_draft(list(missing), me=self.my_details()),
                            note='Напоминание тем, кто не прислал. Проверьте адресатов и срок.')
         ttk.Button(bar, text='Открыть документ', style='Accent.TButton', command=lambda: _open_path(out)).pack(side='left')
-        ttk.Button(bar, text='Доклад об изменениях', command=report).pack(side='left', padx=6)
+        ttk.Button(bar, text='Донесение об изменениях', command=report).pack(side='left', padx=6)
         if missing:
             ttk.Button(bar, text='Напоминание не приславшим', command=remind).pack(side='left')
         ttk.Button(bar, text='Копировать отчёт', command=lambda: (win.clipboard_clear(), win.clipboard_append(body))).pack(side='left', padx=6)

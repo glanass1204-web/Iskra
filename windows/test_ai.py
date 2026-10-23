@@ -227,5 +227,18 @@ class ModelFormat(unittest.TestCase):
         self.assertEqual(ai.clean('Ответ готов.<|message_sep|>\n\nuser'), 'Ответ готов.')
 
 
+class MilitaryWords(unittest.TestCase):
+    def test_proofread_keeps_military_words(self):
+        t = 'Дроны и беспилотники применять по указанию. Контрактник и срочник прибыли. Сочп не допускать.'
+        out, fixes = ai.proofread(t, [], 'составь указание')
+        self.assertEqual(out, t, fixes)
+
+    def test_military_time_is_not_a_date(self):
+        out, removed = ai.strip_unasked('Командирам к 06.00 представить донесение.', 'составь указание')
+        self.assertEqual(removed, ['время: к 06.00'])
+        out, removed = ai.strip_unasked('Командирам к 06.00 представить донесение.', 'указание: донесение к 06.00')
+        self.assertEqual(removed, [])
+
+
 if __name__ == '__main__':
     unittest.main()
