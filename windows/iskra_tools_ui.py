@@ -435,18 +435,25 @@ class ToolsMixin:
                             'ячейки). Искра перенесёт всё отмеченное из присланных файлов в один документ по образцу: '
                             'таблицы — по заголовкам столбцов и по строке (город, фамилия), а не по номеру; новые строки '
                             'добавит, «Итого» и «сут.» пересчитает. Присланные файлы не меняются.', wraplength=830).pack(anchor='w', padx=12, pady=8)
-        row = ttk.Frame(win); row.pack(fill='x', padx=12)
-        ttk.Label(row, text='Образец:').pack(side='left')
-        template = tk.StringVar(value=settings.get('template', '') if Path(settings.get('template', '') or '.').is_file() else '')
-        ttk.Entry(row, textvariable=template).pack(side='left', fill='x', expand=True, padx=6)
+        def file_row(label, value, title):
+            row = ttk.Frame(win); row.pack(fill='x', padx=12, pady=2)
+            ttk.Label(row, text=label, width=30).pack(side='left')
+            var = tk.StringVar(value=value if value and Path(value).is_file() else '')
+            ttk.Entry(row, textvariable=var).pack(side='left', fill='x', expand=True, padx=6)
 
-        def pick_template():
-            path = filedialog.askopenfilename(parent=win, title='Образец (документ, в который переносить)',
-                                              filetypes=[('Word', '*.docx')])
-            if path:
-                template.set(path)
-        ttk.Button(row, text='Выбрать…', command=pick_template).pack(side='left')
-        ttk.Label(win, text='Присланные документы:').pack(anchor='w', padx=12, pady=(10, 2))
+            def pick():
+                path = filedialog.askopenfilename(parent=win, title=title, filetypes=[('Word', '*.docx')])
+                if path:
+                    var.set(path)
+            ttk.Button(row, text='Выбрать…', command=pick).pack(side='left')
+            return var
+        template = file_row('1. Шаблон (как должно выглядеть):', settings.get('template', ''),
+                            'Шаблон — как должен выглядеть итоговый документ')
+        target = file_row('2. Документ, в который вносить:', settings.get('target', ''),
+                          'Документ с данными, в который вносить изменения (пусто — вносить в шаблон)')
+        ttk.Label(win, text='Пункт 2 можно не заполнять — тогда изменения вносятся прямо в шаблон.',
+                  style='Muted.TLabel').pack(anchor='w', padx=12)
+        ttk.Label(win, text='3. Присланные документы (откуда брать изменения):').pack(anchor='w', padx=12, pady=(10, 2))
         box = tk.Listbox(win, height=8, font=('Segoe UI', 10), selectmode='extended')
         box.pack(fill='both', expand=True, padx=12)
         paths = []
@@ -458,8 +465,15 @@ class ToolsMixin:
         senders = tk.StringVar(value='')
         ttk.Label(win, textvariable=senders, wraplength=830).pack(anchor='w', padx=12)
         opt = ttk.Frame(win); opt.pack(fill='x', padx=12, pady=4)
-        mark = tk.BooleanVar(value=settings.get('mark', True))
-        ttk.Checkbutton(opt, text='Выделить перенесённое салатовым', variable=mark).pack(side='left')
+        MARKS = {'зелёным шрифтом': iskra_highlight.FONT, 'салатовым маркером': True, 'не выделять': False}
+        saved = settings.get('mark_style', iskra_highlight.FONT)   # прежняя настройка «mark» — маркер; теперь по умолчанию шрифт
+        mark = tk.StringVar(value=next((k for k, v in MARKS.items() if v == saved), 'зелёным шрифтом'))
+        ttk.Label(opt, text='Изменения писать:').pack(side='left')
+        ttk.Combobox(opt, textvariable=mark, values=list(MARKS), state='readonly', width=18).pack(side='left', padx=4)
+        take_all = tk.BooleanVar(value=settings.get('take_all', False))
+        opt2 = ttk.Frame(win); opt2.pack(fill='x', padx=12)
+        ttk.Checkbutton(opt2, text='Переносить все отличия присланных (не только отмеченные зелёным/салатовым)',
+                        variable=take_all).pack(side='left')
         days = tk.BooleanVar(value=settings.get('days', True))
         ttk.Checkbutton(opt, text='Пересчитать «N сут. с ДАТА» на сегодня', variable=days).pack(side='left', padx=12)
         ttk.Label(opt, text='выделить, если дольше (сут.):').pack(side='left')
@@ -509,7 +523,10 @@ class ToolsMixin:
                     base = paths[0]; template.set(base)
                 else:
                     status.set('Выберите образец — документ, в который переносить изменения.'); return
-            sources = [p for p in paths if p != base] or paths
+            into = target.get().strip()
+            if into and not Path(into).is_file():
+                status.set('Документ, в который вносить, не найден — выберите его заново или очистите поле.'); return
+            sources = [p for p in paths if p not in (base, into)] or paths
             if not sources:
                 status.set('Добавьте присланные документы.'); return
             try:
@@ -519,16 +536,18 @@ class ToolsMixin:
             out = out_path
             if out is None:
                 out = filedialog.asksaveasfilename(parent=win, defaultextension='.docx', filetypes=[('Word', '*.docx')],
-                                                   initialdir=str(Path(base).parent),
-                                                   initialfile=f'{Path(base).stem} — сводный {date.today():%d.%m.%Y}.docx')
+                                                   initialdir=str(Path(into or base).parent),
+                                                   initialfile=f'{Path(into or base).stem} — сводный {date.today():%d.%m.%Y}.docx')
                 if not out:
                     return
-                if Path(out).resolve() == Path(base).resolve():
-                    status.set('Сохраните под другим именем — образец должен остаться как был.'); return
-            self._save_highlight_settings(template=base, mark=mark.get(), days=days.get(), threshold=limit or '',
-                                          expected=expected.get())
+                if Path(out).resolve() in {Path(x).resolve() for x in (base, into) if x}:
+                    status.set('Сохраните под другим именем — шаблон и документ должны остаться как были.'); return
+            how = MARKS.get(mark.get(), iskra_highlight.FONT)
+            self._save_highlight_settings(template=base, target=into, mark_style=how, take_all=take_all.get(), days=days.get(),
+                                          threshold=limit or '', expected=expected.get())
             status.set('Переношу изменения…')
-            options = {'mark': mark.get(), 'days': days.get(), 'threshold': limit}   # окно читаем здесь, не в фоне
+            options = {'mark': how, 'days': days.get(), 'threshold': limit, 'base': into or None,
+                       'take_all': take_all.get()}   # окно читаем здесь, не в фоне
             _, missing = check_senders()
 
             def work():

@@ -314,5 +314,50 @@ class SameValue(unittest.TestCase):
             self.assertIn('Авдеевка', rep.placed[0])
 
 
+
+class ThreeDocuments(unittest.TestCase):
+    """Шаблон — как должно выглядеть; документ — куда вносить; три присланных — откуда брать. Изменения — зелёным шрифтом."""
+
+    def build(self, name, rows, green=(), font=None, size=None, old_green=()):
+        from docx.shared import Pt, RGBColor
+        d = Document()
+        t = d.add_table(rows=1 + len(rows), cols=3)
+        for k, h in enumerate(['Наименование ПУ', 'Положение', 'Удаление']):
+            t.cell(0, k).text = h
+        for r, values in enumerate(rows, 1):
+            for k, v in enumerate(values):
+                run = t.cell(r, k).paragraphs[0].add_run(v)
+                if font:
+                    run.font.name, run.font.size = font, Pt(size)
+                if (r, k) in green or (r, k) in old_green:
+                    run.font.color.rgb = RGBColor(0x00, 0xB0, 0x50)
+        d.save(TMP / name)
+        return TMP / name
+
+    def test_template_target_and_three_sources(self):
+        rows = [['КП 1', 'Авдеевка', '20 км'], ['КП 2', 'Покровск', '35 км'], ['КП 3', 'Курахово', '15 км']]
+        template = self.build('шаблон3.docx', [['', '', '']] * 3, font='Times New Roman', size=12)
+        target = self.build('документ3.docx', rows, font='Arial', size=9, old_green={(2, 2)})   # отметка с прошлого раза
+        s1 = self.build('рота1.docx', [rows[0][:1] + ['Авдеевка', '22 км'], rows[1], rows[2]], green={(1, 1), (1, 2)})
+        s2 = self.build('рота2.docx', [rows[0], ['КП 2', 'Мирноград', '35 км'], rows[2]], green={(2, 1)})
+        s3 = self.build('рота3.docx', [rows[0], rows[1], ['КП 3', 'Курахово', '12 км']])      # без отметки
+        out = TMP / 'итог3.docx'
+        rep = H.merge(template, [s1, s2, s3], out, mark=H.FONT, base=target, take_all=True)
+        t = Document(str(out)).tables[0]
+
+        def green(r, k):
+            return any(run.font.color.rgb is not None and str(run.font.color.rgb) == '00B050'
+                       for run in t.cell(r, k).paragraphs[0].runs)
+        self.assertEqual([t.cell(r, 1).text for r in (1, 2, 3)], ['Авдеевка', 'Мирноград', 'Курахово'])
+        self.assertEqual([t.cell(r, 2).text for r in (1, 2, 3)], ['22 км', '35 км', '12 км'])
+        self.assertTrue(green(1, 1) and green(1, 2) and green(2, 1) and green(3, 2))   # все изменения — зелёным шрифтом
+        self.assertFalse(green(1, 0) or green(2, 2))           # не менялось — обычным; старая отметка снята
+        self.assertFalse(any(r.font.highlight_color for r in t.cell(1, 1).paragraphs[0].runs))
+        run = t.cell(2, 0).paragraphs[0].runs[0]
+        self.assertEqual((run.font.name, run.font.size.pt), ('Times New Roman', 12))   # вид — как в шаблоне
+        self.assertEqual(len(rep.placed), 4)
+        self.assertEqual(rep.unmarked, [])
+
+
 if __name__ == '__main__':
     unittest.main()

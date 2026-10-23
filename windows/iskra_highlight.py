@@ -308,11 +308,105 @@ def _clean_rpr(rpr):
     for tag in ('w:highlight', 'w:shd'):
         for el in rpr.findall(qn(tag)):
             rpr.remove(el)
+    for el in rpr.findall(qn('w:color')):
+        if _green_font(el.get(qn('w:val'))):
+            rpr.remove(el)                                 # старая зелёная отметка не переходит на новый текст
     return rpr
 
 
+def clear_marks(doc):
+    """Снять прошлые отметки (зелёный/салатовый шрифт и маркер) в документе, куда вносятся изменения, — видно
+    будет только новое. Заливку ячеек не трогаем: это может быть раскраска таблицы."""
+    for r in doc.element.body.iter(qn('w:r')):
+        rpr = r.find(qn('w:rPr'))
+        if rpr is None:
+            continue
+        for el in rpr.findall(qn('w:highlight')):
+            if (el.get(qn('w:val')) or '').lower() in GREEN_NAMES:
+                rpr.remove(el)
+        for el in rpr.findall(qn('w:color')):
+            if _green_font(el.get(qn('w:val'))):
+                rpr.remove(el)
+
+
+def _copy_look(dst_cell, src_cell):
+    """Вид ячейки шаблона (шрифт, размер, жирность, выравнивание, отступы) — на ячейку документа; текст и цвет
+    отметок остаются."""
+    src_p = src_cell.paragraphs[0]._p if src_cell.paragraphs else None
+    if src_p is None:
+        return
+    src_ppr = src_p.find(qn('w:pPr'))
+    src_rpr = next((r.find(qn('w:rPr')) for r in src_p.iter(qn('w:r')) if r.find(qn('w:rPr')) is not None), None)
+    for p in dst_cell.paragraphs:
+        old = p._p.find(qn('w:pPr'))
+        if src_ppr is not None:
+            if old is not None:
+                p._p.remove(old)
+            p._p.insert(0, copy.deepcopy(src_ppr))
+        if src_rpr is None:
+            continue
+        for r in p._p.iter(qn('w:r')):
+            keep = []
+            rpr = r.find(qn('w:rPr'))
+            if rpr is not None:
+                keep = [copy.deepcopy(el) for tag in ('w:color', 'w:highlight') for el in rpr.findall(qn(tag))]
+                r.remove(rpr)
+            new = _clean_rpr(copy.deepcopy(src_rpr))
+            for el in new.findall(qn('w:color')):
+                new.remove(el)
+            for el in keep:
+                new.append(el)
+            r.insert(0, new)
+
+
+def apply_format(doc, template):
+    """Оформление по шаблону: поля и ориентация страницы, вид ячеек таблиц (по заголовкам столбцов)."""
+    tpl = Document(str(template))
+    for d, t in zip(doc.sections, tpl.sections):
+        for a in ('orientation', 'page_width', 'page_height', 'left_margin', 'right_margin', 'top_margin', 'bottom_margin'):
+            setattr(d, a, getattr(t, a))
+    tpl_grids = [grid(t) for t in tpl.tables]
+    for table in doc.tables:
+        g = grid(table)
+        if not g or not tpl_grids:
+            continue
+        best = max(range(len(tpl_grids)), key=lambda i: table_score(g, tpl_grids[i]))
+        t = tpl_grids[best]
+        if table_score(g, t) < 0.3:
+            continue
+        mapping = column_map(g.headers, t.headers)
+        sections = [i for i in range(t.head, len(t)) if is_section(t[i])]
+        data = [i for i in range(t.head, len(t)) if not is_section(t[i]) and not TOTAL.match(t[i][0].text or '')]
+        totals = [i for i in range(t.head, len(t)) if TOTAL.match(t[i][0].text or '')]
+        done = set()
+        for r, row in enumerate(g):
+            if r < g.head:
+                src_r = min(r, t.head - 1)
+            elif is_section(row):
+                src_r = sections[0] if sections else None
+            elif TOTAL.match(row[0].text or ''):
+                src_r = totals[0] if totals else (data[-1] if data else None)
+            else:
+                k = r - g.head
+                src_r = data[min(k, len(data) - 1)] if data else None
+            if src_r is None:
+                continue
+            for j, c in enumerate(row):
+                if id(c) in done:
+                    continue
+                done.add(id(c))
+                k = mapping.get(j, j)
+                if k < len(t[src_r]):
+                    _copy_look(c.cell, t[src_r][k].cell)
+
+
+FONT = 'font'                                            # mark=FONT — изменения зелёным шрифтом, а не маркером
+GREEN_RGB = '00B050'
+
+
 def _set_segments(p, segs, mark, color=WD_COLOR_INDEX.BRIGHT_GREEN):
-    """Заменить текст абзаца, сохранив оформление его первого фрагмента; подсвеченное — выделить."""
+    """Заменить текст абзаца, сохранив оформление его первого фрагмента; подсвеченное — выделить
+    (mark=FONT — зелёным шрифтом; конфликты и «дольше порога» — всегда маркером своего цвета)."""
     base = _clean_rpr(_base_rpr(p._p))
     for r in list(p._p.iter(qn('w:r'))):
         r.getparent().remove(r)
@@ -324,7 +418,11 @@ def _set_segments(p, segs, mark, color=WD_COLOR_INDEX.BRIGHT_GREEN):
                 run._r.remove(old)
             run._r.insert(0, copy.deepcopy(base))
         if mark and green:
-            run.font.highlight_color = color
+            if mark == FONT and color == WD_COLOR_INDEX.BRIGHT_GREEN:
+                from docx.shared import RGBColor
+                run.font.color.rgb = RGBColor.from_string(GREEN_RGB)
+            else:
+                run.font.highlight_color = color
 
 
 def set_cell(cell, paragraphs, mark, color=WD_COLOR_INDEX.BRIGHT_GREEN):
@@ -363,13 +461,23 @@ def _row_label(row):
     return next((x.text for x in row if norm(x.text) and not re.match(r'^\d+\.?$', norm(x.text))), '')
 
 
-def merge(template, sources, output, mark=True, accept=(), days=True, threshold=None, today=None):
-    """template — образец .docx; sources — присланные .docx; output — куда сохранить. Возвращает Report.
-    accept — отличия без отметки, которые человек выбрал перенести (их id из report.unmarked).
+def _all_green(c):
+    c.paragraphs = [[(t, True) for t, _ in segs] for segs in c.paragraphs]
+    c.green = True
+
+
+def merge(template, sources, output, mark=True, accept=(), days=True, threshold=None, today=None, base=None,
+          take_all=False):
+    """template — шаблон .docx (как должно выглядеть); base — документ, в который вносить изменения (нет —
+    вносим в сам шаблон); sources — присланные .docx; output — куда сохранить. Возвращает Report.
+    mark — выделить перенесённое (FONT — зелёным шрифтом). accept — отличия без отметки, которые человек выбрал
+    перенести (id из report.unmarked); take_all — переносить все отличия, а не только отмеченные.
     days — пересчитать «N сут. с ДАТА» на сегодня; threshold — дольше скольких суток выделить."""
     report = Report()
     accept = set(accept)
-    doc = Document(str(template))
+    doc = Document(str(base or template))
+    if base or mark == FONT:
+        clear_marks(doc)                                 # видно только новые изменения
     dst_tables = [grid(t) for t in doc.tables]
     dst_fills = [fills(t) for t in doc.tables]
     totals_before = [_totals(g) for g in dst_tables]
@@ -433,7 +541,9 @@ def merge(template, sources, output, mark=True, accept=(), days=True, threshold=
                                                + ('подходит к нескольким строкам образца' if why else 'нет такой строки в образце'))
                     elif sum(1 for c in set(row) if norm(c.text)) >= 2:
                         uid = (str(path), t_index, r_index, 'row')
-                        if uid in accept:
+                        if uid in accept or take_all:
+                            for c in set(row):
+                                _all_green(c)              # без отметки, но берём — в итоге видно как изменение
                             add_row(best, g, r_index, row, mapping, name)
                         else:
                             report.unmarked.append({'id': uid, 'file': name, 'object': _row_label(row),
@@ -452,13 +562,14 @@ def merge(template, sources, output, mark=True, accept=(), days=True, threshold=
                     # Зелёная/салатовая заливка — отметка, если у этой же ячейки образца её нет (в образце прошлой
                     # недели зелёные ячейки есть, но это не значит, что новая заливка — «раскраска таблицы»).
                     if not c.green and _green_hex(c.fill) and c.fill != goal.fill and norm(c.text):
-                        c.paragraphs = [[(t, True) for t, _ in segs] for segs in c.paragraphs]
-                        c.green = True
+                        _all_green(c)
                     if norm(c.text) == norm(goal.text) and not c.green:
                         continue                               # значение как в образце и не отмечено — менять нечего
                     col = next(k for k, x in enumerate(dst[target]) if x is goal)   # объединённая ячейка — один адрес
                     uid = (str(path), t_index, r_index, j)
-                    if c.green or uid in accept:            # отмечено — переносится, даже если текст тот же («Авдеевка»)
+                    if c.green or uid in accept or take_all:   # отмечено — переносится, даже если текст тот же («Авдеевка»)
+                        if not c.green:
+                            _all_green(c)                      # взято без отметки — в итоге тоже зелёным
                         put(best, dst, target, col, c, name)
                     elif norm(c.text):                         # пустая ячейка у исполнителя — «не заполнил», не изменение
                         report.unmarked.append({'id': uid, 'file': name, 'object': _row_label(dst[target]),
@@ -513,6 +624,8 @@ def merge(template, sources, output, mark=True, accept=(), days=True, threshold=
             _recount(grid(table), totals_before[t], report, mark)
     if days:
         update_days(doc, today=today, threshold=threshold, report=report)
+    if base and Path(str(base)).resolve() != Path(str(template)).resolve():
+        apply_format(doc, template)                      # вид — как в шаблоне
     report.snapshot = snapshot(doc)
     Path(output).parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output))
