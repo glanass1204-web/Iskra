@@ -329,43 +329,146 @@ def clear_marks(doc):
                 rpr.remove(el)
 
 
-def _copy_look(dst_cell, src_cell):
-    """Вид ячейки шаблона (шрифт, размер, жирность, выравнивание, отступы) — на ячейку документа; текст и цвет
-    отметок остаются."""
+def _style_font(style):
+    """(имя шрифта, размер в полупунктах) по цепочке стилей."""
+    name = size = None
+    while style is not None and (name is None or size is None):
+        rpr = style.element.find(qn('w:rPr'))
+        if rpr is not None:
+            f = rpr.find(qn('w:rFonts'))
+            if name is None and f is not None:
+                name = f.get(qn('w:ascii')) or f.get(qn('w:hAnsi'))
+            z = rpr.find(qn('w:sz'))
+            if size is None and z is not None:
+                size = z.get(qn('w:val'))
+        style = style.base_style
+    return name, size
+
+
+def _doc_default_font(doc):
+    name, size = _style_font(doc.styles['Normal'])
+    defaults = doc.styles.element.find(qn('w:docDefaults'))
+    rpr = defaults.find(qn('w:rPrDefault') + '/' + qn('w:rPr')) if defaults is not None else None
+    if rpr is not None:
+        f, z = rpr.find(qn('w:rFonts')), rpr.find(qn('w:sz'))
+        name = name or (f.get(qn('w:ascii')) or f.get(qn('w:hAnsi')) if f is not None else None)
+        size = size or (z.get(qn('w:val')) if z is not None else None)
+    return name or 'Times New Roman', size or '24'
+
+
+def _exact_rpr(r_el, p_el, doc):
+    """Свойства фрагмента шаблона с ЯВНО прописанными шрифтом и размером (а не «как в стиле»): в другом документе
+    стиль «Обычный» может быть другим — шрифт должен совпасть с шаблоном буквально."""
+    from docx.text.paragraph import Paragraph
+    rpr = r_el.find(qn('w:rPr')) if r_el is not None else None
+    if rpr is None and p_el is not None:
+        mark = p_el.find(qn('w:pPr') + '/' + qn('w:rPr'))       # пустая ячейка: шрифт знака абзаца
+        rpr = mark
+    rpr = _clean_rpr(copy.deepcopy(rpr)) if rpr is not None else OxmlElement('w:rPr')
+    for el in rpr.findall(qn('w:color')):
+        rpr.remove(el)
+    for tag in ('w:ins', 'w:del', 'w:rPrChange'):
+        for el in rpr.findall(qn(tag)):
+            rpr.remove(el)
+    f, z = rpr.find(qn('w:rFonts')), rpr.find(qn('w:sz'))
+    name = (f.get(qn('w:ascii')) or f.get(qn('w:hAnsi'))) if f is not None else None
+    size = z.get(qn('w:val')) if z is not None else None
+    if (name is None or size is None) and p_el is not None:
+        sn, ss = _style_font(Paragraph(p_el, None).style) if p_el.find(qn('w:pPr')) is not None else (None, None)
+        dn, ds = _doc_default_font(doc)
+        name, size = name or sn or dn, size or ss or ds
+    if f is None:
+        f = OxmlElement('w:rFonts'); rpr.insert(0, f)
+    for attr in ('w:ascii', 'w:hAnsi', 'w:cs', 'w:eastAsia'):
+        f.set(qn(attr), name or 'Times New Roman')
+    for attr in ('w:asciiTheme', 'w:hAnsiTheme', 'w:cstheme', 'w:eastAsiaTheme'):
+        f.attrib.pop(qn(attr), None)
+    for tag in ('w:sz', 'w:szCs'):
+        el = rpr.find(qn(tag))
+        if el is None:
+            el = OxmlElement(tag); rpr.append(el)
+        el.set(qn('w:val'), str(size or '24'))
+    return rpr
+
+
+def _restyle(p_el, src_ppr, rpr):
+    """Абзац документа: выравнивание/отступы и шрифт — как у шаблона; текст и цветные отметки остаются."""
+    if src_ppr is not None:
+        old = p_el.find(qn('w:pPr'))
+        if old is not None:
+            p_el.remove(old)
+        p_el.insert(0, copy.deepcopy(src_ppr))
+    for r in p_el.iter(qn('w:r')):
+        keep = []
+        old = r.find(qn('w:rPr'))
+        if old is not None:
+            keep = [copy.deepcopy(el) for tag in ('w:color', 'w:highlight') for el in old.findall(qn(tag))]
+            r.remove(old)
+        new = copy.deepcopy(rpr)
+        for el in keep:
+            new.append(el)
+        r.insert(0, new)
+
+
+def _look(p_el, doc):
+    """(pPr, rPr) абзаца шаблона: по первому фрагменту с текстом."""
+    if p_el is None:
+        return None, _exact_rpr(None, None, doc)
+    first = next((r for r in p_el.iter(qn('w:r')) if _run_text(r).strip()), None)
+    if first is None:                                    # пустой фрагмент со своим шрифтом
+        first = next((r for r in p_el.iter(qn('w:r')) if r.find(qn('w:rPr')) is not None), None)
+    return p_el.find(qn('w:pPr')), _exact_rpr(first, p_el, doc)
+
+
+def _has_own_font(p_el):
+    return p_el is not None and (any(r.find(qn('w:rPr')) is not None for r in p_el.iter(qn('w:r')))
+                                 or p_el.find(qn('w:pPr') + '/' + qn('w:rPr')) is not None)
+
+
+def _copy_look(dst_cell, src_cell, doc, fallback=None):
+    """Вид ячейки шаблона (шрифт, размер, жирность, выравнивание, отступы) — на ячейку документа."""
     src_p = src_cell.paragraphs[0]._p if src_cell.paragraphs else None
-    if src_p is None:
-        return
-    src_ppr = src_p.find(qn('w:pPr'))
-    src_rpr = next((r.find(qn('w:rPr')) for r in src_p.iter(qn('w:r')) if r.find(qn('w:rPr')) is not None), None)
+    ppr, rpr = _look(src_p, doc)
+    if fallback is not None and not _has_own_font(src_p):
+        rpr = fallback                                     # пустая ячейка шаблона без своего шрифта — шрифт таблицы
     for p in dst_cell.paragraphs:
-        old = p._p.find(qn('w:pPr'))
-        if src_ppr is not None:
-            if old is not None:
-                p._p.remove(old)
-            p._p.insert(0, copy.deepcopy(src_ppr))
-        if src_rpr is None:
-            continue
-        for r in p._p.iter(qn('w:r')):
-            keep = []
-            rpr = r.find(qn('w:rPr'))
-            if rpr is not None:
-                keep = [copy.deepcopy(el) for tag in ('w:color', 'w:highlight') for el in rpr.findall(qn(tag))]
-                r.remove(rpr)
-            new = _clean_rpr(copy.deepcopy(src_rpr))
-            for el in new.findall(qn('w:color')):
-                new.remove(el)
-            for el in keep:
-                new.append(el)
-            r.insert(0, new)
+        _restyle(p._p, ppr, rpr)
+
+
+def _table_font(table, doc):
+    """Самый частый шрифт данных в таблице шаблона — для пустых ячеек без своего оформления."""
+    from collections import Counter
+    seen = Counter()
+    keep = {}
+    runs = [r for r in table._tbl.iter(qn('w:r')) if _run_text(r).strip()] or \
+        [r for r in table._tbl.iter(qn('w:r')) if r.find(qn('w:rPr')) is not None]
+    for r in runs:
+        rpr = _exact_rpr(r, r.getparent(), doc)
+        f, z = rpr.find(qn('w:rFonts')), rpr.find(qn('w:sz'))
+        key = (f.get(qn('w:ascii')), z.get(qn('w:val')))
+        seen[key] += 1
+        keep.setdefault(key, rpr)
+    if not seen:
+        return _exact_rpr(None, None, doc)
+    rpr = copy.deepcopy(keep[seen.most_common(1)[0][0]])
+    for tag in ('w:b', 'w:bCs', 'w:i', 'w:iCs', 'w:u'):
+        for el in rpr.findall(qn(tag)):
+            rpr.remove(el)
+    return rpr
 
 
 def apply_format(doc, template):
-    """Оформление по шаблону: поля и ориентация страницы, вид ячеек таблиц (по заголовкам столбцов)."""
+    """Строго по шаблону: поля и ориентация страницы, шрифт, размер, начертание и выравнивание — в таблицах
+    (по заголовкам столбцов) и в абзацах вне таблиц. Шрифт прописывается явно, а не «как в стиле»."""
     tpl = Document(str(template))
     for d, t in zip(doc.sections, tpl.sections):
         for a in ('orientation', 'page_width', 'page_height', 'left_margin', 'right_margin', 'top_margin', 'bottom_margin'):
             setattr(d, a, getattr(t, a))
+    from docx.shared import Pt
+    name, size = _doc_default_font(tpl)                  # пустые строки и новый текст — тоже шрифтом шаблона
+    doc.styles['Normal'].font.name, doc.styles['Normal'].font.size = name, Pt(int(size) / 2)
     tpl_grids = [grid(t) for t in tpl.tables]
+    tpl_fonts = [_table_font(t, tpl) for t in tpl.tables]
     for table in doc.tables:
         g = grid(table)
         if not g or not tpl_grids:
@@ -387,17 +490,43 @@ def apply_format(doc, template):
             elif TOTAL.match(row[0].text or ''):
                 src_r = totals[0] if totals else (data[-1] if data else None)
             else:
-                k = r - g.head
-                src_r = data[min(k, len(data) - 1)] if data else None
-            if src_r is None:
-                continue
+                src_r = data[min(r - g.head, len(data) - 1)] if data else None
             for j, c in enumerate(row):
                 if id(c) in done:
                     continue
                 done.add(id(c))
                 k = mapping.get(j, j)
-                if k < len(t[src_r]):
-                    _copy_look(c.cell, t[src_r][k].cell)
+                if src_r is not None and k < len(t[src_r]):
+                    _copy_look(c.cell, t[src_r][k].cell, tpl, fallback=tpl_fonts[best])
+                else:
+                    for p in c.cell.paragraphs:
+                        _restyle(p._p, None, tpl_fonts[best])
+    # Абзацы вне таблиц: такой же по тексту абзац шаблона, иначе тот же по счёту, иначе основной шрифт шаблона.
+    tpl_pars = [p for p in tpl.paragraphs if p.text.strip()]
+    body = _look(None, tpl)[1]
+    if tpl_pars:
+        from collections import Counter
+        common = Counter((p.text.strip() and _look(p._p, tpl)[1].find(qn('w:rFonts')).get(qn('w:ascii')),
+                          _look(p._p, tpl)[1].find(qn('w:sz')).get(qn('w:val'))) for p in tpl_pars).most_common(1)[0][0]
+        body = next(_look(p._p, tpl)[1] for p in tpl_pars
+                    if (_look(p._p, tpl)[1].find(qn('w:rFonts')).get(qn('w:ascii')),
+                        _look(p._p, tpl)[1].find(qn('w:sz')).get(qn('w:val'))) == common)
+        for el in [x for tag in ('w:b', 'w:bCs', 'w:i', 'w:iCs', 'w:u') for x in body.findall(qn(tag))]:
+            body.remove(el)
+    doc_pars = [p for p in doc.paragraphs if p.text.strip()]
+    for n, p in enumerate(doc_pars):
+        same = max(tpl_pars, key=lambda q: difflib.SequenceMatcher(None, norm(p.text), norm(q.text)).ratio(), default=None)
+        if same is not None and difflib.SequenceMatcher(None, norm(p.text), norm(same.text)).ratio() >= 0.6:
+            src = same
+        elif len(doc_pars) == len(tpl_pars):
+            src = tpl_pars[n]
+        else:
+            src = None
+        if src is not None:
+            ppr, rpr = _look(src._p, tpl)
+            _restyle(p._p, ppr, rpr)
+        else:
+            _restyle(p._p, None, body)
 
 
 FONT = 'font'                                            # mark=FONT — изменения зелёным шрифтом, а не маркером
@@ -624,8 +753,7 @@ def merge(template, sources, output, mark=True, accept=(), days=True, threshold=
             _recount(grid(table), totals_before[t], report, mark)
     if days:
         update_days(doc, today=today, threshold=threshold, report=report)
-    if base and Path(str(base)).resolve() != Path(str(template)).resolve():
-        apply_format(doc, template)                      # вид — как в шаблоне
+    apply_format(doc, template)                          # строго как в шаблоне: шрифт везде одинаковый
     report.snapshot = snapshot(doc)
     Path(output).parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output))

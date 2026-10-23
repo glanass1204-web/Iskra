@@ -359,5 +359,48 @@ class ThreeDocuments(unittest.TestCase):
         self.assertEqual(rep.unmarked, [])
 
 
+    def test_strict_template_font_everywhere(self):
+        """Шаблон: Times New Roman 14 через стиль «Обычный», пустые ячейки без своего шрифта. Документ: Arial 9 и
+        Calibri в отдельных ячейках. Итог — везде Times New Roman 14: таблица, новая строка, заголовок над таблицей."""
+        from docx.shared import Pt, RGBColor
+        from docx.oxml.ns import qn as q
+
+        def doc(name, normal, size, title, rows, extra_font=None, green=(), spare=0):
+            d = Document()
+            d.styles['Normal'].font.name, d.styles['Normal'].font.size = normal, Pt(size)
+            d.add_paragraph(title)
+            t = d.add_table(rows=1 + len(rows) + spare, cols=3)
+            for k, h in enumerate(['Наименование ПУ', 'Положение', 'Удаление']):
+                t.cell(0, k).text = h
+            for r, values in enumerate(rows, 1):
+                for k, v in enumerate(values):
+                    run = t.cell(r, k).paragraphs[0].add_run(v)
+                    if extra_font and k == 1:
+                        run.font.name = extra_font
+                    if (r, k) in green or (r, -1) in green:
+                        run.font.color.rgb = RGBColor(0x00, 0xB0, 0x50)
+            d.add_paragraph('Начальник штаба')
+            d.save(TMP / name)
+            return TMP / name
+        rows = [['КП 1', 'Авдеевка', '20 км'], ['КП 2', 'Покровск', '35 км']]
+        template = doc('шаблон_строгий.docx', 'Times New Roman', 14, 'Сведения о ПУ', [['', '', ''], ['', '', '']], spare=1)
+        target = doc('документ_разный.docx', 'Arial', 9, 'Сведения о ПУ', rows, extra_font='Calibri', spare=1)
+        sent = doc('рота_строгий.docx', 'Courier New', 10, 'Сведения о ПУ',
+                   rows + [['КП 9', 'Мирноград', '40 км']], green={(1, 2), (3, -1)})
+        out = TMP / 'итог_строгий.docx'
+        H.merge(template, [sent], out, mark=H.FONT, base=target)
+        result = Document(str(out))
+        self.assertIn('КП 9', [c.text for row in result.tables[0].rows for c in row.cells])   # новая строка есть
+        fonts = set()
+        for r in result.element.body.iter(q('w:r')):
+            if not ''.join(t.text or '' for t in r.iter(q('w:t'))).strip():
+                continue
+            rpr = r.find(q('w:rPr'))
+            f = rpr.find(q('w:rFonts')) if rpr is not None else None
+            z = rpr.find(q('w:sz')) if rpr is not None else None
+            fonts.add((f.get(q('w:ascii')) if f is not None else None, z.get(q('w:val')) if z is not None else None))
+        self.assertEqual(fonts, {('Times New Roman', '28')})
+
+
 if __name__ == '__main__':
     unittest.main()
