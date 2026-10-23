@@ -17,11 +17,10 @@ jobs:
       fail-fast: false
       matrix:
         model:
+          # основная модель Искры. Кандидаты проверены 23.10.2026 (16 ГБ, процессор, задачи Искры, всего секунд):
+          # Qwen3.5-4B 1124, она же с MTP 1072 (выигрыша нет), Gemma 4 E4B 1624, Qwen3.5-9B 1191,
+          # GigaChat3.1-10B-A1.8B 453 (быстрее, но чаще выдумывает) — оставлена основной Qwen3.5-4B.
           - https://huggingface.co/bartowski/Qwen_Qwen3.5-4B-GGUF/resolve/main/Qwen_Qwen3.5-4B-Q4_K_M.gguf
-          # та же Qwen3.5-4B, но с головой MTP — движок пишет несколько слов за шаг (быстрее, тот же текст)
-          - https://huggingface.co/unsloth/Qwen3.5-4B-MTP-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf
-          # Google Gemma 4 E4B (4,6 ГБ) — формат реплик берётся из шаблона в файле модели
-          - https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_0.gguf
     defaults:
       run:
         working-directory: windows
