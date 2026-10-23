@@ -248,5 +248,18 @@ class MilitaryWords(unittest.TestCase):
         self.assertEqual(removed, [])
 
 
+class Raport(unittest.TestCase):
+    def test_openings(self):
+        import iskra_compose as c
+        self.assertEqual(c.raport_text('прибыл из командировки 23.10.2026'), 'Прошу полагать меня прибывшим из командировки 23.10.2026')
+        self.assertEqual(c.raport_text('убыл в отпуск с 01.11.2026'), 'Прошу полагать меня убывшим в отпуск с 01.11.2026')
+        self.assertEqual(c.raport_text('что задача выполнена'), 'Настоящим докладываю, что задача выполнена')
+        self.assertEqual(c.raport_text('предоставить отпуск'), 'Прошу предоставить отпуск')
+        self.assertNotIn('Донесение', c.KINDS)
+        text = c.compose('Рапорт', points=['прибыл из госпиталя'])
+        self.assertIn('РАПОРТ', text)
+        self.assertIn('Прошу полагать меня прибывшим из госпиталя.', text)
+
+
 if __name__ == '__main__':
     unittest.main()

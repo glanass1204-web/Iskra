@@ -25,7 +25,7 @@ from iskra_index import ROOT, extract, index_folder, search_docs, forget_folder,
 import iskra_assistant as assistant
 
 ROOT.mkdir(parents=True, exist_ok=True)
-VERSION = '1.10.0'
+VERSION = '1.10.1'
 ACCENT = '#24518A'
 
 
@@ -346,7 +346,7 @@ class App(UstavMixin, LearnMixin, VoiceMixin, JournalMixin, PeopleMixin, HotkeyM
             else:
                 low = text.lower()
                 kind = next((k for w, k in (('запрос', 'Запрос сведений'), ('указани', 'Указание'), ('напомин', 'Напоминание о сроке'),
-                                            ('ответ', 'Ответ на входящую'), ('рапорт', 'Рапорт'), ('донесени', 'Донесение'), ('доклад', 'Донесение')) if w in low), None)
+                                            ('ответ', 'Ответ на входящую'), ('рапорт', 'Рапорт'), ('донесени', 'Доклад'), ('доклад', 'Доклад')) if w in low), None)
                 self.compose_window(kind)
         elif cmd == 'reply':
             chosen = self.selected() if re.search(r'\b(эт[уоа]|этот|этой|выбранн\w*|на не[её]|на него|по нему)\b', text.lower()) else None

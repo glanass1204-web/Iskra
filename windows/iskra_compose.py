@@ -9,7 +9,7 @@ from iskra_telegram import INSTRUCTION, INTRO_PREFIX, parse, tidy
 PLACEHOLDER = re.compile(r'\[(УТОЧНИТЬ|ФИО|ДАТА|НОМЕР|ДОЛЖНОСТЬ|ОСНОВАНИЕ|звание)[^\]]*\]', re.IGNORECASE)
 NO_SIGNATURE = ['[ДОЛЖНОСТЬ]', '[звание] [И.О. Фамилия]']
 
-KINDS = ['Ответ на входящую', 'Указание', 'Рапорт', 'Донесение', 'Запрос сведений', 'Напоминание о сроке']
+KINDS = ['Ответ на входящую', 'Указание', 'Рапорт', 'Запрос сведений', 'Напоминание о сроке']
 
 
 def _today():
@@ -121,16 +121,37 @@ def reminder(item, me=None):
     return '\n'.join(lines)
 
 
+def raport_text(p):
+    """Начало рапорта как принято в войсках: «Настоящим докладываю, что…», «Прошу полагать меня прибывшим
+    (убывшим)…», «Прошу…»."""
+    low = p[:1].lower() + p[1:]
+    if re.match(r'^(прошу|настоящим|ходатайствую)', low, re.IGNORECASE):
+        return p[:1].upper() + p[1:]
+    m = re.match(r'^(?:меня\s+)?(?:полагать\s+(?:меня\s+)?)?(прибывш\w*|прибыл\w*|прибыти\w*|убывш\w*|убыл\w*|убыти\w*)\s*(.*)$',
+                 low, re.IGNORECASE | re.DOTALL)
+    if m:
+        state = 'прибывшим' if m.group(1).lower().startswith('прибы') else 'убывшим'
+        rest = m.group(2).strip()
+        return f'Прошу полагать меня {state}' + (' ' + rest if rest else ' [УТОЧНИТЬ: откуда / куда, с какого числа].')
+    if re.match(r'^(полагать)', low):
+        return 'Прошу ' + low
+    if re.match(r'^(докладываю[,:]?\s*)', low):
+        return 'Настоящим ' + low
+    if re.match(r'^(что|о том|об?\s)', low):
+        return 'Настоящим докладываю, ' + low if low.startswith('что') else 'Настоящим докладываю ' + low
+    return 'Прошу ' + low
+
+
 def raport(me=None, to='', basis='', points=None, subject=''):
-    """Рапорт: адресат вверху справа, «РАПОРТ», «Прошу…» от первого лица, должность, звание, подпись, дата."""
+    """Рапорт: адресат вверху справа, «РАПОРТ», текст от первого лица, должность, звание, подпись, дата."""
     me = me or {}
     points = [p.strip() for p in (points or []) if p.strip()]
     lines = [to or 'Командиру войсковой части [НОМЕР]\n[звание] [И.О. Фамилия]', '', 'РАПОРТ', '']
     if subject:
         lines += [subject, '']
     if len(points) == 1:
-        p = tidy(points[0])
-        lines.append(p if re.match(r'^(прошу|докладываю|ходатайствую)', p, re.IGNORECASE) else 'Прошу ' + p[:1].lower() + p[1:])
+        text = raport_text(tidy(points[0]))
+        lines.append(text if text.endswith(('.', ']')) else text + '.')
     elif points:
         lines.append('Прошу:')
         lines += [f'{i}. {tidy(p)}' for i, p in enumerate(points, 1)]
@@ -164,10 +185,7 @@ def compose(kind, me=None, to='', basis='', subject='', points=None, deadline=''
         lines.append(f'Напоминаю, что срок {basis or "[УТОЧНИТЬ: по какому документу]"} истекает {due}.')
         lines += items
         lines.append('Прошу обеспечить выполнение в установленный срок, о результатах доложить.')
-    elif kind == 'Донесение':
-        lines.append(f'{"Во исполнение " + basis + " д" if basis else "Д"}оношу:')
-        lines += items or ['1. [УТОЧНИТЬ: что доносите].']
-    else:  # Доклад (по старым вызовам)
+    else:  # «Докладываю:» — телеграмма о выполнении, об изменениях
         lines.append(f'{"Во исполнение " + basis + " д" if basis else "Д"}окладываю:')
         lines += items or ['1. [УТОЧНИТЬ: суть доклада].']
         if deadline:
