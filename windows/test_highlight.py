@@ -178,8 +178,12 @@ class Merge(unittest.TestCase):
         self.assertEqual(t.cell(5, 0).text, 'КП 101 мсп')                 # новая — в первую пустую строку раздела
         self.assertEqual(t.cell(5, 3).text, 'НШ м-р Иванов И.И.')
         self.assertEqual(rep.unplaced, [])
-        self.assertEqual(len(rep.placed), 4)
+        self.assertEqual(len(rep.placed), 5)
         self.assertTrue(any('то же значение' in p for p in rep.placed))
+        from datetime import date
+        days = t.cell(4, 8)                                  # положение сменилось («ПЕЧОРИНСК») — сутки заново, зелёным
+        self.assertEqual(days.text, f'1 сут. с {date.today():%d.%m.%Y}')
+        self.assertTrue(any(r.font.highlight_color for r in days.paragraphs[0].runs))
         self.assertEqual(len(rep.added_rows), 1)
         self.assertIn('СЕВЕРОДОНЕЦКОЕ', rep.added_rows[0])
 
@@ -400,6 +404,48 @@ class ThreeDocuments(unittest.TestCase):
             z = rpr.find(q('w:sz')) if rpr is not None else None
             fonts.add((f.get(q('w:ascii')) if f is not None else None, z.get(q('w:val')) if z is not None else None))
         self.assertEqual(fonts, {('Times New Roman', '28')})
+
+
+class StayRestart(unittest.TestCase):
+    def test_moved_unit_days_restart_unchanged_unit_days_recounted(self):
+        """Было: 56 км, ЗАЛУПИНСК, «4 сут. с 19.10.2026». Стало: 43 км, ЗАЛУПИНСК + ПЕЧОРИНСК (зелёным) —
+        сутки «1 сут. с 23.10.2026» зелёным. Строка без смены положения — сутки просто пересчитаны, без зелёного."""
+        from datetime import date
+        from docx.shared import RGBColor
+        heads = ['Наименование ПУ', 'Удаление от линии фронта', 'Положение', 'Время нахождения в районе']
+
+        def build(name, rows, green=()):
+            d = Document()
+            t = d.add_table(rows=1 + len(rows), cols=4)
+            for k, h in enumerate(heads):
+                t.cell(0, k).text = h
+            for r, values in enumerate(rows, 1):
+                for k, v in enumerate(values):
+                    for i, line in enumerate(v.split('\n')):
+                        par = t.cell(r, k).paragraphs[0] if i == 0 else t.cell(r, k).add_paragraph()
+                        run = par.add_run(line)
+                        if (r, k, i) in green:
+                            run.font.color.rgb = RGBColor(0x00, 0xB0, 0x50)
+            d.save(TMP / name)
+            return TMP / name
+        was = [['КП 5447 обр СпН', '56 км', 'с-в окраина ЗАЛУПИНСК', '4 сут. с 19.10.2026'],
+               ['КП 7001', '40 км', 'ЛИМАН', '2 сут. с 21.10.2026']]
+        now = [['КП 5447 обр СпН', '43 км', 'с-в окраина ЗАЛУПИНСК\nПЕЧОРИНСК', '4 сут. с 19.10.2026'], was[1]]
+        doc = build('было_сут.docx', was)
+        sent = build('стало_сут.docx', now, green={(1, 1, 0), (1, 2, 1)})
+        out = TMP / 'итог_сут.docx'
+        H.merge(doc, [sent], out, mark=H.FONT, base=doc, today=date(2026, 10, 23))
+        t = Document(str(out)).tables[0]
+
+        def green(cell):
+            return any(r.font.color.rgb is not None and str(r.font.color.rgb) == '00B050'
+                       for p in cell.paragraphs for r in p.runs)
+        self.assertEqual(t.cell(1, 3).text, '1 сут. с 23.10.2026')
+        self.assertTrue(green(t.cell(1, 3)))
+        self.assertEqual(t.cell(1, 2).text, 'с-в окраина ЗАЛУПИНСК\nПЕЧОРИНСК')
+        self.assertTrue(green(t.cell(1, 1)))
+        self.assertEqual(t.cell(2, 3).text, '3 сут. с 21.10.2026')     # не переезжали — пересчёт
+        self.assertFalse(green(t.cell(2, 3)))
 
 
 if __name__ == '__main__':

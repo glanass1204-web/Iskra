@@ -721,6 +721,7 @@ def merge(template, sources, output, mark=True, accept=(), days=True, threshold=
         if not found_marks:
             report.files_without_marks.append(name)
 
+    moved = set()                                        # строки, где сменилось положение, — сутки заново
     for (t, r, c), variants in cell_values.items():
         cell = dst_tables[t][r][c].cell
         label, header = cell_info[(t, r, c)]
@@ -732,10 +733,14 @@ def merge(template, sources, output, mark=True, accept=(), days=True, threshold=
             same = ' — то же значение, отмечено как изменение' if norm(old) == norm(src_cell.text) else ''
             report.placed.append(f'{where}: «{src_cell.text}» ({", ".join(files)}){same}')
             report.changes.append({'object': label, 'column': header, 'old': old, 'new': src_cell.text, 'files': files})
+            if POSITION.search(header or '') and norm(old) != norm(src_cell.text):
+                moved.add((t, r))
         else:
             text = '[УТОЧНИТЬ: ' + ' или '.join(f'{v[0].text} ({", ".join(v[1])})' for v in variants.values()) + ']'
             set_cell(cell, [[(text, True)]], True, WD_COLOR_INDEX.YELLOW)
             report.conflicts.append(f'{where}: {text[11:-1]}')
+    for t, r in sorted(moved):
+        _restart_days(dst_tables[t], r, {c for (tt, rr, c) in cell_values if (tt, rr) == (t, r)}, mark, today, report)
     for i, variants in par_values.items():
         p = dst_pars[i]
         if len(variants) == 1:
@@ -855,6 +860,31 @@ def _recount(g, before, report, mark):
 # ---------- «N сут. с ДАТА» ----------
 
 DAYS = re.compile(r'(\d+)(\s*сут(?:ок|ки|\.)?\s*[сc]\s*)(\d{1,2})\.(\d{1,2})\.(\d{2,4})', re.IGNORECASE)
+
+
+POSITION = re.compile(r'положени|местонахожд|район\s+(?:располож|сосредот)|\bн\.?\s?п\.?\b|населенн|населённ', re.IGNORECASE)
+STAY = re.compile(r'время\s+нахожд|сут(?:ок|ки)?\s+в\s+район|нахождени\w*\s+в\s+район', re.IGNORECASE)
+
+
+def _restart_days(g, r, placed_cols, mark, today, report):
+    """Положение сменилось — «Время нахождения в районе» начинается заново: «1 сут. с <сегодня>», как изменение.
+    Если подразделение само прислало новые сутки — их и оставляем."""
+    from datetime import date
+    today = today or date.today()
+    row = g[r]
+    col = next((k for k, h in enumerate(g.headers) if STAY.search(h or '')), None)
+    if col is None:
+        col = next((k for k, c in enumerate(row) if DAYS.search(c.text or '')), None)
+    if col is None or col in placed_cols or any(row[col] is row[k] for k in placed_cols):
+        return
+    cell = row[col]
+    old = cell.text
+    m = DAYS.search(old or '')
+    when = today.strftime('%d.%m.%Y')
+    new = (old[:m.start()] + '1' + m.group(2) + when + old[m.end():]) if m else f'1 сут. с {when}'
+    set_cell(cell.cell, [[(new, True)]], mark)
+    report.placed.append(f'{_row_label(row)} / {g.headers[col]}: «{new}» (положение сменилось — сутки заново)')
+    report.changes.append({'object': _row_label(row), 'column': g.headers[col], 'old': old, 'new': new, 'files': []})
 
 
 def days_since(day, month, year, today):
