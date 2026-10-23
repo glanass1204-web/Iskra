@@ -61,7 +61,7 @@ class RetrieveTest(unittest.TestCase):
         self.assertIn('Совещание в штабе.', out)
         for gone in ('21.10.2026', '154/2', '20.10.2026', '14:00', 'тлг_техника'):
             self.assertNotIn(gone, out)
-        self.assertIn('Дата: 22.10.2026', out)                       # шапка остаётся
+        self.assertNotIn('Дата:', out)                               # дату не просили — и в шапке её нет
         self.assertIn('войсковой части 12345', out)                  # не дата и не номер документа
         self.assertIn('И.И. Иванов', out)
         self.assertGreaterEqual(len(removed), 5)

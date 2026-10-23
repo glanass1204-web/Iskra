@@ -254,6 +254,21 @@ class MilitaryWords(unittest.TestCase):
         self.assertTrue(out.rstrip().endswith('капитан\t\t\t\tИ.И. Иванов'))
         self.assertEqual(out.count('Прошу полагать'), 1)
 
+    def test_user_points_kept(self):
+        t = 'Составь телеграмму. Пункты: провести проверку техники; представить акты в штаб; доложить о выполнении'
+        out = 'ТЕЛЕГРАММА\n\nТекст:\n1. Провести проверку техники.\n\nПодпись:\nНачальник штаба\nполковник А.А. Смирнов'
+        fixed, missed = ai.ensure_points(out, ai.user_points(t))
+        self.assertEqual(missed, ['представить акты в штаб', 'доложить о выполнении'])
+        self.assertIn('2. Представить акты в штаб.\n3. Доложить о выполнении.\n\nПодпись:', fixed)
+
+    def test_header_date_only_if_asked(self):
+        text = 'ТЕЛЕГРАММА\nКому: Командирам\nДата: 23.10.2026\nНомер: [НОМЕР]\nТекст:\nПроверить технику.'
+        out, _ = ai.strip_unasked(text, 'составь телеграмму: проверить технику')
+        self.assertNotIn('Дата:', out)
+        self.assertNotIn('Номер:', out)
+        out, _ = ai.strip_unasked(text, 'составь телеграмму с датой и номером: проверить технику')
+        self.assertIn('Дата: 23.10.2026', out)
+
     def test_builtin_samples(self):
         where, text = ai.best_sample('Составь телеграмму командирам: провести проверку техники')
         self.assertIn('ПРИКАЗЫВАЮ', text)

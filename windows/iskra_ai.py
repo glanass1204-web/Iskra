@@ -697,7 +697,7 @@ MONTHS = r'(?:января|февраля|марта|апреля|мая|июн�
 DATE_RE = rf'(?:\d{{1,2}}\.\d{{1,2}}\.\d{{2,4}}|\d{{1,2}}\s+{MONTHS}(?:\s+\d{{4}})?)(?:\s*(?:г\.|года|г(?![а-яё])))?'
 SHORT_DATE = r'(?<![\d.])(?:0?[1-9]|[12]\d|3[01])\.(?:0?[1-9]|1[0-2])(?![\d.])'   # «06.00» — время, не дата
 MIL_TIME = r'(?<![\d.])(?:[01]?\d|2[0-3])\.(?:00|1[3-9]|[2-5]\d)(?![\d.])'               # военная запись времени: «к 06.00»
-WANT_DATES = re.compile(r'(?<![а-яё])(?:дат[аеуыо]?|срок\w*|когда|числа|числу|число|понедельник\w*|вторник\w*|среду|среда|'
+WANT_DATES = re.compile(r'(?<![а-яё])(?:дат(?:а|е|у|ы|о|ой|ами|ам|ах)?|срок\w*|когда|числа|числу|число|понедельник\w*|вторник\w*|среду|среда|'
                         r'четверг\w*|пятниц\w*|суббот\w*|воскресень\w*|январ\w*|феврал\w*|март\w*|апрел\w*|ма[йя]|июн\w*|'
                         r'июл\w*|август\w*|сентябр\w*|октябр\w*|ноябр\w*|декабр\w*|сегодня\w*|завтра\w*|вчера\w*|'
                         r'состоянию|период\w*)(?![а-яё])|\d{1,2}\.\d{1,2}', re.IGNORECASE)
@@ -735,6 +735,12 @@ def strip_unasked(text, task, keep='', sources=()):
     for line in text.split('\n'):
         if re.match(r'^\s*Подпись\s*:?', line, re.IGNORECASE) or line.strip().startswith('--- ИСТОЧНИКИ'):
             in_signature = True
+        if not in_signature and not want_dates and re.match(r'^\s*(Дата|Время)\s*:', line, re.IGNORECASE):
+            removed.append('строка ' + line.strip()[:40])
+            continue                                       # «Дата: …» в шапке — только если дату просили
+        if not in_signature and not want_refs and re.match(r'^\s*(Номер|Исх\w*|Вх\w*)\s*:', line, re.IGNORECASE):
+            removed.append('строка ' + line.strip()[:40])
+            continue
         if in_signature or FIELD.match(line) or re.fullmatch(r'\s*' + DATE_RE + r'\s*', line):
             out.append(line)
             continue
@@ -959,6 +965,42 @@ def fix_raport(text, me=None):
         frm, tail = 'от [должность, звание, фамилия — в родительном падеже]', []
     body_text = '\n'.join(body).strip()
     return '\n'.join(to + [frm, c.word_date(), '', 'РАПОРТ', '', body_text] + tail)
+
+
+def user_points(task):
+    """Пункты, которые человек сам перечислил: «Пункты: а; б; в» (окно «Составить») или строки «1. …»."""
+    m = re.search(r'Пункты:\s*(.+)', task)
+    if m:
+        return [p.strip(' .') for p in m.group(1).split(';') if len(p.strip()) > 3]
+    return [l.strip()[l.strip().index('.') + 1:].strip(' .') for l in task.splitlines()
+            if re.match(r'^\s*\d{1,2}[.)]\s+\S', l)]
+
+
+def ensure_points(text, points):
+    """Каждый пункт, который назвал человек, должен быть в документе. Нейросеть пропустила — дописать его
+    следующим номером перед подписью (лучше сухо, чем потерять поручение)."""
+    low = (text or '').lower().replace('ё', 'е')
+
+    def covered(p):                                        # слова пункта (без общих «служебных» — они и есть суть)
+        words = {w.lower().replace('ё', 'е')[:5] for w in re.findall(r'[А-Яа-яЁё]{4,}', p)}
+        return not words or sum(1 for w in words if w in low) / len(words) >= 0.5
+    missing = [p for p in points if not covered(p)]
+    if not missing:
+        return text, []
+    lines = text.split('\n')
+    end = next((n for n, l in enumerate(lines) if re.match(r'^\s*Подпись\s*:?\s*$', l)), None)
+    if end is None:                                        # подпись без «Подпись:» — перед последним блоком
+        blanks = [n for n, l in enumerate(lines) if not l.strip()]
+        end = blanks[-1] if blanks else len(lines)
+    body = lines[:end]
+    while body and not body[-1].strip():
+        body.pop()
+    nums = [int(m.group(1)) for l in body for m in [re.match(r'^\s*(\d{1,2})\.\s', l)] if m]
+    n = max(nums) if nums else 0
+    for p in missing:
+        n += 1
+        body.append(f'{n}. {p[:1].upper()}{p[1:]}.')
+    return '\n'.join(body + [''] + lines[end:]).rstrip() + '\n', missing
 
 
 def drop_invented_basis(text, sources):
@@ -1217,7 +1259,9 @@ def write(task, sources=(), me=None, **kw):
              '3. Факты (фамилии, должности, числа, названия) — только из материалов и задачи; чего нет — [УТОЧНИТЬ: …].\n'
              '4. Даты, время, номера документов и имена файлов-материалов НЕ вставляй, если задача их не просит '
              '(не пиши «согласно телеграмме … от …», «по состоянию на …», «в 14:00»). Ссылку «На № … от …» — только '
-             'если в задаче сказано ответить на документ или назван его номер.\n'
+             'если в задаче сказано ответить на документ или назван его номер. Не перечисляй названия подразделений, '
+             'номера воинских частей и организаций из материалов, если задача их не называет и не просит: пиши '
+             'обобщённо («командирам подразделений», «в подразделениях»).\n'
              '5. ' + DATE_RULES().replace('\n', ' ').strip() + '\n'
              + ('6. Текст начинай с «Докладываю:» и далее по пунктам — положение, наличие, что выполнено (слов «доношу», '
                 '«донесение» не используй); время «по состоянию на» ставь, только если оно есть в задаче или материалах.\n'
@@ -1248,7 +1292,8 @@ def write(task, sources=(), me=None, **kw):
             raw = expand(raw, task, block, need, max_tokens=max_tokens, **kw)   # вышло коротко — второй круг
         except AIError:
             pass
-    raw, removed = strip_unasked(raw, task, keep, sources)     # даты, время, номера, имена файлов — только если просили
+    own_task = task.split('\nОпирайся на черновик')[0]       # что просил человек — без шаблонного черновика
+    raw, removed = strip_unasked(raw, own_task, keep, sources)  # даты, время, номера, имена файлов — только если просили
     if removed:
         write_log('Убрано не запрошенное: ' + '; '.join(removed[:20]))
     out = fix_dates(raw, task + ' ' + keep)[0]
@@ -1257,6 +1302,9 @@ def write(task, sources=(), me=None, **kw):
     if fixes:
         write_log('Вычитка: ' + '; '.join(fixes[:30]))
     out = drop_invented_basis(out, list(sources) + [('задача', task + ' ' + keep)])
+    out, missed = ensure_points(out, user_points(own_task))
+    if missed:
+        write_log('Нейросеть пропустила пункты, дописаны: ' + '; '.join(missed))
     out = ensure_reference(out, task, sources)            # «На № …» в ответе на названный документ
     if raport:
         out = fix_raport(out, me)
