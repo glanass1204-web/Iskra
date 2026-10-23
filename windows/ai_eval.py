@@ -21,6 +21,19 @@ SAMPLE = ('ТЕЛЕГРАММА\n\nКомандирам подразделени
 TECH = ('сведения рота 1.docx', 'Сведения о технике 1 роты: КамАЗ-4310 — 6 ед., из них неисправно 2 (требуется замена '
         'двигателя). Урал-4320 — 3 ед., исправны. Ответственный — капитан Орлов О.О.')
 
+
+def _ustav(question):
+    """Вопрос по уставу: статьи из выдержки УВС (открытый текст) — как из папки «Уставы» у пользователя."""
+    import iskra_ustav
+    from pathlib import Path
+    src = Path(__file__).with_name('ai_eval_uvs.txt')
+    lib = iskra_ustav.Library(src.parent, read=lambda p: Path(p).read_text(encoding='utf-8'))
+    lib.files = lambda: [src]
+    found = lib.load().search(question, k=4)
+    return 'Статьи: ' + ', '.join(iskra_ustav.ref(a) for _, a in found) + '\n' + ai.ustav_answer(
+        question, iskra_ustav.materials(found))
+
+
 TASKS = [
     ('Телеграмма по образцу отдела (полнота, без лишних дат)', lambda: ai.write(
         'Составь телеграмму командирам подразделений: провести проверку готовности техники к зимней эксплуатации',
@@ -53,6 +66,8 @@ TASKS = [
     ('Входящие: кратко', lambda: ai.brief(TG[1])),
     ('Макрос VBA', lambda: (lambda c: c[0][:700] + '\nзамечаний проверки: ' + str(c[1]))(
         ai.vba('удалить пустые строки на активном листе', 'excel'))),
+    ('Устав: вопрос по статьям', lambda: _ustav('Кому подчиняется дежурный по роте и за что он отвечает?')),
+    ('Устав: обязанности по пунктам', lambda: _ustav('Обязанности дневального по роте')),
     ('Общий вопрос', lambda: ai.chat('Как правильно оформить дату в служебном документе?')),
     ('Обобщение папки', lambda: ai.summarize('Обзор папки Телеграммы', TG[1] + '\n\n' + PRIKAZ[1] + '\n\n' + SVOD[1])),
 ]

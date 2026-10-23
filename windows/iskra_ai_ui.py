@@ -677,11 +677,27 @@ class AIMixin:
         return ai.retrieve(text, lambda q, any_word: search_docs(q, 200, any_word), lambda p: extract(Path(p)), extra=extra,
                            smart_fn=lambda q: iskra_smartsearch.smart_search(q, 50, ROOT)[0], stats=stats)
 
+    @staticmethod
+    def _ustav_extra(task, sources):
+        """Статьи уставов, которые явно по теме задачи (или устав назван) — в материалы к документам."""
+        try:
+            import iskra_ustav
+            lib = iskra_ustav.library()
+        except Exception:                                  # noqa: BLE001 — без уставов просто пишем по документам
+            return []
+        if not lib.articles:
+            return []
+        need = 0.3 if iskra_ustav.is_question(task) else 0.6
+        found = [(s, a) for s, a in lib.search(task, k=4 if sources else 6) if s >= need]
+        return iskra_ustav.materials(found[:3] if sources else found, limit=2500)
+
     def _gather(self, task, extra, cancel, update):
         """Найти документы, показать какие, и если их много — выписать нужное из каждого."""
         stats = {}
         sources, paths = self._sources_for(task, extra, stats)
-        names = [Path(p).name for p in paths]
+        ust = self._ustav_extra(task, sources)
+        sources = list(sources) + ust
+        names = [Path(p).name for p in paths] + [n.replace('Устав: ', '') for n, _ in ust]
         more = stats.get('found', 0) - len(names)
         self.events.put(('call', lambda: self.say(
             (f'Беру документы ({len(names)}' + (f' самых подходящих из {stats["found"]}' if more > 0 else '') + '): '
