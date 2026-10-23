@@ -756,7 +756,29 @@ class AIMixin:
         # Каждый документ уже получил свою долю места (выдержки вокруг слов задачи) — ни один не отбрасывается.
         return sources, list(sources), paths
 
+    def combat_blank(self, task):
+        """«Боевое распоряжение»: нейросеть его не составляет — открываем пустой бланк по своему шаблону этого вида,
+        заполняет человек; «Сохранить в Word» — по тому же шаблону."""
+        templates = self.doc_templates() if hasattr(self, 'doc_templates') else {}
+        name = next((k for k in templates if ai.COMBAT_ORDER.search(k)), None)
+        if name is None:
+            self.say('Боевые распоряжения нейросеть не составляет. Чтобы по этой команде открывался ваш бланк: '
+                     '«Инструменты → Шаблоны документов… → Добавить свой вид документа…», название — «Боевое '
+                     'распоряжение», файл — ваш шаблон.')
+            return
+        from iskra_telegram import template_text
+        try:
+            blank = template_text(templates[name])
+        except Exception:                                  # noqa: BLE001 — файл не читается: пустой редактор
+            blank = ''
+        self.telegrams(initial=blank, kind=name, as_is=True,
+                       note=f'Бланк по вашему шаблону «{name}». Содержание заполняете сами — нейросеть боевые распоряжения '
+                            'не составляет. «Сохранить в Word» — по этому шаблону.')
+        self.say(f'Открыт бланк «{name}» по вашему шаблону. Содержание заполняете сами.', 'proof')
+
     def ai_write(self, task):
+        if ai.COMBAT_ORDER.search(task):
+            self.combat_blank(task); return
         if not self.ai_ready:
             self.say('Свободный текст пишет нейросеть, а она не установлена. Открываю шаблоны телеграмм.')
             self.compose_window(); return

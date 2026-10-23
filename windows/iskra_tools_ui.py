@@ -219,7 +219,8 @@ class ToolsMixin:
 
     # ---------- Телеграммы ----------
 
-    def telegrams(self, initial=None, note=None, report=None, source_paths=(), source_texts=(), restore=None):
+    def telegrams(self, initial=None, note=None, report=None, source_paths=(), source_texts=(), restore=None, kind=None,
+                  as_is=False):
         # Не «поверх главного окна»: редактор большой, главное окно должно выходить вперёд по щелчку.
         win = _window(self, 'редактор телеграмм', '1100x680', transient=False)
         win.after(50, lambda: (win.lift(), win.focus_force()))
@@ -237,7 +238,7 @@ class ToolsMixin:
         if restore is not None:
             t.insert('1.0', restore.data.get('text', ''))       # восстановленный черновик — как был, без переделки
         else:
-            t.insert('1.0', self.to_template(initial) if initial else self.telegram_blank())
+            t.insert('1.0', initial if as_is and initial else self.to_template(initial) if initial else self.telegram_blank())
         t.edit_reset()
         draft = restore or iskra_drafts.Draft()
         draft.data['closed'] = False
@@ -330,7 +331,7 @@ class ToolsMixin:
         ttk.Button(buttons, text='Сохранить в Word', style='Accent.TButton', command=save).pack(side='right')
         kinds = ['Телеграмма', 'Указание', 'Рапорт', 'Отпускной билет', 'Доклад', 'Запрос']
         kinds += sorted(k for k in self.doc_templates() if k not in kinds)
-        kind = tk.StringVar(value=self.guess_kind(initial or ''))
+        kind = tk.StringVar(value=kind or self.guess_kind(initial or ''))
         box = ttk.Combobox(buttons, textvariable=kind, values=kinds, state='readonly', width=16)
         box.pack(side='right', padx=(6, 0))
         box.bind('<Button-1>', lambda e: box.configure(values=kinds + sorted(k for k in self.doc_templates() if k not in kinds)))
@@ -839,8 +840,9 @@ class ToolsMixin:
             if not name:
                 return
             if iskra_ai.COMBAT_ORDER.search(name):
-                messagebox.showinfo('Шаблоны', 'Боевые распоряжения нейросеть не составляет. Текст пишите сами; оформить '
-                                                'его по своему шаблону можно в редакторе — вид «' + name + '» в списке.', parent=win)
+                messagebox.showinfo('Шаблоны', 'По команде «напиши боевое распоряжение» откроется бланк по этому шаблону. '
+                                                'Содержание заполняете сами — нейросеть боевые распоряжения не составляет.',
+                                    parent=win)
             p = filedialog.askopenfilename(parent=win, title=f'Шаблон: {name} (.docx)', filetypes=[('Word', '*.docx')])
             if p:
                 found = self.doc_templates(existing=False); found[name] = p
