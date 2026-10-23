@@ -58,7 +58,53 @@ def local_files(base=None):
     models = sorted(model_dir.glob('*.gguf')) if model_dir.is_dir() else []
     # Не модель: проектор картинок (mmproj) и вторые части разрезанной модели (…-00002-of-00002.gguf).
     models = [m for m in models if 'mmproj' not in m.name.lower() and not SPLIT.search(m.name) or SPLIT_FIRST.search(m.name)]
-    return binary, (models[0] if models else None)
+    return binary, pick_model(models)
+
+
+def model_label(model):
+    """Имя модели без номера части: «Qwen_Qwen3.5-4B-Q4_K_M», «GigaChat3.1-10B-A1.8B-q4_K_M»."""
+    return SPLIT.sub('', Path(model).name).replace('.gguf', '') if model else ''
+
+
+def chosen_model_name():
+    try:
+        from iskra_index import ROOT
+        return (ROOT / 'ai_model.txt').read_text(encoding='utf-8').strip()
+    except (OSError, ImportError):
+        return ''
+
+
+def choose_model(label):
+    """Запомнить выбор модели (имя без номера части); пустое — по умолчанию."""
+    from iskra_index import ROOT
+    ROOT.mkdir(parents=True, exist_ok=True)
+    (ROOT / 'ai_model.txt').write_text(label or '', encoding='utf-8')
+    SERVER.stop()                                          # следующий ответ загрузит выбранную модель
+
+
+def pick_model(models):
+    """Какую модель брать, если их несколько: выбранную в «Файл → Выбрать нейросеть», иначе целую (все части на
+    месте) Qwen — проверенную основную; иначе любую целую; иначе первую (Искра скажет, каких частей не хватает)."""
+    if not models:
+        return None
+    want = chosen_model_name()
+    whole = [m for m in models if not missing_parts(m)]
+    for m in whole:
+        if want and model_label(m) == want:
+            return m
+    for m in whole:
+        if 'qwen' in m.name.lower():
+            return m
+    return (whole or models)[0]
+
+
+def all_models(base=None):
+    """[(имя, целая ли)] — все модели в папке models."""
+    base = Path(base).resolve() if base else base_dir()
+    model_dir = base / 'models'
+    models = sorted(model_dir.glob('*.gguf')) if model_dir.is_dir() else []
+    models = [m for m in models if 'mmproj' not in m.name.lower() and not SPLIT.search(m.name) or SPLIT_FIRST.search(m.name)]
+    return [(model_label(m), not missing_parts(m)) for m in models]
 
 
 SPLIT = re.compile(r'-(\d{5})-of-(\d{5})\.gguf$', re.IGNORECASE)
@@ -76,14 +122,14 @@ def missing_parts(model):
             if not (model.parent / f'{stem}-{i:05d}-of-{total:05d}.gguf').is_file()]
 
 
-def gather_parts(base=None, extra_roots=None):
+def gather_parts(base=None, extra_roots=None, force=False):
     """Части модели, распакованные не туда, переносятся в models рядом с программой.
     «Извлечь всё» в Проводнике кладёт каждый архив в свою папку (Загрузки\\Iskra-AI-chast-03\\Iskra\\models\\…),
     и программа из части 1 их не видит. Возвращает число перенесённых файлов."""
     base = Path(base).resolve() if base else base_dir()
     target = base / 'models'
     _, model = local_files(base)
-    if model is not None and not missing_parts(model):
+    if model is not None and not missing_parts(model) and not force:
         return 0
     if extra_roots is None:
         extra_roots = [Path.home() / 'Downloads', Path.home() / 'Desktop', Path.home() / 'Загрузки']
@@ -554,7 +600,8 @@ def raport_format(me=None):
             '(«полковнику Кузнецову И. А.»); если не дано — Командиру войсковой части [НОМЕР]>\n'
             f'{frm}\n{iskra_compose.word_date()}\n\nРАПОРТ\n\n'
             '<текст полностью, каждая просьба или доклад — с новой строки, с основаниями (статьи законов, приказы), '
-            'если они есть в задаче или материалах. Начало — как принято в войсках: «Прошу …», «Прошу Вашего '
+            'если они есть в задаче или материалах (не придумывай приказы, статьи, номера и даты оснований). '
+            'Начало — как принято в войсках: «Прошу …», «Прошу Вашего '
             'ходатайства перед вышестоящим командованием о …» (если решает старший начальник), «Прошу полагать меня '
             'прибывшим (убывшим) …» (прибытие, убытие), «Настоящим докладываю, что …» (доклад). Слова «доношу» нет>\n\n'
             f'{bottom}')
@@ -861,6 +908,18 @@ REF_NUM = re.compile(r'(?:№\s*)([\w-]*\d[\w/-]*)|(?<![\w./])(\d+(?:/\d+)+)(?![
 REPLY_WORDS = re.compile(r'ответ\w*|на\s+(?:вашу|ваш|телеграмм\w*|письм\w*|запрос\w*)', re.IGNORECASE)
 
 
+def drop_invented_basis(text, sources):
+    """Строка «Основание: приказ … от 27.08.2025 …», которой нет ни в задаче, ни в материалах, — выдумка модели:
+    убрать (неверное основание в рапорте хуже, чем никакого)."""
+    out = []
+    for line in text.split('\n'):
+        if re.match(r'^\s*(Основание|На основании)\b', line, re.IGNORECASE) and unverified(line, sources):
+            write_log('Убрано выдуманное основание: ' + line.strip()[:200])
+            continue
+        out.append(line)
+    return '\n'.join(out)
+
+
 def ensure_reference(text, task, sources=()):
     """Ответ на названный в задаче документ обязан начинаться ссылкой «На № … от …».
     Небольшая модель её иногда теряет — дописываем сами; дату берём из материалов, если она стоит рядом с номером."""
@@ -1086,6 +1145,7 @@ def write(task, sources=(), me=None, **kw):
     LAST_FIXES[:] = fixes
     if fixes:
         write_log('Вычитка: ' + '; '.join(fixes[:30]))
+    out = drop_invented_basis(out, list(sources) + [('задача', task + ' ' + keep)])
     out = ensure_reference(out, task, sources)            # «На № …» в ответе на названный документ
     if telegram:
         out = enforce_signature(out, me)
@@ -1134,7 +1194,20 @@ def ustav_answer(question, articles, **kw):
     max_tokens = kw.pop('max_tokens', 1400)
     out = run(chat_prompt(user), max_tokens=max_tokens, temperature=0.1, **kw)
     known = {name.replace('Устав: ', '') for name, _ in articles}
-    out = re.sub(r'\[((?:БУ ч\.\d|БУ|УВС|ДУ|УГиКС|СУ),\s*ст\.\s*\d+)\]', r'\1', out)   # «[УВС, ст. 303]» → «УВС, ст. 303»
+    # «[УНС, ст. 307]», «[УВС, ст. 303]» → «(УВС, ст. 303)»: искажённое сокращение — по номеру статьи из данных
+    by_num = {}
+    for k in known:
+        by_num.setdefault(k.split('ст.')[-1].strip(), set()).add(k)
+
+    def fix_ref(m):
+        exact = f'{m.group(1)}, ст. {m.group(2)}'
+        if exact in known:
+            return f'({exact})'
+        cands = by_num.get(m.group(2), set())
+        if not cands:
+            return ''                                      # статьи, которой не давали, — выдумка
+        return f'({next(iter(cands))})' if len(cands) == 1 else m.group(0)
+    out = re.sub(r'[\[(]\s*([А-ЯЁ][А-ЯЁа-яё]{1,5}(?:\s?ч\.\s?\d)?),\s*ст\.\s*(\d+)\s*[\])]', fix_ref, out)
     # Ссылка на статью, которой нейросети не давали, — выдумка: убираем, чтобы не вводить в заблуждение.
     def check(m):
         return m.group(0) if m.group(1).strip() in known else ''

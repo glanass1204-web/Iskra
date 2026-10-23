@@ -15,6 +15,7 @@ from iskra_journal_ui import JournalMixin
 from iskra_voice_ui import VoiceMixin
 from iskra_learn_ui import LearnMixin
 from iskra_ustav_ui import UstavMixin
+from iskra_forms_ui import FormsMixin
 import iskra_ai
 import iskra_bugreport
 from iskra_formula import build_formula, explain_formula
@@ -25,7 +26,7 @@ from iskra_index import ROOT, extract, index_folder, search_docs, forget_folder,
 import iskra_assistant as assistant
 
 ROOT.mkdir(parents=True, exist_ok=True)
-VERSION = '1.10.2'
+VERSION = '1.10.3'
 ACCENT = '#24518A'
 
 
@@ -34,7 +35,7 @@ DOC_CMDS = {'deadlines', 'dates', 'people', 'numbers', 'money', 'contacts', 'sum
 FOLLOW_CMDS = {'search', 'write', 'ask', 'telegram'} | DOC_CMDS
 
 
-class App(UstavMixin, LearnMixin, VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin, WorkMixin, ToolsMixin):
+class App(FormsMixin, UstavMixin, LearnMixin, VoiceMixin, JournalMixin, PeopleMixin, HotkeyMixin, PlanMixin, AIMixin, WorkMixin, ToolsMixin):
     def __init__(self, root):
         self.root = root
         import iskra_clipboard
@@ -133,6 +134,7 @@ class App(UstavMixin, LearnMixin, VoiceMixin, JournalMixin, PeopleMixin, HotkeyM
         f.add_command(label='Обновить индекс', command=self.indexer.scan_now)
         f.add_command(label='Открыть папку данных', command=lambda: os.startfile(str(ROOT)))
         f.add_command(label='Проверить нейросеть', command=self.ai_check)
+        f.add_command(label='Выбрать нейросеть…', command=self.ai_model_window)
         f.add_command(label='Сообщить об ошибке…', command=lambda: iskra_bugreport.window(self, VERSION))
         f.add_command(label='Чему научилась Искра…', command=self.learning_window)
         f.add_command(label='Справочник людей…', command=self.people_window)
@@ -160,6 +162,7 @@ class App(UstavMixin, LearnMixin, VoiceMixin, JournalMixin, PeopleMixin, HotkeyM
         t.add_command(label='Пересчитать сутки в документе…', command=self.recount_days_window)
         t.add_command(label='История по объектам (ПУ)…', command=self.pu_history_window)
         t.add_command(label='Уставы (ответы по статьям)…', command=self.ustav_window)
+        t.add_command(label='Отпускной билет…', command=self.leave_ticket_window)
         t.add_command(label='Проверка орфографии', command=self.spell_window)
         t.add_command(label='Сравнить две редакции…', command=self.compare_files)
         t.add_separator()
@@ -325,6 +328,8 @@ class App(UstavMixin, LearnMixin, VoiceMixin, JournalMixin, PeopleMixin, HotkeyM
             self.say('Что делает формула:\n' + explain_formula(arg))
         elif cmd == 'spell':
             self.spell_window()
+        elif cmd == 'leave_ticket':
+            self.leave_ticket_window()
         elif cmd == 'ustav':
             self.ustav_ask(text)
         elif cmd == 'highlight':

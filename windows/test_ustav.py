@@ -76,6 +76,13 @@ class Library(unittest.TestCase):
             ai.run = old
         self.assertIn('(УВС, ст. 295)', out)
         self.assertNotIn('999', out)              # ссылки на статьи, которых не давали, — убраны
+        try:
+            ai.run = lambda *a, **k: 'Подчиняется дежурному по полку [УНС, ст. 295]. Ещё [УВС, ст. 777].'
+            out = ai.ustav_answer('кому подчиняется дежурный по роте', mats)
+        finally:
+            ai.run = old
+        self.assertIn('(УВС, ст. 295)', out)      # искажённое «УНС» — по номеру статьи
+        self.assertNotIn('777', out)
 
 
 if __name__ == '__main__':

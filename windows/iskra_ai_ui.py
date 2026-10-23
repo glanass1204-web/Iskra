@@ -320,6 +320,38 @@ class AIMixin:
                 self.events.put(('call', enable))
         threading.Thread(target=work, daemon=True).start()
 
+    def ai_model_window(self):
+        """Выбор нейросети, если в папке models их несколько (основная Qwen и, например, GigaChat)."""
+        from iskra_tools_ui import _window
+        win = _window(self, 'выбрать нейросеть', '620x340')
+        try:
+            moved = ai.gather_parts(force=True)        # архивы новой модели распакованы каждый в свою папку
+        except OSError:
+            moved = 0
+        if moved:
+            self.say(f'Перенесла части нейросети в папку models: {moved}.', 'proof')
+        models = ai.all_models()
+        ttk.Label(win, text='Модели в папке models. Основная — Qwen (точнее держится фактов). GigaChat (Сбер) — '
+                            'примерно в 2,5 раза быстрее, но чаще добавляет то, чего нет в материалах: проверяйте '
+                            'подсвеченные числа и основания.', wraplength=580).pack(anchor='w', padx=12, pady=(10, 6))
+        current = ai.model_label(ai.local_files()[1])
+        choice = tk.StringVar(value=current)
+        for name, whole in models:
+            rb = ttk.Radiobutton(win, text=name + ('' if whole else '  — не хватает частей, распакуйте все архивы'),
+                                 value=name, variable=choice)
+            rb.pack(anchor='w', padx=20, pady=2)
+            if not whole:
+                rb.state(['disabled'])
+        if not models:
+            ttk.Label(win, text='Моделей нет: нужна версия Искры «с нейросетью».', style='Muted.TLabel').pack(anchor='w', padx=20)
+
+        def save():
+            ai.choose_model(choice.get())
+            self.say(f'Нейросеть: {choice.get()}. Загрузится при следующем ответе.', 'proof')
+            win.destroy()
+        ttk.Button(win, text='Выбрать', style='Accent.TButton', command=save).pack(side='right', padx=12, pady=10)
+        return win
+
     def ai_check(self):
         """Меню «Файл → Проверить нейросеть»: короткий настоящий ответ модели или понятная причина сбоя."""
         self.ai_ready = ai.available()
