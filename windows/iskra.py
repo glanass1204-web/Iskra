@@ -26,7 +26,7 @@ from iskra_index import ROOT, extract, index_folder, search_docs, forget_folder,
 import iskra_assistant as assistant
 
 ROOT.mkdir(parents=True, exist_ok=True)
-VERSION = '1.10.6'
+VERSION = '1.10.7'
 ACCENT = '#24518A'
 
 

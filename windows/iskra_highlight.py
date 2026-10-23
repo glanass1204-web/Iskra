@@ -449,11 +449,16 @@ def merge(template, sources, output, mark=True, accept=(), days=True, threshold=
                         continue
                     done.add(id(c))
                     goal = dst[target][mapping[j]]
-                    if norm(c.text) == norm(goal.text):
-                        continue                               # значение как в образце — менять нечего
+                    # Зелёная/салатовая заливка — отметка, если у этой же ячейки образца её нет (в образце прошлой
+                    # недели зелёные ячейки есть, но это не значит, что новая заливка — «раскраска таблицы»).
+                    if not c.green and _green_hex(c.fill) and c.fill != goal.fill and norm(c.text):
+                        c.paragraphs = [[(t, True) for t, _ in segs] for segs in c.paragraphs]
+                        c.green = True
+                    if norm(c.text) == norm(goal.text) and not c.green:
+                        continue                               # значение как в образце и не отмечено — менять нечего
                     col = next(k for k, x in enumerate(dst[target]) if x is goal)   # объединённая ячейка — один адрес
                     uid = (str(path), t_index, r_index, j)
-                    if c.green or uid in accept:
+                    if c.green or uid in accept:            # отмечено — переносится, даже если текст тот же («Авдеевка»)
                         put(best, dst, target, col, c, name)
                     elif norm(c.text):                         # пустая ячейка у исполнителя — «не заполнил», не изменение
                         report.unmarked.append({'id': uid, 'file': name, 'object': _row_label(dst[target]),
@@ -472,8 +477,6 @@ def merge(template, sources, output, mark=True, accept=(), days=True, threshold=
             if best is None or score < 0.5:
                 report.unplaced.append(f'{name}: абзац «{text[:120]}» — нет похожего абзаца в образце')
                 continue
-            if norm(text) == norm(dst_pars[best].text):
-                continue                                   # отмечено, но текст как в образце
             par_values.setdefault(best, {}).setdefault(norm(text), [segs, []])[1].append(name)
         if not found_marks:
             report.files_without_marks.append(name)
@@ -486,7 +489,8 @@ def merge(template, sources, output, mark=True, accept=(), days=True, threshold=
         if len(variants) == 1:
             src_cell, files = next(iter(variants.values()))
             set_cell(cell, src_cell.paragraphs, mark)
-            report.placed.append(f'{where}: «{src_cell.text}» ({", ".join(files)})')
+            same = ' — то же значение, отмечено как изменение' if norm(old) == norm(src_cell.text) else ''
+            report.placed.append(f'{where}: «{src_cell.text}» ({", ".join(files)}){same}')
             report.changes.append({'object': label, 'column': header, 'old': old, 'new': src_cell.text, 'files': files})
         else:
             text = '[УТОЧНИТЬ: ' + ' или '.join(f'{v[0].text} ({", ".join(v[1])})' for v in variants.values()) + ']'

@@ -171,13 +171,15 @@ class Merge(unittest.TestCase):
         self.assertEqual(t.cell(4, 2).text, '43 км')
         self.assertEqual(t.cell(4, 5).text, '27/4')
         self.assertEqual(t.cell(4, 6).text, 'с-в окраина ЗАЛУПИНСК\nПЕЧОРИНСК')
-        self.assertEqual(t.cell(4, 0).text, 'КП 5447 обр СпН')            # отмечено, но не менялось — без изменений
+        self.assertEqual(t.cell(4, 0).text, 'КП 5447 обр СпН')            # отмечено, текст тот же — перенесено
+        self.assertTrue(any(r.font.highlight_color for r in t.cell(4, 0).paragraphs[0].runs))   # и выделено как изменение
         self.assertEqual(t.cell(2, 2).text, '77 км')                      # заливка образца — не изменение
         self.assertEqual(len(t.rows), 9)                                   # новые строки не добавлены лишние
         self.assertEqual(t.cell(5, 0).text, 'КП 101 мсп')                 # новая — в первую пустую строку раздела
         self.assertEqual(t.cell(5, 3).text, 'НШ м-р Иванов И.И.')
         self.assertEqual(rep.unplaced, [])
-        self.assertEqual(len(rep.placed), 3)
+        self.assertEqual(len(rep.placed), 4)
+        self.assertTrue(any('то же значение' in p for p in rep.placed))
         self.assertEqual(len(rep.added_rows), 1)
         self.assertIn('СЕВЕРОДОНЕЦКОЕ', rep.added_rows[0])
 
@@ -275,6 +277,41 @@ class Merge(unittest.TestCase):
         self.assertTrue(H._green_hex('C6EFCE'))
         self.assertFalse(H._green_hex('FFFF00'))
         self.assertFalse(H._green_hex('D9D9D9'))
+
+
+class SameValue(unittest.TestCase):
+    def test_same_name_marked_green_or_lime_is_transferred(self):
+        """«Авдеевка» → «Авдеевка», но написано зелёным (шрифт), салатовым маркером или салатовой заливкой — переносится."""
+        from docx.shared import RGBColor
+        from docx.enum.text import WD_COLOR_INDEX
+
+        def build(name, how=None, template_green=False):
+            d = Document()
+            t = d.add_table(rows=3, cols=3)
+            for k, h in enumerate(['Наименование ПУ', 'Положение', 'Удаление']):
+                t.cell(0, k).text = h
+            for r, (kp, place, km) in enumerate((('КП 1', 'Авдеевка', '20 км'), ('КП 2', 'Покровск', '35 км')), 1):
+                t.cell(r, 0).text, t.cell(r, 2).text = kp, km
+                run = t.cell(r, 1).paragraphs[0].add_run(place)
+                if r == 1 and how == 'font':
+                    run.font.color.rgb = RGBColor(0x00, 0xB0, 0x50)
+                if r == 1 and how == 'marker':
+                    run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
+                if r == 1 and how == 'fill':
+                    shade(t.cell(r, 1), '92D050')
+            if template_green:
+                shade(t.cell(2, 2), '92D050')              # в образце прошлой недели — своя салатовая ячейка
+            d.save(TMP / name)
+            return TMP / name
+        for how in ('font', 'marker', 'fill'):
+            template = build('образец_авд.docx', template_green=True)
+            out = TMP / f'итог_{how}.docx'
+            rep = H.merge(template, [build(f'присланный_{how}.docx', how)], out)
+            cell = Document(str(out)).tables[0].cell(1, 1)
+            self.assertEqual(cell.text, 'Авдеевка', how)
+            self.assertTrue(any(r.font.highlight_color for r in cell.paragraphs[0].runs), how)
+            self.assertEqual(len(rep.placed), 1, how)
+            self.assertIn('Авдеевка', rep.placed[0])
 
 
 if __name__ == '__main__':
