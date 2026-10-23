@@ -92,7 +92,8 @@ if __name__ == '__main__':
     binary, model = ai.local_files()
     if not binary.is_file() or model is None:
         sys.exit(f'Нет движка или модели в {ai.BASE}')
-    print(f'Модель: {model.name}, движок: {binary.name}\n', flush=True)
+    print(f'Модель: {model.name}, движок: {binary.name}, формат: {ai.family(model)}, '
+          f'ключи движка: {ai.engine_extra(model) or "нет"}\n', flush=True)
     total = time.time()
     for name, job in TASKS:
         t = time.time()
@@ -105,3 +106,4 @@ if __name__ == '__main__':
             text = f'ОШИБКА: {exc}'
         print(f'===== {name} ({time.time() - t:.1f} с)\n{text}\n', flush=True)
     print(f'Всего: {time.time() - total:.0f} с')
+    print('Ключи, с которыми движок не запустился (работал без них):', [str(m) for m in ai.SERVER.no_extra] or 'нет')

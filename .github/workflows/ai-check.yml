@@ -18,9 +18,10 @@ jobs:
       matrix:
         model:
           - https://huggingface.co/bartowski/Qwen_Qwen3.5-4B-GGUF/resolve/main/Qwen_Qwen3.5-4B-Q4_K_M.gguf
-          # кандидаты под 16 ГБ памяти: умнее (9B) и отечественная быстрая MoE (10B, из них 1,8B на слово)
-          - https://huggingface.co/bartowski/Qwen_Qwen3.5-9B-GGUF/resolve/main/Qwen_Qwen3.5-9B-Q4_K_M.gguf
-          - https://huggingface.co/ai-sage/GigaChat3.1-10B-A1.8B-GGUF/resolve/main/GigaChat3.1-10B-A1.8B-q4_K_M.gguf
+          # та же Qwen3.5-4B, но с головой MTP — движок пишет несколько слов за шаг (быстрее, тот же текст)
+          - https://huggingface.co/unsloth/Qwen3.5-4B-MTP-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf
+          # Google Gemma 4 E4B (4,6 ГБ) — формат реплик берётся из шаблона в файле модели
+          - https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_0.gguf
     defaults:
       run:
         working-directory: windows

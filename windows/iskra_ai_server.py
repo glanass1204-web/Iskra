@@ -71,51 +71,67 @@ class Server:
         self._watch = None
         self.last_cut = False           # последний ответ упёрся в предел длины
         self.loading = False            # модель грузится в память
+        self.no_extra = set()           # модели, с которыми движок не запустился с доп. ключами
+        self.extra = []                 # ключи, с которыми запущен сейчас
 
     # ---------- запуск ----------
 
     def alive(self):
         return self.proc is not None and self.proc.poll() is None
 
-    def ensure(self, prefix, binary, model, home, context, cancel=None, on_text=None, log=None):
+    def ensure(self, prefix, binary, model, home, context, cancel=None, on_text=None, log=None, extra=()):
+        """extra — дополнительные ключи движка (ускорение MTP, шаблон модели). Не запустился с ними —
+        пробуем без них: работать медленнее лучше, чем не работать."""
         with self.lock:
             if self.alive() and self.model == model:
                 return
             self.stop()
             if self.failed_for == model:
                 raise ServerError('быстрый режим уже не запустился')
-            self.port, self.key, self.model = _free_port(), secrets.token_hex(16), model
+            extra = list(extra) if model not in self.no_extra else []
             try:
-                rel = str(Path(model).relative_to(home))
-            except ValueError:
-                rel = str(model)
-            command = prefix + [str(binary), '-m', rel, '-c', str(context), '--host', '127.0.0.1',
-                                '--port', str(self.port), '--api-key', self.key, '-ngl', '0', '-np', '1']
+                self._start(prefix, binary, model, home, context, cancel, on_text, log, extra)
+            except ServerError:
+                if not extra or (cancel is not None and cancel.is_set()):
+                    raise
+                self.no_extra.add(model)
+                self.failed_for = None
+                self._start(prefix, binary, model, home, context, cancel, on_text, log, [])
+            self.extra = extra if model not in self.no_extra else []
+
+    def _start(self, prefix, binary, model, home, context, cancel, on_text, log, extra):
+        self.port, self.key, self.model = _free_port(), secrets.token_hex(16), model
+        try:
+            rel = str(Path(model).relative_to(home))
+        except ValueError:
+            rel = str(model)
+        command = prefix + [str(binary), '-m', rel, '-c', str(context), '--host', '127.0.0.1',
+                            '--port', str(self.port), '--api-key', self.key, '-ngl', '0', '-np', '1'] + list(extra)
+        if log:
+            Path(log).parent.mkdir(parents=True, exist_ok=True)
+        out = open(log, 'ab') if log else subprocess.DEVNULL
+        try:
+            self.proc = subprocess.Popen(command, stdout=out, stderr=out, stdin=subprocess.DEVNULL, cwd=str(home),
+                                         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        except OSError as exc:
+            self.failed_for = model
+            raise ServerError(str(exc)) from exc
+        finally:
             if log:
-                Path(log).parent.mkdir(parents=True, exist_ok=True)
-            out = open(log, 'ab') if log else subprocess.DEVNULL
-            try:
-                self.proc = subprocess.Popen(command, stdout=out, stderr=out, stdin=subprocess.DEVNULL, cwd=str(home),
-                                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-            except OSError as exc:
-                self.failed_for = model
-                raise ServerError(str(exc)) from exc
-            finally:
-                if log:
-                    out.close()
-            self.job = _job_kill_on_close(self.proc)
-            if on_text:
-                on_text('… загружаю нейросеть в память (один раз за сеанс, до минуты)')
-            started = time.monotonic()
-            self.loading = True
-            try:
-                self._wait_loaded(model, cancel, started)
-            finally:
-                self.loading = False
-            self.last_used = time.monotonic()
-            if self._watch is None:
-                self._watch = threading.Thread(target=self._idle_watch, daemon=True)
-                self._watch.start()
+                out.close()
+        self.job = _job_kill_on_close(self.proc)
+        if on_text:
+            on_text('… загружаю нейросеть в память (один раз за сеанс, до минуты)')
+        started = time.monotonic()
+        self.loading = True
+        try:
+            self._wait_loaded(model, cancel, started)
+        finally:
+            self.loading = False
+        self.last_used = time.monotonic()
+        if self._watch is None:
+            self._watch = threading.Thread(target=self._idle_watch, daemon=True)
+            self._watch.start()
 
     def _wait_loaded(self, model, cancel, started):
         """Ждать, пока движок загрузит модель и ответит на /health."""
@@ -165,6 +181,22 @@ class Server:
         self.job = None
 
     # ---------- ответ ----------
+
+    def apply_template(self, messages):
+        """Задание в формате самой модели (шаблон из файла модели) — для моделей, формат которых Искра не знает."""
+        body = json.dumps({'messages': messages, 'chat_template_kwargs': {'enable_thinking': False}},
+                          ensure_ascii=False).encode('utf-8')
+        conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=60)
+        try:
+            conn.request('POST', '/apply-template', body=body, headers={
+                'Content-Type': 'application/json', 'Authorization': 'Bearer ' + self.key})
+            resp = conn.getresponse()
+            data = resp.read()
+            if resp.status != 200:
+                raise ServerError(f'шаблон модели: {resp.status}')
+            return json.loads(data.decode('utf-8'))['prompt']
+        finally:
+            conn.close()
 
     def complete(self, prompt, max_tokens, temperature, on_text, cancel, timeout, clean):
         """Текст ответа по мере написания. Остановка — закрытием соединения: движок сразу бросает задачу."""

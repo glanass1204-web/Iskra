@@ -21,7 +21,7 @@ USE_SERVER = True           # быстрый режим: модель остаё
 MAX_SOURCE_CHARS = 9000
 
 SYSTEM = ('Ты — Искра, помощник штаба воинской части Вооружённых Сил РФ по служебным документам: телеграммы, '
-          'указания, рапорты, донесения, боевые расположения. Пишешь только по-русски, '
+          'указания, рапорты, отпускные билеты, боевые расположения. Пишешь только по-русски, '
           'официально-деловым языком, принятым в войсках, грамотно, без лишних слов. '
           'Воинские звания, должности и принятые сокращения (л/с, в/ч, ВВСТ, ГСМ, ПУ, КП, ЗКП, НШ, ВрИО, ППД, ПВД, ЛБС) '
           'пиши как в материалах — не расшифровывай и не заменяй. Время в военной записи: «06.00». '
@@ -246,7 +246,34 @@ GIGA_DEV = ('Ниже будет приведён диалог. Каждая р�
 
 
 def family(model):
-    return 'gigachat' if model is not None and 'gigachat' in Path(model).name.lower() else 'qwen'
+    """Формат реплик модели: qwen (ChatML — Искра пишет сама), gigachat (свой формат — тоже сама), other —
+    формат берётся из шаблона в файле модели (Gemma и другие)."""
+    name = Path(model).name.lower() if model is not None else 'qwen'
+    if 'gigachat' in name:
+        return 'gigachat'
+    return 'qwen' if 'qwen' in name or not name.endswith('.gguf') else 'other'
+
+
+def engine_extra(model):
+    """Доп. ключи движка: ускорение MTP, если в файле модели есть его голова; шаблон из файла для других моделей."""
+    import iskra_gguf
+    extra = []
+    if model is not None and iskra_gguf.has_mtp(model):
+        extra += ['--spec-type', 'draft-mtp']             # предсказание нескольких слов сразу — тот же текст быстрее
+    if family(model) == 'other':
+        extra += ['--jinja']
+    return extra
+
+
+def chatml_messages(prompt):
+    """ChatML → [{'role', 'content'}] без незаконченной реплики ассистента."""
+    out = []
+    for role, text in CHATML.findall(prompt):
+        text = THINK.sub('', text).strip()
+        if role == 'assistant' and not text:
+            continue
+        out.append({'role': role, 'content': text})
+    return out
 
 
 def for_model(prompt, model):
@@ -337,7 +364,9 @@ def _run_server(server, model, prompt, max_tokens, on_text, cancel, timeout, tem
             log.unlink()
     except OSError:
         log = None
-    SERVER.ensure(ENGINE_PREFIX, server, model, home, CONTEXT_TOKENS, cancel, on_text, log)
+    SERVER.ensure(ENGINE_PREFIX, server, model, home, CONTEXT_TOKENS, cancel, on_text, log, extra=engine_extra(model))
+    if family(model) == 'other' and '<|im_start|>' in prompt:
+        prompt = SERVER.apply_template(chatml_messages(prompt))
     try:
         text = SERVER.complete(prompt, max_tokens, temperature, on_text, cancel, timeout, clean)
     except TimeoutError:
@@ -372,7 +401,8 @@ def warm(base=None):
         return False
     try:
         home = model.parent.parent
-        SERVER.ensure(ENGINE_PREFIX, server, model, home, CONTEXT_TOKENS, log=home / 'data' / 'ai_server.log')
+        SERVER.ensure(ENGINE_PREFIX, server, model, home, CONTEXT_TOKENS, log=home / 'data' / 'ai_server.log',
+                      extra=engine_extra(model))
         return True
     except ServerError as exc:
         write_log('Быстрый режим недоступен: ' + str(exc))
