@@ -332,7 +332,9 @@ def clear_marks(doc):
 def _style_font(style):
     """(имя шрифта, размер в полупунктах) по цепочке стилей."""
     name = size = None
-    while style is not None and (name is None or size is None):
+    seen = set()
+    while style is not None and (name is None or size is None) and id(style.element) not in seen:
+        seen.add(id(style.element))                    # стили могут ссылаться друг на друга по кругу
         rpr = style.element.find(qn('w:rPr'))
         if rpr is not None:
             f = rpr.find(qn('w:rFonts'))
@@ -356,10 +358,23 @@ def _doc_default_font(doc):
     return name or 'Times New Roman', size or '24'
 
 
+def _para_style(p_el, doc):
+    """Стиль абзаца шаблона по его коду (у абзаца из ячейки нет «родителя», через python-docx его не узнать)."""
+    ps = p_el.find(qn('w:pPr') + '/' + qn('w:pStyle')) if p_el is not None else None
+    sid = ps.get(qn('w:val')) if ps is not None else None
+    try:
+        if sid:
+            for st in doc.styles:
+                if st.style_id == sid:
+                    return st
+        return doc.styles['Normal']
+    except (KeyError, ValueError, AttributeError):
+        return None
+
+
 def _exact_rpr(r_el, p_el, doc):
     """Свойства фрагмента шаблона с ЯВНО прописанными шрифтом и размером (а не «как в стиле»): в другом документе
     стиль «Обычный» может быть другим — шрифт должен совпасть с шаблоном буквально."""
-    from docx.text.paragraph import Paragraph
     rpr = r_el.find(qn('w:rPr')) if r_el is not None else None
     if rpr is None and p_el is not None:
         mark = p_el.find(qn('w:pPr') + '/' + qn('w:rPr'))       # пустая ячейка: шрифт знака абзаца
@@ -374,7 +389,7 @@ def _exact_rpr(r_el, p_el, doc):
     name = (f.get(qn('w:ascii')) or f.get(qn('w:hAnsi'))) if f is not None else None
     size = z.get(qn('w:val')) if z is not None else None
     if (name is None or size is None) and p_el is not None:
-        sn, ss = _style_font(Paragraph(p_el, None).style) if p_el.find(qn('w:pPr')) is not None else (None, None)
+        sn, ss = _style_font(_para_style(p_el, doc))
         dn, ds = _doc_default_font(doc)
         name, size = name or sn or dn, size or ss or ds
     if f is None:
@@ -758,7 +773,17 @@ def merge(template, sources, output, mark=True, accept=(), days=True, threshold=
             _recount(grid(table), totals_before[t], report, mark)
     if days:
         update_days(doc, today=today, threshold=threshold, report=report)
-    apply_format(doc, template)                          # строго как в шаблоне: шрифт везде одинаковый
+    try:
+        apply_format(doc, template)                      # строго как в шаблоне: шрифт везде одинаковый
+    except Exception as exc:                             # noqa: BLE001 — изменения важнее: документ всё равно сохраняем
+        report.unplaced.append(f'Оформление по шаблону применено не полностью ({type(exc).__name__}) — '
+                               'изменения перенесены, проверьте шрифт. Пришлите «Сообщить об ошибке».')
+        try:
+            import sys
+            import iskra_bugreport
+            iskra_bugreport.log_crash('Оформление по шаблону', *sys.exc_info())
+        except Exception:                                # noqa: BLE001
+            pass
     report.snapshot = snapshot(doc)
     Path(output).parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output))

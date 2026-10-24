@@ -462,5 +462,42 @@ class StayRestart(unittest.TestCase):
         self.assertEqual(t2.cell(2, 1).text, '35 км')
 
 
+class StyledTemplate(unittest.TestCase):
+    def test_template_paragraphs_with_own_styles(self):
+        """Отчёт об ошибке 24.10: шаблон пользователя, у абзацев свои стили (Standard, Text body…) без шрифта
+        в тексте — перенос падал (AttributeError: 'NoneType' object has no attribute 'part')."""
+        from docx.shared import Pt
+        from docx.enum.style import WD_STYLE_TYPE
+        from docx.oxml.ns import qn as q
+        d = Document()
+        st = d.styles.add_style('Text body', WD_STYLE_TYPE.PARAGRAPH)
+        st.font.name, st.font.size = 'Times New Roman', Pt(10)
+        d.add_paragraph('Сведения о ПУ', style=st)
+        t = d.add_table(rows=3, cols=2)
+        for k, h in enumerate(['Наименование ПУ', 'Положение']):
+            t.cell(0, k).paragraphs[0].style = st
+            t.cell(0, k).paragraphs[0].add_run(h)
+        for r in (1, 2):
+            for k in range(2):
+                t.cell(r, k).paragraphs[0].style = st
+        t.cell(1, 0).paragraphs[0].add_run('КП 5447')
+        t.cell(1, 1).paragraphs[0].add_run('ЗАЛУПИНСК')
+        d.save(TMP / 'шаблон_стили.docx')
+        sent = Document()
+        st2 = sent.add_table(rows=2, cols=2)
+        st2.cell(0, 0).text, st2.cell(0, 1).text, st2.cell(1, 0).text = 'Наименование ПУ', 'Положение', 'КП 5447'
+        from docx.shared import RGBColor
+        run = st2.cell(1, 1).paragraphs[0].add_run('ПЕЧОРИНСК')
+        run.font.color.rgb = RGBColor(0x00, 0xB0, 0x50)
+        sent.save(TMP / 'рота_стили.docx')
+        out = TMP / 'итог_стили.docx'
+        H.merge(TMP / 'шаблон_стили.docx', [TMP / 'рота_стили.docx'], out, mark=H.FONT, base=TMP / 'шаблон_стили.docx')
+        res = Document(str(out))
+        self.assertEqual(res.tables[0].cell(1, 1).text, 'ПЕЧОРИНСК')
+        rpr = res.tables[0].cell(1, 1).paragraphs[0].runs[0]._r.find(q('w:rPr'))
+        self.assertEqual(rpr.find(q('w:rFonts')).get(q('w:ascii')), 'Times New Roman')
+        self.assertEqual(rpr.find(q('w:sz')).get(q('w:val')), '20')          # 10 пт — из стиля шаблона
+
+
 if __name__ == '__main__':
     unittest.main()
