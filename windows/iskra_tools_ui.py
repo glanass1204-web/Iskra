@@ -22,6 +22,7 @@ import iskra_ai
 import iskra_drafts
 import iskra_highlight
 
+OFFICE_TYPES = [('Word и Excel', '*.docx *.doc *.xlsx *.xls *.xlsm'), ('Word', '*.docx *.doc'), ('Excel', '*.xlsx *.xls *.xlsm')]
 DOC_TYPES = [('Word и текст', '*.docx *.txt'), ('Все документы', '*.docx *.xlsx *.pptx *.pdf *.txt *.md *.csv')]
 
 
@@ -441,7 +442,8 @@ class ToolsMixin:
         import iskra_pu
         win = _window(self, 'перенос изменений по подсветке', '860x640')
         settings = self._highlight_settings()
-        ttk.Label(win, text='Исполнители отмечают свои изменения зелёным или салатовым (цветом шрифта, маркером или заливкой '
+        ttk.Label(win, text='Word или Excel (и старые .doc/.xls — Искра пересохранит их сама). '
+                            'Исполнители отмечают свои изменения зелёным или салатовым (цветом шрифта, маркером или заливкой '
                             'ячейки). Искра перенесёт всё отмеченное из присланных файлов в один документ по образцу: '
                             'таблицы — по заголовкам столбцов и по строке (город, фамилия), а не по номеру; новые строки '
                             'добавит, «Итого» и «сут.» пересчитает. Присланные файлы не меняются.', wraplength=830).pack(anchor='w', padx=12, pady=8)
@@ -452,7 +454,7 @@ class ToolsMixin:
             ttk.Entry(row, textvariable=var).pack(side='left', fill='x', expand=True, padx=6)
 
             def pick():
-                path = filedialog.askopenfilename(parent=win, title=title, filetypes=[('Word', '*.docx')])
+                path = filedialog.askopenfilename(parent=win, title=title, filetypes=OFFICE_TYPES)
                 if path:
                     var.set(path)
             ttk.Button(row, text='Выбрать…', command=pick).pack(side='left')
@@ -502,18 +504,14 @@ class ToolsMixin:
             return got, missing
 
         def add_paths(new):
-            old_format = [p for p in new if Path(p).suffix.lower() == '.doc']
             for p in new:
-                if Path(p).suffix.lower() == '.docx' and p not in paths:
+                if Path(p).suffix.lower() in ('.docx', '.doc', '.xlsx', '.xls', '.xlsm') and p not in paths:
                     paths.append(p); box.insert('end', Path(p).name + '   —   ' + str(Path(p).parent))
-            if old_format:
-                messagebox.showinfo('Старый формат', 'Файлы .doc не читаются — откройте их в Word и сохраните как .docx:\n' +
-                                    '\n'.join(Path(p).name for p in old_format), parent=win)
             check_senders()
 
         def add():
-            add_paths(list(filedialog.askopenfilenames(parent=win, title='Присланные документы',
-                                                       filetypes=[('Word', '*.docx *.doc')])))
+            add_paths(list(filedialog.askopenfilenames(parent=win, title='Присланные документы (Word или Excel)',
+                                                       filetypes=OFFICE_TYPES)))
 
         def remove():
             for i in reversed(box.curselection()):
@@ -539,17 +537,26 @@ class ToolsMixin:
             sources = [p for p in paths if p not in (base, into)] or paths
             if not sources:
                 status.set('Добавьте присланные документы.'); return
+            excel = Path(base).suffix.lower() in ('.xlsx', '.xls', '.xlsm')
+            family = ('.xlsx', '.xls', '.xlsm') if excel else ('.docx', '.doc')
+            other = [Path(p).name for p in sources + ([into] if into else []) if Path(p).suffix.lower() not in family]
+            if other:
+                status.set(('Шаблон — Excel, а это Word: ' if excel else 'Шаблон — Word, а это Excel: ') + ', '.join(other)
+                           + '. Шаблон, документ и присланные должны быть одного вида.'); return
             try:
                 limit = int(threshold.get()) if threshold.get().strip() else None
             except ValueError:
                 status.set('Порог суток — целое число (например 3) или пусто.'); return
             out = out_path
             if out is None:
-                out = filedialog.asksaveasfilename(parent=win, defaultextension='.docx', filetypes=[('Word', '*.docx')],
+                ext = '.xlsx' if excel else '.docx'
+                out = filedialog.asksaveasfilename(parent=win, defaultextension=ext,
+                                                   filetypes=[('Excel', '*.xlsx')] if excel else [('Word', '*.docx')],
                                                    initialdir=str(Path(into or base).parent),
-                                                   initialfile=f'{Path(into or base).stem} — сводный {date.today():%d.%m.%Y}.docx')
+                                                   initialfile=f'{Path(into or base).stem} — сводный {date.today():%d.%m.%Y}{ext}')
                 if not out:
                     return
+                out = str(Path(out).with_suffix(ext))
                 if Path(out).resolve() in {Path(x).resolve() for x in (base, into) if x}:
                     status.set('Сохраните под другим именем — шаблон и документ должны остаться как были.'); return
             how = MARKS.get(mark.get(), iskra_highlight.FONT)
@@ -562,7 +569,15 @@ class ToolsMixin:
 
             def work():
                 try:
-                    rep = iskra_highlight.merge(base, sources, out, accept=accept, **options)
+                    import iskra_office
+                    tpl, src_files = iskra_office.convert(base), [iskra_office.convert(p) for p in sources]
+                    if options.get('base'):
+                        options['base'] = iskra_office.convert(options['base'])
+                    if excel:
+                        import iskra_highlight_xlsx
+                        rep = iskra_highlight_xlsx.merge(tpl, src_files, out, accept=accept, **options)
+                    else:
+                        rep = iskra_highlight.merge(tpl, src_files, out, accept=accept, **options)
                     iskra_pu.save_snapshot(rep.snapshot, out, sources)
                     self.events.put(('call', lambda: done(rep)))
                 except Exception as exc:                   # noqa: BLE001 — показать понятную причину

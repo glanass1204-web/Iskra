@@ -265,9 +265,42 @@ def _is_numbering(row):
     return len(texts) > 1 and texts == [str(i) for i in range(1, len(texts) + 1)]
 
 
-def match_row(src_row, mapping, dst_rows, start=None, include_green=False):
-    """Строка образца для строки присланной таблицы — по неподсвеченным ячейкам. (индекс, как нашли) или (None, '')."""
+IDENT_HEAD = re.compile(r'наименовани|подразделени|(?<![а-яё])пу(?![а-яё])|фамили|ф\.?\s?и\.?\s?о|объект|позывн', re.IGNORECASE)
+
+
+def ident_column(headers):
+    """Столбец, по которому строка узнаётся («Наименование ПУ», «Подразделение», «Фамилия»); нет — первый."""
+    return next((k for k, h in enumerate(headers) if IDENT_HEAD.search(h or '')), 0)
+
+
+def _by_ident(src_row, mapping, dst_rows, start, ident):
+    """Строка с тем же названием («КП 5447 обр СпН») — даже если всё остальное в ней изменилось и отмечено зелёным
+    (переехали: км, люди, положение, сутки). Иначе такую строку принимали за новую — получалось задвоение."""
+    if ident is None or ident not in mapping or ident >= len(src_row):
+        return None
+    name = norm(src_row[ident].text)
+    if len(name) < 2:
+        return None
+    k = mapping[ident]
+    same = [i for i in range(start, len(dst_rows))
+            if k < len(dst_rows[i]) and not is_section(dst_rows[i]) and norm(dst_rows[i][k].text) == name]
+    if len(same) == 1:
+        return same[0]
+    if not same:
+        close = [i for i in range(start, len(dst_rows)) if k < len(dst_rows[i]) and not is_section(dst_rows[i])
+                 and _similar(src_row[ident].text, dst_rows[i][k].text) >= 0.9]
+        if len(close) == 1:
+            return close[0]
+    return None
+
+
+def match_row(src_row, mapping, dst_rows, start=None, include_green=False, ident=None):
+    """Строка образца для строки присланной таблицы: сначала по названию (ident — столбец «Наименование…»), потом
+    по неподсвеченным ячейкам. (индекс, как нашли) или (None, '')."""
     start = getattr(dst_rows, 'head', 1) if start is None else start
+    found = _by_ident(src_row, mapping, dst_rows, start, ident)
+    if found is not None:
+        return found, ''
     keys, seen = [], set()
     for j, c in enumerate(src_row):
         if j in mapping and (include_green or not c.all_green) and norm(c.text) and id(c) not in seen:
@@ -672,10 +705,11 @@ def merge(template, sources, output, mark=True, accept=(), days=True, threshold=
                 if is_section(row) or is_empty(row):
                     continue
                 marked = any(c.green for c in row)
-                target, why = match_row(row, mapping, dst)
+                ident = ident_column(g.headers)
+                target, why = match_row(row, mapping, dst, ident=ident)
                 if target is None and marked and all(c.all_green or not norm(c.text) for c in row):
                     # Вся строка зелёная: это либо новая строка, либо старая, целиком отмеченная, — сверяем по всем ячейкам.
-                    target, why = match_row(row, mapping, dst, include_green=True)
+                    target, why = match_row(row, mapping, dst, include_green=True, ident=ident)
                     if target is None:
                         add_row(best, g, r_index, row, mapping, name)
                         continue

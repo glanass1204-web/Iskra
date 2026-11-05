@@ -499,5 +499,55 @@ class StyledTemplate(unittest.TestCase):
         self.assertEqual(rpr.find(q('w:sz')).get(q('w:val')), '20')          # 10 пт — из стиля шаблона
 
 
+class MovedWholeRowGreen(unittest.TestCase):
+    def test_whole_row_green_no_duplicate_and_new_place_below(self):
+        """Жалоба 24.10: «задвоение, снизу новое местоположение не пишет». Подразделение переехало: км, люди,
+        телефоны, положение, сутки — всё зелёным, название тоже. Новый пункт дописан снизу через Shift+Enter.
+        Строка должна найтись по названию и обновиться, а не добавиться второй."""
+        from datetime import date
+        from docx.shared import RGBColor
+        heads = ['Наименование ПУ', 'Удаление от линии фронта', 'Старший на ПУ', 'Положение', 'Время нахождения в районе']
+        rows = [['КП 5447 обр СпН', '56 км', 'НШ п/п-к Залупа В.А.', 'с-в окраина ЗАЛУПИНСК', '4 сут. с 19.10.2026'],
+                ['КП 7001', '40 км', 'НШ м-р Иванов И.И.', 'ЛИМАН', '2 сут. с 21.10.2026']]
+
+        def build(name, data, green_row=None, shift_enter=False):
+            d = Document()
+            t = d.add_table(rows=1 + len(data) + 2, cols=5)
+            for k, h in enumerate(heads):
+                t.cell(0, k).text = h
+            for r, values in enumerate(data, 1):
+                for k, v in enumerate(values):
+                    par = t.cell(r, k).paragraphs[0]
+                    if shift_enter and '\n' in v:
+                        old, new = v.split('\n')
+                        par.add_run(old)
+                        run = par.add_run(); run.add_break(); run.add_text(new)
+                        if r == green_row:
+                            run.font.color.rgb = RGBColor(0x00, 0xB0, 0x50)
+                        continue
+                    run = par.add_run(v)
+                    if r == green_row:
+                        run.font.color.rgb = RGBColor(0x00, 0xB0, 0x50)
+            d.save(TMP / name)
+            return TMP / name
+        doc = build('было_весь.docx', rows)
+        now = [['КП 5447 обр СпН', '43 км', 'НШ м-р Петров П.П.', 'с-в окраина ЗАЛУПИНСК\nПЕЧОРИНСК', '1 сут. с 24.10.2026'],
+               rows[1]]
+        for shift in (True, False):
+            with self.subTest(shift_enter=shift):
+                sent = build('стало_весь.docx', now, green_row=1, shift_enter=shift)
+                out = TMP / 'итог_весь.docx'
+                rep = H.merge(doc, [sent], out, mark=H.FONT, base=doc, today=date(2026, 10, 24))
+                t = Document(str(out)).tables[0]
+                names = [r.cells[0].text for r in t.rows]
+                self.assertEqual(names.count('КП 5447 обр СпН'), 1, names)            # без задвоения
+                self.assertEqual(rep.added_rows, [])
+                self.assertEqual(t.cell(1, 1).text, '43 км')
+                self.assertEqual(t.cell(1, 2).text, 'НШ м-р Петров П.П.')
+                self.assertEqual(t.cell(1, 3).text, 'с-в окраина ЗАЛУПИНСК\nПЕЧОРИНСК')  # новый пункт снизу
+                self.assertEqual(t.cell(1, 4).text, '1 сут. с 24.10.2026')
+                self.assertEqual(t.cell(2, 1).text, '40 км')
+
+
 if __name__ == '__main__':
     unittest.main()
