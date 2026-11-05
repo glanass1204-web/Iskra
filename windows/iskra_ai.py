@@ -658,11 +658,12 @@ def raport_format(me=None):
             '<Кому: должность в дательном падеже («Командиру полка»), с новой строки звание и фамилия в дательном '
             '(«полковнику Кузнецову И. А.»); если не дано — Командиру войсковой части [НОМЕР]>\n'
             f'{frm}\n{iskra_compose.word_date()}\n\nРАПОРТ\n\n'
-            '<текст полностью, каждая просьба или доклад — с новой строки, с основаниями (статьи законов, приказы), '
-            'если они есть в задаче или материалах (не придумывай приказы, статьи, номера и даты оснований). '
-            'Начало — как принято в войсках: «Прошу …», «Прошу Вашего '
-            'ходатайства перед вышестоящим командованием о …» (если решает старший начальник), «Прошу полагать меня '
-            'прибывшим (убывшим) …» (прибытие, убытие), «Настоящим докладываю, что …» (доклад). Слова «доношу» нет>\n\n'
+            '<текст КОРОТКО, 1–3 предложения — только то, о чём сказано в задаче: ни других просьб, ни приложений, '
+            'ни мест, целей, имущества, оснований, которых в задаче нет (не придумывай приказы, статьи, номера и даты). '
+            'Начало — как принято в войсках: «Прошу …», «Прошу Вашего ходатайства перед вышестоящим командованием о …» '
+            '(если решает старший начальник), «Прошу полагать меня убывшим …» (в отпуск, в командировку, в госпиталь), '
+            '«Прошу полагать меня прибывшим …» (из отпуска, из командировки), «Настоящим докладываю, что …» (доклад). '
+            'Слова «доношу» нет>\n\n'
             f'{bottom}')
 
 
@@ -1001,7 +1002,12 @@ REF_NUM = re.compile(r'(?:№\s*)([\w-]*\d[\w/-]*)|(?<![\w./])(\d+(?:/\d+)+)(?![
 REPLY_WORDS = re.compile(r'ответ\w*|на\s+(?:вашу|ваш|телеграмм\w*|письм\w*|запрос\w*)', re.IGNORECASE)
 
 
-def fix_raport(text, me=None):
+LEAVING = re.compile(r'(прибывш)(\w*)(\s+(?:в|на)\s+(?:основн\w+\s+|дополнительн\w+\s+|очередн\w+\s+|отпуск\w*|'
+                     r'командировк\w*|госпитал\w*|служебн\w+|лечени\w*))', re.IGNORECASE)
+ARRIVING = re.compile(r'(убывш)(\w*)(\s+из\s+(?:основн\w+\s+)?(?:отпуск\w*|командировк\w*|госпитал\w*))', re.IGNORECASE)
+
+
+def fix_raport(text, me=None, task=''):
     """Рапорт от нейросети → форма как в войсках: адресат (что написала модель), «от …» и дата — от Искры
     (родительный падеж из «Мои реквизиты»), текст — модели, подпись — из реквизитов («звание — подпись — фамилия»)."""
     import iskra_compose as c
@@ -1022,7 +1028,18 @@ def fix_raport(text, me=None):
         own = re.findall(r'[А-ЯЁ][а-яё]{2,}', c._split_rank(sig[-1])[1])
         to = [l for l in to if not any(re.search(r'(?<![а-яё])' + w[:-1], l) for w in own)]
     to = to[:3] or ['Командиру войсковой части [НОМЕР]', '[звание] [Фамилия И. О.]']
+    if not any(re.match(r'^(Командир|Начальник|Заместител|Врио|ВрИО)\w*у\b', l) for l in to):
+        to = ['Командиру войсковой части [НОМЕР]'] + to            # «полковнику …» без должности — должность первой
     body = lines[i + 1:]
+    if 'приложени' not in (task or '').lower():          # «Приложение: копия приказа…» — не просили, не выдумываем
+        cut = next((n for n, l in enumerate(body) if re.match(r'^\s*Приложени', l, re.IGNORECASE)), None)
+        if cut is not None:
+            body = body[:cut]
+    body = [LEAVING.sub(lambda m: ('У' if m.group(1)[0].isupper() else 'у') + 'бывш' + m.group(2) + m.group(3), l)
+            for l in body]                              # «прибывшим в отпуск» — убывшим
+    body = [ARRIVING.sub(lambda m: ('П' if m.group(1)[0].isupper() else 'п') + 'рибывш' + m.group(2) + m.group(3), l)
+            for l in body]
+    body = [l for l in body if not re.search(r'\[(?:НАЗВАНИЕ|КРАТКОЕ|ОПИСАНИЕ|МЕСТО)[^\]]*\]', l)]   # пустые заглушки
     if sig:                                                # подпись модели — убрать, поставить свою
         names = {x.lower() for x in sig} | {c._split_rank(sig[-1])[1].lower()}
         while body and (not body[-1].strip() or body[-1].strip().lower() in names
@@ -1504,7 +1521,7 @@ def _write(task, sources=(), me=None, **kw):
         raw = run(chat_prompt(user), max_tokens=max_tokens, **kw)
     # Развернуть есть чем, только если есть материалы или образец: из пустоты получится «вода» и выдумки.
     need = max(min(MIN_BODY, int(len(block) * 0.35)), int(sample_len * 0.7)) if (block or sample_len) else 0
-    if need and len(body_of(raw)) < need and CUT_MARK not in raw:
+    if need and not raport and len(body_of(raw)) < need and CUT_MARK not in raw:   # рапорт короткий по сути
         try:
             raw = expand(raw, task, block, need, max_tokens=max_tokens, **kw)   # вышло коротко — второй круг
         except AIError:
@@ -1527,7 +1544,7 @@ def _write(task, sources=(), me=None, **kw):
         write_log('Нейросеть пропустила пункты, дописаны: ' + '; '.join(missed))
     out = ensure_reference(out, task, sources)            # «На № …» в ответе на названный документ
     if raport and not has_template():
-        out = fix_raport(out, me)
+        out = fix_raport(out, me, own_task)
     else:
         out = strip_shell(out, me)                         # шапку и подпись Искра берёт из шаблона при сохранении
     return out, truncated

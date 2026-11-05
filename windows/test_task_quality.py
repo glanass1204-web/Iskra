@@ -143,5 +143,32 @@ class InventedBasis(unittest.TestCase):
         self.assertIn('Во исполнение приказа командира полка № 7', out)
 
 
+class RaportFromEval(unittest.TestCase):
+    def test_raport_short_no_expand_no_inventions(self):
+        """Проверка нейросети 05.11: рапорт «развернули» выдумками, «прибывшим в отпуск», «Приложение», заглушки,
+        нет «Командиру войсковой части»."""
+        model = ('полковнику [Фамилия И.О.]\nот командир 1 роты\nкапитан И.И. Иванов\n\nРАПОРТ\n\n'
+                 'Прошу предоставить мне основной отпуск за 2026 год с 01.11.2026.\n'
+                 'Я находился в [НАЗВАНИЕ ОРГАНИЗАЦИИ], где выполнял задачи.\n'
+                 'Прошу полагать меня прибывшим в отпуск с 01.11.2026.\n\nПриложение:\n1. Копия приказа.\n\n'
+                 'Командир 1 роты\nкапитан И.И. Иванов')
+        calls = []
+        old = ai.run
+        ai.run = lambda prompt, **kw: calls.append(prompt) or model
+        try:
+            out, _ = ai.write('напиши рапорт на основной отпуск с 01.11.2026', [('м', 'Положение о порядке отпусков. ' * 40)],
+                              me={'signature': 'Командир 1 роты\nкапитан И.И. Иванов'})
+        finally:
+            ai.run = old
+        self.assertEqual(len(calls), 1)                              # без «разверни подробнее»
+        self.assertTrue(out.startswith('Командиру войсковой части [НОМЕР]\nполковнику'), out)
+        self.assertIn('от командира 1 роты\nкапитана И.И. Иванова', out)
+        self.assertIn('Прошу полагать меня убывшим в отпуск с 01.11.2026', out)
+        self.assertNotIn('Приложение', out)
+        self.assertNotIn('НАЗВАНИЕ', out)
+        self.assertNotIn('КОРОТКО', '')                               # (правило в задании — проверено ниже)
+        self.assertIn('КОРОТКО', calls[0])
+
+
 if __name__ == '__main__':
     unittest.main()
