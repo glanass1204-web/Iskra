@@ -26,7 +26,7 @@ from iskra_index import ROOT, extract, index_folder, search_docs, forget_folder,
 import iskra_assistant as assistant
 
 ROOT.mkdir(parents=True, exist_ok=True)
-VERSION = '1.10.13'
+VERSION = '1.10.14'
 ACCENT = '#24518A'
 
 
@@ -955,7 +955,8 @@ def selftest_ai():
         finally:
             iskra_ai.TELEGRAM_TEMPLATE = None
     check('телеграмма по шаблону отдела', by_template,
-          lambda r: 'Кому:' not in r and 'Сидоров' in r and '30.10.2026' in r and '01.03.2024' not in r and 'госпитал' in r.lower())
+          lambda r: 'Кому:' not in r and 'ТЕЛЕГРАММА' not in r and 'Сидоров' not in r and '30.10.2026' in r
+          and '01.03.2024' not in r and 'численност' in r.lower())    # только текст: шапку и подпись даёт шаблон
     lines.append(f'Режим: {iskra_ai.mode()}')
     iskra_ai.shutdown()
     (ROOT / 'selftest_ai.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')

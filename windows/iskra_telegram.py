@@ -400,6 +400,8 @@ def save_docx(text, path, template=None):
                 return _fill_template(template, path, *split_editor_text(text))
             if not _has_shell(text):                   # только текст — встаёт на место {Текст}, шапка из шаблона
                 return _fill_template(template, path, '', {}, _body_lines(text), [])
+        elif not _has_shell(text) and not _full_form(text, template):   # только текст — между шапкой и подписью
+            return save_body_into_template(text, path, template)
         return save_like_template(text, path, template)
     title, header, body, signature = split_editor_text(text)
     plain = not _has_shell(text)
@@ -574,6 +576,90 @@ def _similar(a, b):
     if not a or not b:
         return 1.0 if a == b else 0.0
     return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+SIGN_WORDS = re.compile(r'начальник|командир|врио|вр\.и\.о|заместител|подпис|м\.\s?п\.|рядов|ефрейтор|сержант|старшин|'
+                        r'прапорщик|лейтенант|капитан|майор|полковник|генерал', re.IGNORECASE)
+BODY_START = re.compile(r'^\s*(?:\d{1,2}[.)]\s|во исполнение|в целях|в соответствии|согласно|на основании|прошу|'
+                        r'приказываю|докладываю|сообщаю|довожу|на №|на ваш|предлагаю|с целью|в связи)', re.IGNORECASE)
+
+
+def _full_form(text, template):
+    """В редакторе уже весь бланк (открыт по шаблону и заполнен): его первые строки — как в шаблоне."""
+    try:
+        head = [l.strip() for l in template_text(template).splitlines() if l.strip()][:2]
+    except Exception:                                      # noqa: BLE001
+        return False
+    lines = [l.strip() for l in text.splitlines() if l.strip()][:4]
+    return bool(head) and all(any(_similar(h, l) >= 0.9 for l in lines) for h in head)
+
+
+def body_region(paras):
+    """Где в шаблоне текст документа: (первый абзац, абзац подписи) — между шапкой («ТЕЛЕГРАММА», адресат) и
+    подписью (должность, звание, Фамилия). None — не понять."""
+    texts = [p.text.strip() for p in paras]
+    filled = [i for i, t in enumerate(texts) if t]
+    if not filled:
+        return None
+    sig, tail = len(paras), 0
+    for i in reversed(filled):
+        t = texts[i]
+        if tail < 5 and len(t) <= 80 and (NAME.search(t) or SIGN_WORDS.search(t)):
+            sig, tail = i, tail + 1
+        else:
+            break
+    before = [i for i in filled if i < sig]
+    if not before:
+        return None
+    start = next((i for i in before if BODY_START.match(texts[i]) or len(texts[i]) > 90), None)
+    if start is None:
+        start = before[-1] if len(before) > 1 else None   # шапка — первые строки, текст — последний абзац перед подписью
+    return (start, sig) if start is not None else None
+
+
+def save_body_into_template(body, path, template):
+    """Только текст документа — на место текста в шаблоне: шапка, адресат, подпись, поля и оформление шаблона
+    остаются как есть; каждая строка текста получает оформление первого абзаца текста шаблона."""
+    from copy import deepcopy
+    from docx import Document
+    from docx.text.paragraph import Paragraph
+    doc = Document(template)
+    paras = [p for kind, p in _body_items(doc) if kind == 'p']
+    region = body_region(paras)
+    if region is None:
+        return save_like_template(body, path, template)
+    start, end = region
+    proto = paras[start]
+    empty_proto = next((p for p in paras[start:end] if not p.text.strip()), proto)
+    anchor = proto._p
+    for line in body.strip('\n').split('\n'):
+        src = proto if line.strip() else empty_proto
+        new = deepcopy(src._p)
+        anchor.addprevious(new)
+        p = Paragraph(new, src._parent)
+        if p.runs:
+            p.runs[0].text = line.strip()
+            for r in p.runs[1:]:
+                r.text = ''
+        elif line.strip():
+            p.add_run(line.strip())
+    for p in paras[start:end]:
+        p._p.getparent().remove(p._p)
+    doc.save(path)
+    return path
+
+
+def template_body(template):
+    """Текст шаблона без шапки и подписи — образец того, как пишут текст (для нейросети)."""
+    from docx import Document
+    try:
+        paras = [p for kind, p in _body_items(Document(template)) if kind == 'p']
+    except Exception:                                      # noqa: BLE001
+        return ''
+    region = body_region(paras)
+    if region is None:
+        return ''
+    return '\n'.join(p.text for p in paras[region[0]:region[1]]).strip()
 
 
 def save_like_template(text, path, template):

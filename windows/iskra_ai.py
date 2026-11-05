@@ -572,6 +572,11 @@ def enforce_signature(text, me=None):
     return text
 
 
+BODY_ONLY = ('Верни ТОЛЬКО текст документа: без слова «ТЕЛЕГРАММА», без адресата, без строк «Кому:», «От кого:», '
+             '«Дата:», «Номер:», «Тема:», «Текст:» и без подписи — шапку и подпись Искра возьмёт из шаблона. '
+             'Начни сразу с текста.')
+
+
 def telegram_format(me=None):
     if TELEGRAM_TEMPLATE and Path(TELEGRAM_TEMPLATE).is_file():
         own = template_format(TELEGRAM_TEMPLATE, me)
@@ -587,13 +592,18 @@ def has_template():
 
 
 SHELL_FIELD = re.compile(r'^\s*(Кому|От кого|Дата|Номер|Тема|Гриф|Срочность|Исх\w*|Вх\w*)\s*:', re.IGNORECASE)
-SHELL_TITLE = re.compile(r'^\s*(ТЕЛЕГРАММА|ШИФРТЕЛЕГРАММА|ТЕЛЕФОНОГРАММА|УКАЗАНИЕ|РАСПОРЯЖЕНИЕ)\s*$')
+SHELL_TITLE = re.compile(r'^\s*(ТЕЛЕГРАММА|ШИФРТЕЛЕГРАММА|ТЕЛЕФОНОГРАММА|УКАЗАНИЕ|РАСПОРЯЖЕНИЕ|РАПОРТ|ДОКЛАД|ЗАЯВКА|'
+                         r'СПРАВКА(?:-ДОКЛАД)?|ЗАПРОС)\s*$')
 
 
 def strip_shell(text, me=None):
     """Только текст документа: без шапки («ТЕЛЕГРАММА», «Кому:», «Дата:», «Номер:», «Текст:») и без подписи —
     оформление человек делает по своему шаблону."""
     lines = text.replace('\r\n', '\n').split('\n')
+    filled = [i for i, l in enumerate(lines) if l.strip()]
+    title = next((i for i in filled[:7] if SHELL_TITLE.match(lines[i].strip())), None)
+    if title is not None:
+        lines = lines[title + 1:]                       # «Командиру… / от… / дата / РАПОРТ» — шапка, её даёт шаблон
     out = []
     for line in lines:
         s_ = line.strip()
@@ -1209,6 +1219,11 @@ def best_sample(task, materials_text='', limit=2600):
     fit.sort(key=lambda c: -c[0])
     if fit:
         return fit[0][1], fit[0][2]
+    if has_template():                                 # текст своего шаблона (без шапки и подписи) — образец стиля
+        from iskra_telegram import template_body
+        body = template_body(TELEGRAM_TEMPLATE)
+        if len(body) > 80:
+            return 'ваш шаблон', body[:limit]
     if kind in BUILTIN_SAMPLES and (want_telegram or kind != 'доклад') and not has_template():
         # свой шаблон отдела — уже образец; типовой рядом с ним сбивает небольшую модель
         return 'типовой образец Искры', BUILTIN_SAMPLES[kind]
@@ -1390,7 +1405,6 @@ def _write(task, sources=(), me=None, **kw):
     keep = kw.pop('keep_dates', '')
     block = drop_unit_numbers(block, task + ' ' + keep)[0]     # номера частей из материалов — только если их назвали
     raport = bool(RAPORT_WORDS.search(task))
-    telegram = bool(TELEGRAM_WORDS.search(task)) and not raport
     user = ''
     sample_len = 0
     sample_text, no_sample_user = '', None
@@ -1450,12 +1464,8 @@ def _write(task, sources=(), me=None, **kw):
                 if DONESENIE_WORDS.search(task) else ''))
     if raport and not has_template():
         user += '\n' + raport_format(me) + '\n'
-    elif telegram or (raport and has_template()):        # свой шаблон рапорта — по нему
-        user += '\n' + telegram_format(me) + '\n'
-    elif has_template() and me and me.get('signature', '').strip():
-        user += f'\nПодпись в конце: {me["signature"].strip()}\n'
-    elif not has_template():
-        user += '\nБез шапки («Кому:», «Дата:», «Номер:») и без подписи — только текст документа.\n'
+    else:                                              # шапку и подпись даёт шаблон — нейросеть пишет только текст
+        user += '\n' + BODY_ONLY + '\n'
     user += ('\nВерни только готовый текст документа, без вступлений вроде «Вот текст» и без пояснений после.')
     if truncated:
         user += f'\n(Часть материалов не поместилась: {", ".join(truncated)}.)'
@@ -1499,10 +1509,8 @@ def _write(task, sources=(), me=None, **kw):
     out = ensure_reference(out, task, sources)            # «На № …» в ответе на названный документ
     if raport and not has_template():
         out = fix_raport(out, me)
-    if not raport and not has_template():
-        out = strip_shell(out, me)                         # шапку и подпись человек оформляет по своему шаблону
-    elif telegram:
-        out = enforce_signature(out, me)
+    else:
+        out = strip_shell(out, me)                         # шапку и подпись Искра берёт из шаблона при сохранении
     return out, truncated
 
 
@@ -2214,8 +2222,7 @@ def revise(request, previous, change, sources=(), me=None, kind='write', **kw):
     refs = PEOPLE.context(change + ' ' + previous) if PEOPLE is not None else []
     if refs:
         user += ('\nСправочник (точные звания и должности; адресата — в дательном падеже):\n' + '\n'.join(refs) + '\n')
-    if TELEGRAM_WORDS.search(request + ' ' + previous[:200]) and has_template():
-        user += '\n' + telegram_format(me)              # без своего шаблона — вид текста не трогаем, как просили
+
     if block:
         user += '\n\nМатериалы (справка):\n\n' + block
     out = run(chat_prompt(user), max_tokens=kw.pop('max_tokens', min(4000, len(previous) // 2 + 600)), temperature=0.2, **kw)

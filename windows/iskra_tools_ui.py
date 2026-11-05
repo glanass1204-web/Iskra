@@ -752,28 +752,15 @@ class ToolsMixin:
 
     def telegram_blank(self):
         """Пустая телеграмма: по своему шаблону отдела, если он выбран, иначе стандартная."""
-        template = self.telegram_template_path()
-        from datetime import date
-        if not template:
-            return ''                                  # без шапки и подписи: оформление — по своему шаблону
-        from iskra_telegram import has_placeholders, render_template, template_text
-        try:
-            sample = template_text(template)
-        except Exception:
-            return ''
-        if has_placeholders(sample):
-            me = self.my_details()
-            return render_template(template, {'от кого': me.get('from', ''), 'дата': date.today().strftime('%d.%m.%Y'),
-                                              'подпись': [x for x in me.get('signature', '').splitlines() if x.strip()]})
-        return sample
+        return ''                                      # только текст: шапку и подпись Искра берёт из шаблона при сохранении
 
     def to_template(self, text):
         """Текст в стандартном виде Искры («Кому: … Текст: … Подпись:») → вид своего шаблона с метками.
         Шаблон без меток — текст не трогаем (по образцу его переписывает нейросеть)."""
         template = self.telegram_template_path()
-        if not template:
-            return self.plain_text(text)
         from iskra_telegram import has_placeholders, is_labeled, render_template, split_editor_text, template_text
+        if not template or not is_labeled(text):
+            return self.plain_text(text)                # только текст — в шаблон он встанет при «Сохранить в Word»
         text, sep, tail = text.partition('--- ИСТОЧНИКИ')
         tail = ('\n\n' + sep + tail) if sep else ''
         try:
