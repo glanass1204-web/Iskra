@@ -109,16 +109,38 @@ class SelftestCases(unittest.TestCase):
         finally:
             ai.TELEGRAM_TEMPLATE = old_t
         calls = []
-        copy = ai.BUILTIN_SAMPLES['запрос']
+        d = Document()
+        copy = ('В целях подготовки доклада вышестоящему штабу прошу в установленный срок представить в штаб части '
+                'сведения о наличии личного состава по установленной форме.')
+        for line in ('ТЕЛЕГРАММА', 'Командиру войсковой части 12345', copy, 'Начальник штаба', 'полковник П.П. Сидоров'):
+            d.add_paragraph(line)
+        long_tpl = Path(tempfile.mkdtemp()) / 'obrazec2.docx'
+        d.save(long_tpl)
         answers = [copy, 'Прошу представить сведения о численности личного состава до 30.10.2026.']
         ai.run = lambda prompt, **kw: calls.append(prompt) or answers[min(len(calls) - 1, 1)]
+        ai.TELEGRAM_TEMPLATE = str(long_tpl)
         try:
             out, _ = ai.write('Составь телеграмму начальнику госпиталя: представить сведения о численности личного '
                               'состава до 30.10.2026', [])
         finally:
-            ai.run = old_run
+            ai.run, ai.TELEGRAM_TEMPLATE = old_run, old_t
         self.assertEqual(len(calls), 2)                        # переписала образец без даты задачи — заново
         self.assertIn('30.10.2026', out)
+
+
+class InventedBasis(unittest.TestCase):
+    def test_invented_articles_and_orders_removed_real_kept(self):
+        """Проверка нейросети 05.11: в рапорте на отпуск — «согласно ст. 128 Устава… ст. 129 Трудового кодекса…
+        приказом от [ДАТА ПРИКАЗА]» — ничего этого в задаче не было."""
+        text = ('Прошу ходатайства о предоставлении основного отпуска.\n\nНастоящим докладываю, что имею право на отпуск '
+                'согласно ст. 128 Устава ВС РФ и ст. 129 Трудового кодекса РФ, а также приказом командира в/ч [НОМЕР] '
+                'от [ДАТА ПРИКАЗА]. Прошу полагать меня убывшим.\n\nВо исполнение приказа командира полка № 7 провести '
+                'проверку.')
+        out = ai.drop_invented_basis(text, [('задача', 'рапорт на отпуск'), ('м', 'Приказ командира полка № 7.')])
+        self.assertNotIn('кодекс', out)
+        self.assertNotIn('[ДАТА', out)
+        self.assertIn('Прошу полагать меня убывшим.', out)
+        self.assertIn('Во исполнение приказа командира полка № 7', out)
 
 
 if __name__ == '__main__':

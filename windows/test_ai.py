@@ -269,10 +269,19 @@ class MilitaryWords(unittest.TestCase):
         out, _ = ai.strip_unasked(text, 'составь телеграмму с датой и номером: проверить технику')
         self.assertIn('Дата: 23.10.2026', out)
 
-    def test_builtin_samples(self):
-        where, text = ai.best_sample('Составь телеграмму командирам: провести проверку техники')
-        self.assertIn('ПРИКАЗЫВАЮ', text)
-        self.assertIsNone(ai.best_sample('Напиши рапорт на отпуск'))
+    def test_kind_rules_instead_of_sample_facts(self):
+        """Встроенных образцов с «фактами» больше нет (нейросеть их переносила) — только правило построения."""
+        self.assertIsNone(ai.best_sample('Составь телеграмму командирам: провести проверку техники'))
+        prompts = []
+        old = ai.run
+        ai.run = lambda prompt, **kw: prompts.append(prompt) or 'Телеграмма\n\nКомандиру полка\n\nДокладываю:\n1. Проверка проведена.'
+        try:
+            out, _ = ai.write('составь доклад командиру полка о проверке', [('свод.docx', 'Проверка проведена.')])
+        finally:
+            ai.run = old
+        self.assertIn('Докладываю:', prompts[0])
+        self.assertNotIn('ремонтное подразделение', prompts[0])
+        self.assertTrue(out.startswith('Докладываю:'), out)          # «Телеграмма / Командиру полка» — убраны
 
     def test_military_time_is_not_a_date(self):
         out, removed = ai.strip_unasked('Командирам к 06.00 представить донесение.', 'составь указание')

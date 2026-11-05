@@ -29,6 +29,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Libraries of Iskra (as in the program — declension, proofreading, Word)
+        shell: pwsh
+        run: |
+          Get-Content requirements.txt | Where-Object { $_ -notmatch '^pyinstaller' } | Set-Content req-eval.txt
+          python -m pip install -r req-eval.txt
       - name: Cache model
         uses: actions/cache@v4
         with:
