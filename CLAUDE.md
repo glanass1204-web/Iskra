@@ -33,7 +33,8 @@
 2. На новое поведение — тест (`test_*.py`); нейросеть в тестах подменяется (`ai.run = lambda prompt, **kw: …`).
 3. Поднять `VERSION` в `windows/iskra.py` и дописать раздел в `windows/CHANGELOG_v1_10_0.txt` (простым языком,
    для пользователя).
-4. Выпуск — навык `iskra-release` (`.claude/skills/iskra-release/SKILL.md`).
+4. Перед выпуском — проверка через саму программу: `dev/gui/README.md` (меню, окна, кнопки; «12 из 12»).
+5. Выпуск — навык `iskra-release` (`.claude/skills/iskra-release/SKILL.md`).
 
 ## Отложено (пользователь сказал «пока не надо, но запомни»)
 - Защита экрана, включаемая в настройках: (1) запрет скриншотов и записи экрана — `SetWindowDisplayAffinity`
