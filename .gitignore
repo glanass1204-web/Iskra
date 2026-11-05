@@ -8,3 +8,4 @@ local.properties
 # скачанные сборки для отправки
 /Iskra-*.zip
 download/
+__pycache__/
